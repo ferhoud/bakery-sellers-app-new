@@ -33,7 +33,6 @@ export default function AppSeller() {
   const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)), [monday]);
 
   // Planning (lecture seule)
-  
   const [assign, setAssign] = useState({});
 
   // Notifications remplacement + validation
@@ -243,109 +242,107 @@ export default function AppSeller() {
 
   /* ----------------- Mes absences approuvées — mois courant ----------------- */
   const loadMyMonthAbs = async () => {
-  if (!session?.user?.id) return;
-  const todayIso = fmtISODate(new Date());
-  const { data } = await supabase
-    .from("absences")
-    .select("date")
-    .eq("seller_id", session.user.id)
-    .eq("status", "approved")
-    .gte("date", myMonthFrom)
-    .lte("date", myMonthTo)
-    .lt("date", todayIso); // seulement passées (exclut aujourd’hui)
+    if (!session?.user?.id) return;
+    const todayIso = fmtISODate(new Date());
+    const { data } = await supabase
+      .from("absences")
+      .select("date")
+      .eq("seller_id", session.user.id)
+      .eq("status", "approved")
+      .gte("date", myMonthFrom)
+      .lte("date", myMonthTo)
+      .lt("date", todayIso); // seulement passées (exclut aujourd’hui)
 
-  // déduplication
-  const arr = Array.from(new Set((data || []).map((r) => r.date))).sort((a, b) => a.localeCompare(b));
-  setMyMonthAbs(arr);
-};
-
+    // déduplication
+    const arr = Array.from(new Set((data || []).map((r) => r.date))).sort((a, b) => a.localeCompare(b));
+    setMyMonthAbs(arr);
+  };
 
   const loadMyMonthUpcomingAbs = async () => {
-  if (!session?.user?.id) return;
-  const todayIso = fmtISODate(new Date());
-  const { data } = await supabase
-    .from("absences")
-    .select("id, date, status")
-    .eq("seller_id", session.user.id)
-    .in("status", ["approved", "pending"]) // inclure aussi les pending
-    .gte("date", myMonthFrom)
-    .lte("date", myMonthTo)
-    .gte("date", todayIso); // >= aujourd’hui (et plus demain)
+    if (!session?.user?.id) return;
+    const todayIso = fmtISODate(new Date());
+    const { data } = await supabase
+      .from("absences")
+      .select("id, date, status")
+      .eq("seller_id", session.user.id)
+      .in("status", ["approved", "pending"]) // inclure aussi les pending
+      .gte("date", myMonthFrom)
+      .lte("date", myMonthTo)
+      .gte("date", todayIso); // >= aujourd’hui (et plus demain)
 
-  // Regrouper par date -> { date, ids[] }
-  const byDate = {};
-  (data || []).forEach((r) => {
-    if (!byDate[r.date]) byDate[r.date] = [];
-    byDate[r.date].push(r.id);
-  });
-  const arr = Object.keys(byDate)
-    .sort((a, b) => a.localeCompare(b))
-    .map((date) => ({ date, ids: byDate[date] }));
-  setMyMonthUpcomingAbs(arr);
-};
-
+    // Regrouper par date -> { date, ids[] }
+    const byDate = {};
+    (data || []).forEach((r) => {
+      if (!byDate[r.date]) byDate[r.date] = [];
+      byDate[r.date].push(r.id);
+    });
+    const arr = Object.keys(byDate)
+      .sort((a, b) => a.localeCompare(b))
+      .map((date) => ({ date, ids: byDate[date] }));
+    setMyMonthUpcomingAbs(arr);
+  };
 
   useEffect(() => { loadMyMonthAbs(); loadMyMonthUpcomingAbs(); }, [session?.user?.id, myMonthFrom, myMonthTo]);
 
-/* ----------------- SUPPRIMER une absence (aujourd’hui ou futur) ----------------- */
-const deleteMyAbsencesForDate = async (date) => {
-  if (!session?.user?.id) return;
+  /* ----------------- SUPPRIMER une absence (aujourd’hui ou futur) ----------------- */
+  const deleteMyAbsencesForDate = async (date) => {
+    if (!session?.user?.id) return;
 
-  const todayIso = fmtISODate(new Date());
-  // Autorisé : aujourd’hui OU futur. Interdit : passé
-  if (date < todayIso) {
-    alert("Vous ne pouvez pas supprimer une absence déjà passée.");
-    return;
-  }
+    const todayIso = fmtISODate(new Date());
+    // Autorisé : aujourd’hui OU futur. Interdit : passé
+    if (date < todayIso) {
+      alert("Vous ne pouvez pas supprimer une absence déjà passée.");
+      return;
+    }
 
-  if (!window.confirm(`Supprimer votre absence du ${frDate(date)} ?`)) return;
+    if (!window.confirm(`Supprimer votre absence du ${frDate(date)} ?`)) return;
 
-  // Récupérer toutes mes absences à cette date
-  const { data: rows, error: qErr } = await supabase
-    .from("absences")
-    .select("id")
-    .eq("seller_id", session.user.id)
-    .eq("date", date);
-  if (qErr) { console.error(qErr); alert("Lecture impossible."); return; }
+    // Récupérer toutes mes absences à cette date
+    const { data: rows, error: qErr } = await supabase
+      .from("absences")
+      .select("id")
+      .eq("seller_id", session.user.id)
+      .eq("date", date);
+    if (qErr) { console.error(qErr); alert("Lecture impossible."); return; }
 
-  const ids = (rows || []).map((r) => r.id);
-  if (ids.length === 0) { alert("Aucune absence trouvée pour cette date."); return; }
+    const ids = (rows || []).map((r) => r.id);
+    if (ids.length === 0) { alert("Aucune absence trouvée pour cette date."); return; }
 
-  // Si un remplacement est déjà ACCEPTÉ, on bloque
-  const { data: repl } = await supabase
-    .from("replacement_interest")
-    .select("id, status")
-    .in("absence_id", ids);
-  const hasAccepted = (repl || []).some((r) => r.status === "accepted");
-  if (hasAccepted) {
-    alert("Cette absence a déjà un remplacement validé. Merci de contacter l’admin pour l’annuler.");
-    return;
-  }
-
-  // Supprimer d’abord les propositions (si présentes)
-  if ((repl || []).length > 0) {
-    const { error: delReplErr } = await supabase
+    // Si un remplacement est déjà ACCEPTÉ, on bloque
+    const { data: repl } = await supabase
       .from("replacement_interest")
-      .delete()
+      .select("id, status")
       .in("absence_id", ids);
-    if (delReplErr) { console.error(delReplErr); alert("Suppression des propositions impossible."); return; }
-  }
+    const hasAccepted = (repl || []).some((r) => r.status === "accepted");
+    if (hasAccepted) {
+      alert("Cette absence a déjà un remplacement validé. Merci de contacter l’admin pour l’annuler.");
+      return;
+    }
 
-  // Supprimer l’absence
-  const { error: delErr } = await supabase
-    .from("absences")
-    .delete()
-    .eq("seller_id", session.user.id)
-    .eq("date", date);
-  if (delErr) { console.error(delErr); alert("Suppression impossible (droits RLS ?)"); return; }
+    // Supprimer d’abord les propositions (si présentes)
+    if ((repl || []).length > 0) {
+      const { error: delReplErr } = await supabase
+        .from("replacement_interest")
+        .delete()
+        .in("absence_id", ids);
+      if (delReplErr) { console.error(delReplErr); alert("Suppression des propositions impossible."); return; }
+    }
 
-  // Rafraîchir l’affichage
-  await loadMyMonthUpcomingAbs();
-  await loadMyMonthAbs();
-  if (replAsk?.date === date) setReplAsk(null);
+    // Supprimer l’absence
+    const { error: delErr } = await supabase
+      .from("absences")
+      .delete()
+      .eq("seller_id", session.user.id)
+      .eq("date", date);
+    if (delErr) { console.error(delErr); alert("Suppression impossible (droits RLS ?)"); return; }
 
-  alert("Absence supprimée.");
-};
+    // Rafraîchir l’affichage
+    await loadMyMonthUpcomingAbs();
+    await loadMyMonthAbs();
+    if (replAsk?.date === date) setReplAsk(null);
+
+    alert("Absence supprimée.");
+  };
 
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
@@ -439,7 +436,6 @@ const deleteMyAbsencesForDate = async (date) => {
                 <button className="btn"
                         onClick={() => deleteMyAbsencesForDate(date)}
                         title={`Supprimer l’absence du ${frDate(date)}`}
-
                         style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
                   Supprimer
                 </button>
