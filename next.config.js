@@ -1,8 +1,12 @@
 /** @type {import('next').NextConfig} */
-module.exports = {
+const nextConfig = {
   reactStrictMode: true,
   eslint: {
-    // Laisse ESLint en local, mais n'empêche pas le build sur Vercel
+    // ⚠️ Décommente temporairement si besoin d'un déploiement immédiat
     ignoreDuringBuilds: true,
   },
+  // Si tu as aussi des erreurs TypeScript bloquantes, tu peux activer :
+  // typescript: { ignoreBuildErrors: true },
 };
+
+module.exports = nextConfig;
