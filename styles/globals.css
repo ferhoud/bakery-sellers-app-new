@@ -1,0 +1,17 @@
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root{
+  --card: #ffffff;
+  --bg: #f7f7f8;
+}
+
+body { background: var(--bg); }
+.card { @apply bg-white rounded-2xl shadow p-4; }
+.btn  { @apply rounded-xl px-4 py-2 border hover:shadow; }
+.input{ @apply border rounded-xl px-3 py-2 w-full; }
+.select{ @apply border rounded-xl px-3 py-2 w-full bg-white; }
+.hdr  { @apply text-xl font-semibold; }
+.sub  { @apply text-sm text-gray-500; }

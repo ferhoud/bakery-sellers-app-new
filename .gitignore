@@ -1,0 +1,30 @@
+﻿# Next.js
+.next/
+.next/cache/
+out/
+
+# Node
+node_modules/
+
+# Env / secrets (ne jamais pousser .env.local)
+.env*
+!.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / outils
+.vscode/
+.idea/
+.turbo/
+.vercel/
+coverage/
+dist/
