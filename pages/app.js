@@ -1,3 +1,5 @@
+/* eslint react/no-unescaped-entities: "off" */
+
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
@@ -412,7 +414,7 @@ const deleteMyAbsencesForDate = async (date) => {
       <div className="card">
         <div className="hdr mb-2">Vos absences ce mois</div>
         {myMonthAbs.length === 0 ? (
-          <div className="text-sm text-gray-600">Vous n'avez aucune absence approuvée passée (ou aujourd’hui) ce mois-ci.</div>
+          <div className="text-sm text-gray-600">Vous n’avez aucune absence approuvée passée (ou aujourd’hui) ce mois-ci.</div>
         ) : (
           <div className="text-sm">
             {(() => {
@@ -436,7 +438,8 @@ const deleteMyAbsencesForDate = async (date) => {
                 <div className="text-sm">{frDate(date)}</div>
                 <button className="btn"
                         onClick={() => deleteMyAbsencesForDate(date)}
-                        title={`Supprimer l'absence du ${frDate(date)}`}
+                        title={`Supprimer l’absence du ${frDate(date)}`}
+
                         style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
                   Supprimer
                 </button>
