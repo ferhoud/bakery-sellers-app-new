@@ -252,7 +252,7 @@ export default function AppSeller() {
     .eq("status", "approved")
     .gte("date", myMonthFrom)
     .lte("date", myMonthTo)
-    .lt("date", todayIso); // seulement passées (exclut aujourd'hui)
+    .lt("date", todayIso); // seulement passées (exclut aujourd’hui)
 
   // déduplication
   const arr = Array.from(new Set((data || []).map((r) => r.date))).sort((a, b) => a.localeCompare(b));
@@ -270,7 +270,7 @@ export default function AppSeller() {
     .in("status", ["approved", "pending"]) // inclure aussi les pending
     .gte("date", myMonthFrom)
     .lte("date", myMonthTo)
-    .gte("date", todayIso); // >= aujourd'hui (et plus demain)
+    .gte("date", todayIso); // >= aujourd’hui (et plus demain)
 
   // Regrouper par date -> { date, ids[] }
   const byDate = {};
@@ -420,7 +420,7 @@ const deleteMyAbsencesForDate = async (date) => {
             {(() => {
               const list = myMonthAbs.map(frDate);
               const sentence = list.length === 1 ? list[0] : `${list.slice(0, -1).join(", ")} et ${list[list.length - 1]}`;
-              return <>Vous avez <span className="font-medium">{myMonthAbs.length}</span> jour(s) d'absence ce mois-ci : {sentence}.</>;
+              return <>Vous avez <span className="font-medium">{myMonthAbs.length}</span> jour(s) d’absence ce mois-ci : {sentence}.</>;
             })()}
           </div>
         )}
