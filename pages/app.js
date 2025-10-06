@@ -411,7 +411,7 @@ export default function AppSeller() {
       <div className="card">
         <div className="hdr mb-2">Vos absences ce mois</div>
         {myMonthAbs.length === 0 ? (
-          <div className="text-sm text-gray-600">Vous n’avez aucune absence approuvée passée (ou aujourd&#39;hui) ce mois-ci.</div>
+          <div className="text-sm text-gray-600">Vous n&#39;avez aucune absence approuvée passée (ou aujourd&#39;hui) ce mois-ci.</div>
         ) : (
           <div className="text-sm">
             {(() => {
