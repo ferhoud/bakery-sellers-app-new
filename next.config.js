@@ -2,11 +2,9 @@
 const nextConfig = {
   reactStrictMode: true,
   eslint: {
-    // ⚠️ Décommente temporairement si besoin d'un déploiement immédiat
-    ignoreDuringBuilds: true,
+    ignoreDuringBuilds: true, // <- déverrouille le build même si ESLint râle
   },
-  // Si tu as aussi des erreurs TypeScript bloquantes, tu peux activer :
-  // typescript: { ignoreBuildErrors: true },
+  // typescript: { ignoreBuildErrors: true }, // décommente si besoin
 };
 
 module.exports = nextConfig;
