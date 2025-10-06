@@ -1,4 +1,4 @@
-/* eslint react/no-unescaped-entities: "off" */
+/* eslint-disable react/no-unescaped-entities */
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
