@@ -99,7 +99,7 @@ export default function AppSeller() {
       status: "pending",
     });
     if (error) { console.error(error); setMsgAbs("Échec de l’envoi de la demande."); return; }
-    setMsgAbs("Demande d’absence envoyée. En attente de validation."); setReasonAbs("");
+    setMsgAbs("Demande d&#39;absence envoyée. En attente de validation."); setReasonAbs("");
   };
 
   /* ----------------- Congé (form) ----------------- */
@@ -411,13 +411,13 @@ export default function AppSeller() {
       <div className="card">
         <div className="hdr mb-2">Vos absences ce mois</div>
         {myMonthAbs.length === 0 ? (
-          <div className="text-sm text-gray-600">Vous n’avez aucune absence approuvée passée (ou aujourd’hui) ce mois-ci.</div>
+          <div className="text-sm text-gray-600">Vous n’avez aucune absence approuvée passée (ou aujourd&#39;hui) ce mois-ci.</div>
         ) : (
           <div className="text-sm">
             {(() => {
               const list = myMonthAbs.map(frDate);
               const sentence = list.length === 1 ? list[0] : `${list.slice(0, -1).join(", ")} et ${list[list.length - 1]}`;
-              return <>Vous avez <span className="font-medium">{myMonthAbs.length}</span> jour(s) d’absence ce mois-ci : {sentence}.</>;
+              return <>Vous avez <span className="font-medium">{myMonthAbs.length}</span> jour(s) d&#39;absence ce mois-ci : {sentence}.</>;
             })()}
           </div>
         )}
@@ -435,7 +435,7 @@ export default function AppSeller() {
                 <div className="text-sm">{frDate(date)}</div>
                 <button className="btn"
                         onClick={() => deleteMyAbsencesForDate(date)}
-                        title={`Supprimer l’absence du ${frDate(date)}`}
+title={`Supprimer l&#39;absence du ${frDate(date)}`}
                         style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
                   Supprimer
                 </button>
