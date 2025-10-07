@@ -55,13 +55,21 @@ export default function AppSeller() {
   // Congés approuvés (tout le monde voit) — end_date >= today
   const [approvedLeaves, setApprovedLeaves] = useState([]);
 
-  // Mes absences approuvées — mois courant
+  // Mes absences — mois courant
   const now = new Date();
   const myMonthFrom = fmtISODate(firstDayOfMonth(now));
   const myMonthTo = fmtISODate(lastDayOfMonth(now));
-  const [myMonthAbs, setMyMonthAbs] = useState([]); // passées/aujourd’hui (dédupliquées)
-  // À venir : [{date, ids: [...] }]
+
+  // Passées/aujourd’hui (approuvées)
+  const [myMonthAbs, setMyMonthAbs] = useState([]);
+
+  // À venir (pending/approved), regroupées par date avec statut agrégé
+  // [{ date, ids: [...], status: 'pending' | 'approved' }]
   const [myMonthUpcomingAbs, setMyMonthUpcomingAbs] = useState([]);
+
+  // Remplacements acceptés pour MES absences (par absence_id)
+  // { [absence_id]: { volunteer_id, volunteer_name } }
+  const [acceptedByAbsence, setAcceptedByAbsence] = useState({});
 
   /* Sécurité / redirections */
   useEffect(() => {
@@ -93,38 +101,37 @@ export default function AppSeller() {
 
   /* ----------------- Absence (form) ----------------- */
   const submitAbs = async () => {
-  setMsgAbs("");
+    setMsgAbs("");
 
-  const { error } = await supabase.from("absences").insert({
-    date: absDate,
-    seller_id: session.user.id,
-    reason: reasonAbs || null,
-    status: "pending",
-  });
+    const { error } = await supabase.from("absences").insert({
+      date: absDate,
+      seller_id: session.user.id,
+      reason: reasonAbs || null,
+      status: "pending",
+    });
 
-  if (error) {
-    console.error(error);
-    setMsgAbs("Échec d'envoi de la demande.");
-    return;
-  }
+    if (error) {
+      console.error(error);
+      setMsgAbs("Échec d'envoi de la demande.");
+      return;
+    }
 
-  // 🔔 push aux admins
-  const { data: { user } } = await supabase.auth.getUser();
-  const sellerName =
-    user?.user_metadata?.full_name ||
-    user?.email?.split('@')[0] ||
-    'Vendeuse';
+    // 🔔 push aux admins
+    const { data: { user } } = await supabase.auth.getUser();
+    const sellerName =
+      user?.user_metadata?.full_name ||
+      user?.email?.split('@')[0] ||
+      'Vendeuse';
 
-  await notifyAdminsNewAbsence({
-    sellerName,
-    startDate: absDate,
-    endDate:   absDate
-  });
+    await notifyAdminsNewAbsence({
+      sellerName,
+      startDate: absDate,
+      endDate:   absDate
+    });
 
-  setMsgAbs("Demande d'absence envoyée. En attente de validation.");
-  setReasonAbs("");
-};
-
+    setMsgAbs("Demande d'absence envoyée. En attente de validation.");
+    setReasonAbs("");
+  };
 
   /* ----------------- Congé (form) ----------------- */
   const submitLeave = async () => {
@@ -164,11 +171,11 @@ export default function AppSeller() {
       .channel("absences_rt_seller_pending_approved")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "absences" }, async (payload) => {
         const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
-        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs();
+        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted();
       })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "absences" }, async (payload) => {
         const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
-        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs();
+        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted();
       })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -217,11 +224,14 @@ export default function AppSeller() {
       .channel("replacement_rt_seller_approved")
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "replacement_interest" }, async (payload) => {
         const oldS = payload.old?.status, newS = payload.new?.status;
+        // 👉 Si JE suis la volontaire : bannière "validé"
         if (payload.new?.volunteer_id === session.user.id && oldS !== "accepted" && newS === "accepted" && !isSeen(payload.new.absence_id)) {
           const { data: abs } = await supabase.from("absences").select("date, seller_id").eq("id", payload.new.absence_id).single();
           const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", abs?.seller_id).single();
           setApprovalMsg({ absence_id: payload.new.absence_id, date: abs?.date, absent_name: prof?.full_name || "Une vendeuse" });
         }
+        // 👉 Dans tous les cas, recharge la carte "Vos absences à venir" (pour afficher "<NOM> a accepté...")
+        await reloadAccepted();
       }).subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [session?.user?.id]);
@@ -264,7 +274,7 @@ export default function AppSeller() {
     return () => { supabase.removeChannel(chLeaves); };
   }, []);
 
-  /* ----------------- Mes absences approuvées — mois courant ----------------- */
+  /* ----------------- Mes absences approuvées — mois courant (passées/aujourd’hui) ----------------- */
   const loadMyMonthAbs = async () => {
     if (!session?.user?.id) return;
     const todayIso = fmtISODate(new Date());
@@ -276,12 +286,11 @@ export default function AppSeller() {
       .gte("date", myMonthFrom)
       .lte("date", myMonthTo)
       .lt("date", todayIso); // seulement passées (exclut aujourd’hui)
-
-    // déduplication
     const arr = Array.from(new Set((data || []).map((r) => r.date))).sort((a, b) => a.localeCompare(b));
     setMyMonthAbs(arr);
   };
 
+  /* ----------------- Mes absences à venir — mois courant (pending/approved) ----------------- */
   const loadMyMonthUpcomingAbs = async () => {
     if (!session?.user?.id) return;
     const todayIso = fmtISODate(new Date());
@@ -289,36 +298,67 @@ export default function AppSeller() {
       .from("absences")
       .select("id, date, status")
       .eq("seller_id", session.user.id)
-      .in("status", ["approved", "pending"]) // inclure aussi les pending
+      .in("status", ["approved", "pending"])   // on exclut "rejected"
       .gte("date", myMonthFrom)
       .lte("date", myMonthTo)
-      .gte("date", todayIso); // >= aujourd’hui (et plus demain)
-
-    // Regrouper par date -> { date, ids[] }
+      .gte("date", todayIso); // >= aujourd’hui
     const byDate = {};
     (data || []).forEach((r) => {
-      if (!byDate[r.date]) byDate[r.date] = [];
-      byDate[r.date].push(r.id);
+      if (!byDate[r.date]) byDate[r.date] = { ids: [], approved: false, pending: false };
+      byDate[r.date].ids.push(r.id);
+      if (r.status === 'approved') byDate[r.date].approved = true;
+      if (r.status === 'pending')  byDate[r.date].pending  = true;
     });
     const arr = Object.keys(byDate)
       .sort((a, b) => a.localeCompare(b))
-      .map((date) => ({ date, ids: byDate[date] }));
+      .map((date) => ({
+        date,
+        ids: byDate[date].ids,
+        status: byDate[date].approved ? 'approved' : 'pending',
+      }));
     setMyMonthUpcomingAbs(arr);
   };
 
-  useEffect(() => { loadMyMonthAbs(); loadMyMonthUpcomingAbs(); }, [session?.user?.id, myMonthFrom, myMonthTo]);
+  /* ----------------- Remplacements ACCEPTÉS pour MES absences ----------------- */
+  const reloadAccepted = async () => {
+    if (!session?.user?.id) return;
+    const todayIso = fmtISODate(new Date());
+    const { data: rows, error } = await supabase
+      .from('replacement_interest')
+      .select('id, status, volunteer_id, absence_id, absences(id, seller_id, date)')
+      .eq('status', 'accepted')
+      .eq('absences.seller_id', session.user.id)
+      .gte('absences.date', todayIso)
+      .order('id', { ascending: true });
+    if (error) { setAcceptedByAbsence({}); return; }
+
+    const volunteerIds = Array.from(new Set((rows || []).map(r => r.volunteer_id).filter(Boolean)));
+    let names = {};
+    if (volunteerIds.length) {
+      const { data: profs } = await supabase
+        .from('profiles')
+        .select('user_id, full_name')
+        .in('user_id', volunteerIds);
+      (profs || []).forEach(p => { names[p.user_id] = p.full_name; });
+    }
+    const map = {};
+    (rows || []).forEach(r => {
+      map[r.absence_id] = { volunteer_id: r.volunteer_id, volunteer_name: names[r.volunteer_id] || '—' };
+    });
+    setAcceptedByAbsence(map);
+  };
+
+  useEffect(() => { loadMyMonthAbs(); loadMyMonthUpcomingAbs(); reloadAccepted(); }, [session?.user?.id, myMonthFrom, myMonthTo]);
 
   /* ----------------- SUPPRIMER une absence (aujourd’hui ou futur) ----------------- */
   const deleteMyAbsencesForDate = async (date) => {
     if (!session?.user?.id) return;
 
     const todayIso = fmtISODate(new Date());
-    // Autorisé : aujourd’hui OU futur. Interdit : passé
     if (date < todayIso) {
       alert("Vous ne pouvez pas supprimer une absence déjà passée.");
       return;
     }
-
     if (!window.confirm(`Supprimer votre absence du ${frDate(date)} ?`)) return;
 
     // Récupérer toutes mes absences à cette date
@@ -328,7 +368,6 @@ export default function AppSeller() {
       .eq("seller_id", session.user.id)
       .eq("date", date);
     if (qErr) { console.error(qErr); alert("Lecture impossible."); return; }
-
     const ids = (rows || []).map((r) => r.id);
     if (ids.length === 0) { alert("Aucune absence trouvée pour cette date."); return; }
 
@@ -360,13 +399,46 @@ export default function AppSeller() {
       .eq("date", date);
     if (delErr) { console.error(delErr); alert("Suppression impossible (droits RLS ?)"); return; }
 
-    // Rafraîchir l’affichage
     await loadMyMonthUpcomingAbs();
     await loadMyMonthAbs();
+    await reloadAccepted();
     if (replAsk?.date === date) setReplAsk(null);
 
     alert("Absence supprimée.");
   };
+
+  // Réveil / retour au premier plan (inclut iOS PWA)
+  useEffect(() => {
+    const onWake = () => {
+      if (document.visibilityState === 'visible') {
+        loadMyMonthAbs();
+        loadMyMonthUpcomingAbs();
+        reloadAccepted();
+      }
+    };
+    window.addEventListener('focus', onWake);
+    window.addEventListener('pageshow', onWake);
+    document.addEventListener('visibilitychange', onWake);
+    return () => {
+      window.removeEventListener('focus', onWake);
+      window.removeEventListener('pageshow', onWake);
+      document.removeEventListener('visibilitychange', onWake);
+    };
+  }, []);
+
+  // Push SW → rafraîchir sur message
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const handler = (e) => {
+      if (e?.data?.type === 'push') {
+        loadMyMonthAbs();
+        loadMyMonthUpcomingAbs();
+        reloadAccepted();
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', handler);
+    return () => navigator.serviceWorker.removeEventListener('message', handler);
+  }, []);
 
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
@@ -384,13 +456,20 @@ export default function AppSeller() {
             <span className="font-medium">{replAsk.date}</span>. Voulez-vous la remplacer ?
           </div>
           <div className="flex gap-2">
-            <button className="btn" onClick={volunteerYes} style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>Oui</button>
-            <button className="btn" onClick={volunteerNo}  style={{ backgroundColor: "#6b7280", color: "#fff", borderColor: "transparent" }}>Non</button>
+            <button className="btn" onClick={async () => {
+              const { error } = await supabase.from("replacement_interest").insert({
+                absence_id: replAsk.absence_id, volunteer_id: session.user.id, status: "pending",
+              });
+              if (error) { console.error(error); alert("Impossible d’enregistrer votre volontariat."); return; }
+              setReplAsk(null);
+              alert("Merci ! Votre proposition de remplacement a été envoyée à l’admin.");
+            }} style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>Oui</button>
+            <button className="btn" onClick={() => setReplAsk(null)}  style={{ backgroundColor: "#6b7280", color: "#fff", borderColor: "transparent" }}>Non</button>
           </div>
         </div>
       )}
 
-      {/* Bannière “Validé” — ne réapparaît plus après OK (localStorage) */}
+      {/* Bannière “Validé” — volontaire */}
       {approvalMsg && (
         <div className="border rounded-2xl p-3 flex items-start sm:items-center justify-between gap-2"
              style={{ backgroundColor: "#ecfccb", borderColor: "#a3e635" }}>
@@ -399,7 +478,7 @@ export default function AppSeller() {
             <span className="font-medium">{approvalMsg.date}</span> a été <span className="font-medium">validé</span>.
           </div>
           <button className="btn"
-                  onClick={() => { if (approvalMsg?.absence_id) markSeen(approvalMsg.absence_id); setApprovalMsg(null); }}
+                  onClick={() => { if (approvalMsg?.absence_id) { localStorage.setItem(`ri_seen_${approvalMsg.absence_id}`, "1"); } setApprovalMsg(null); }}
                   style={{ backgroundColor: "#15803d", color: "#fff", borderColor: "transparent" }}>
             OK
           </button>
@@ -432,69 +511,75 @@ export default function AppSeller() {
       </div>
 
       {/* VOS ABSENCES (passées / aujourd’hui) */}
-      {/* VOS ABSENCES (passées / aujourd’hui) */}
-<div className="card">
-  <div className="hdr mb-2">Vos absences ce mois</div>
-  {myMonthAbs.length === 0 ? (
-    <>
-      {/* eslint-disable-next-line react/no-unescaped-entities */}
-      <div className="text-sm text-gray-600">
-        Vous n&#39;avez aucune absence approuvée passée (ou aujourd&#39;hui) ce mois-ci.
+      <div className="card">
+        <div className="hdr mb-2">Vos absences ce mois</div>
+        {myMonthAbs.length === 0 ? (
+          <div className="text-sm text-gray-600">
+            Vous n&#39;avez aucune absence approuvée passée (ou aujourd&#39;hui) ce mois-ci.
+          </div>
+        ) : (
+          <div className="text-sm">
+            {(() => {
+              const list = myMonthAbs.map(frDate);
+              const sentence = list.length === 1 ? list[0] : `${list.slice(0, -1).join(", ")} et ${list[list.length - 1]}`;
+              return <>Vous avez <span className="font-medium">{myMonthAbs.length}</span> jour(s) d&#39;absence ce mois-ci : {sentence}.</>;
+            })()}
+          </div>
+        )}
       </div>
-    </>
-  ) : (
-    <div className="text-sm">
-      {(() => {
-        const list = myMonthAbs.map(frDate);
-        const sentence =
-          list.length === 1
-            ? list[0]
-            : `${list.slice(0, -1).join(", ")} et ${list[list.length - 1]}`;
-        return (
-          <>
-            Vous avez <span className="font-medium">{myMonthAbs.length}</span> jour(s)
-            d&#39;absence ce mois-ci : {sentence}.
-          </>
-        );
-      })()}
-    </div>
-  )}
-</div>
 
-{/* VOS ABSENCES À VENIR (ce mois) + bouton Supprimer */}
-<div className="card">
-  <div className="hdr mb-2">Vos absences à venir ce mois</div>
-  {myMonthUpcomingAbs.length === 0 ? (
-    <div className="text-sm text-gray-600">
-      Aucune absence approuvée à venir ce mois-ci.
-    </div>
-  ) : (
-    <ul className="space-y-2">
-      {myMonthUpcomingAbs.map(({ date, ids }) => (
-        <li
-          key={date}
-          className="flex items-center justify-between border rounded-2xl p-3"
-        >
-          <div className="text-sm">{frDate(date)}</div>
-          {/* eslint-disable-next-line react/no-unescaped-entities */}
-          <button
-            className="btn"
-            onClick={() => deleteMyAbsencesForDate(date)}
-            title={`Supprimer l&#39;absence du ${frDate(date)}`}
-            style={{
-              backgroundColor: "#dc2626",
-              color: "#fff",
-              borderColor: "transparent",
-            }}
-          >
-            Supprimer
-          </button>
-        </li>
-      ))}
-    </ul>
-  )}
-</div>
+      {/* VOS ABSENCES À VENIR (ce mois) + statuts + remplaçante acceptée + bouton Supprimer conditionnel */}
+      <div className="card">
+        <div className="hdr mb-2">Vos absences à venir ce mois</div>
+        {myMonthUpcomingAbs.length === 0 ? (
+          <div className="text-sm text-gray-600">Aucune absence à venir ce mois-ci.</div>
+        ) : (
+          <ul className="space-y-2">
+            {myMonthUpcomingAbs.map(({ date, ids, status }) => {
+              // Si un remplacement accepté existe pour cette date (pour n'importe quel id)
+              let accepted;
+              for (const id of ids) {
+                if (acceptedByAbsence[id]) { accepted = acceptedByAbsence[id]; break; }
+              }
+              return (
+                <li key={date} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                  <div>
+                    <div className="font-medium">{frDate(date)}</div>
+                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                      {status === 'approved' ? (
+                        <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: '#16a34a' }}>
+                          Absence approuvée par l’administrateur
+                        </span>
+                      ) : (
+                        <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#f3f4f6', color: '#374151' }}>
+                          En attente d’approbation
+                        </span>
+                      )}
+                      {accepted && (
+                        <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: '#2563eb' }}>
+                          {accepted.volunteer_name} a accepté de vous remplacer
+                        </span>
+                      )}
+                    </div>
+                  </div>
 
+                  {/* Bouton Supprimer : seulement pour "pending" */}
+                  {status === 'pending' ? (
+                    <button
+                      className="btn"
+                      onClick={() => deleteMyAbsencesForDate(date)}
+                      title={`Supprimer l'absence du ${frDate(date)}`}
+                      style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
+                    >
+                      Supprimer
+                    </button>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
 
       {/* Demander une absence (1 jour) */}
       <div className="card">
