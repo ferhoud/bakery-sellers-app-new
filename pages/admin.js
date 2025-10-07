@@ -406,6 +406,8 @@ export default function Admin() {
     Compte: {profile?.full_name || "—"} <span className="sub">(admin)</span>
   </div>
   <div className="flex items-center gap-2">
+<button className="btn" onClick={() => r.push('/admin/sellers')}>👥 Gérer les vendeuses</button>
+
     <button className="btn" onClick={() => r.push('/push-setup')}>
       🔔 Activer les notifications
     </button>
