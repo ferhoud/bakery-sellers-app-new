@@ -18,6 +18,7 @@ export default async function handler(req, res) {
           endpoint: sub.endpoint,
           keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
           user_id: null, // tu pourras lier à l’utilisateur plus tard si tu veux
+          updated_at: new Date().toISOString(), // <-- patch côté code
         },
         { onConflict: 'endpoint' }
       );
