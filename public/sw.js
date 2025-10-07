@@ -6,6 +6,10 @@ self.addEventListener('push', (event) => {
   } catch (e) {
     data = { title: 'Nouvelle notification', body: event.data?.text() ?? '' };
   }
+// bump version to force update
+const SW_VERSION = 'v4';
+self.addEventListener('install', (e) => self.skipWaiting());
+self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
   const title = data.title ?? 'Notification';
   const options = {
