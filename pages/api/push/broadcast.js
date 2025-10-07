@@ -1,71 +1,53 @@
 // pages/api/push/broadcast.js
-import webPush from 'web-push';
-import { createClient } from '@supabase/supabase-js';
+import webpush from 'web-push';
+import { getSupabaseAdmin } from '@/lib/server/supabaseAdmin';
 
-const supaUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE; // compat
-const supabase = createClient(supaUrl, serviceKey);
-
-const VAPID_PUBLIC  = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
-const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
-
-webPush.setVapidDetails('mailto:admin@example.com', VAPID_PUBLIC, VAPID_PRIVATE);
+function ensureVAPID() {
+  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  if (!publicKey || !privateKey) throw new Error('VAPID keys missing');
+  webpush.setVapidDetails('mailto:admin@example.com', publicKey, privateKey);
+}
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-  if (!VAPID_PUBLIC || !VAPID_PRIVATE) {
-    return res.status(500).json({ error: 'VAPID keys missing' });
-  }
-
-  let body = req.body;
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   try {
-    if (typeof body === 'string') body = JSON.parse(body);
-  } catch (_) {
-    return res.status(400).json({ error: 'Invalid JSON body' });
-  }
+    ensureVAPID();
+    const { title = 'Notification', body = 'Mise à jour', url = '/admin' } = req.body || {};
 
-  const role = body.role || 'admin';
+    const supabase = getSupabaseAdmin();
+    const { data: subs, error } = await supabase
+      .from('push_subscriptions')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) return res.status(500).json({ error: 'DB list failed' });
 
-  const { data: subs, error } = await supabase
-    .from('push_subscriptions')
-    .select('endpoint, p256dh, auth')
-    .eq('role', role);
+    const payload = JSON.stringify({ title, body, data: { url } });
 
-  if (error) {
-    return res.status(500).json({ error: 'DB error', details: error.message });
-  }
+    const results = await Promise.allSettled(
+      (subs || []).map(s => webpush.sendNotification({ endpoint: s.endpoint, keys: s.keys }, payload))
+    );
 
-  // ✅ Compteur de pastille (badge) que verra iOS
-  const badgeCount = typeof body.badgeCount === 'number' ? body.badgeCount : 1;
-
-  // Charge utile envoyée au Service Worker
-  const payload = JSON.stringify({
-    title: body.title || 'Nouvelle demande',
-    body:  body.body  || '',
-    url:   body.url   || '/admin?tab=absences',
-    badgeCount: typeof body.badgeCount === 'number' ? body.badgeCount : 1
-  });
-
-  let sent = 0;
-  const total = subs?.length || 0;
-
-  await Promise.all((subs || []).map(async (s) => {
-    try {
-      await webPush.sendNotification(
-        { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
-        payload
-      );
-      sent++;
-    } catch (err) {
-      // Nettoie les abonnements expirés
-      if (err?.statusCode === 410 || err?.statusCode === 404) {
-        await supabase.from('push_subscriptions').delete().eq('endpoint', s.endpoint);
+    // Nettoyage des endpoints invalides
+    const toRemove = [];
+    results.forEach((r, i) => {
+      if (r.status === 'rejected') {
+        const code = r.reason?.statusCode;
+        if (code === 404 || code === 410) toRemove.push(subs[i].endpoint);
       }
-      // (on ignore les autres erreurs pour ne pas casser l’envoi aux autres)
+    });
+    if (toRemove.length) {
+      await supabase.from('push_subscriptions').delete().in('endpoint', toRemove);
     }
-  }));
 
-  return res.status(200).json({ sent, total });
+    return res.status(200).json({
+      ok: true,
+      sent: results.filter(r => r.status === 'fulfilled').length,
+      removed: toRemove.length,
+      total: subs?.length || 0
+    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ error: 'Broadcast failed' });
+  }
 }
