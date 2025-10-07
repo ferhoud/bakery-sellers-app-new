@@ -402,9 +402,19 @@ export default function Admin() {
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-        <div className="hdr">Compte: {profile?.full_name || "—"} <span className="sub">(admin)</span></div>
-        <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
-      </div>
+  <div className="hdr">
+    Compte: {profile?.full_name || "—"} <span className="sub">(admin)</span>
+  </div>
+  <div className="flex items-center gap-2">
+    <button className="btn" onClick={() => r.push('/push-setup')}>
+      🔔 Activer les notifications
+    </button>
+    <button className="btn" onClick={() => supabase.auth.signOut()}>
+      Se déconnecter
+    </button>
+  </div>
+</div>
+
 
       {/* BANNIÈRE : Demande de congé (la plus récente) */}
       {latestLeave && (

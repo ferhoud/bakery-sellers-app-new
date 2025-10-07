@@ -1,10 +1,17 @@
+// pages/_app.js
+import { useEffect } from 'react';
+import '../styles/globals.css';
 
-import "@/styles/globals.css";
-import { useEffect } from "react";
-import { useAuth } from "@/lib/useAuth";
+export default function MyApp({ Component, pageProps }) {
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistration().then((r) => {
+        if (!r) {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        }
+      });
+    }
+  }, []);
 
-export default function App({ Component, pageProps }){
-  const { init } = useAuth();
-  useEffect(()=>{ init(); }, [init]);
   return <Component {...pageProps} />;
 }

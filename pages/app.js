@@ -1,5 +1,7 @@
 /* eslint-disable react/no-unescaped-entities */
 
+import { notifyAdminsNewAbsence } from '../lib/pushNotify';
+
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
@@ -91,16 +93,38 @@ export default function AppSeller() {
 
   /* ----------------- Absence (form) ----------------- */
   const submitAbs = async () => {
-    setMsgAbs("");
-    const { error } = await supabase.from("absences").insert({
-      date: absDate,
-      seller_id: session.user.id,
-      reason: reasonAbs || null,
-      status: "pending",
-    });
-    if (error) { console.error(error); setMsgAbs("Échec de l’envoi de la demande."); return; }
-    setMsgAbs("Demande d&#39;absence envoyée. En attente de validation."); setReasonAbs("");
-  };
+  setMsgAbs("");
+
+  const { error } = await supabase.from("absences").insert({
+    date: absDate,
+    seller_id: session.user.id,
+    reason: reasonAbs || null,
+    status: "pending",
+  });
+
+  if (error) {
+    console.error(error);
+    setMsgAbs("Échec d'envoi de la demande.");
+    return;
+  }
+
+  // 🔔 push aux admins
+  const { data: { user } } = await supabase.auth.getUser();
+  const sellerName =
+    user?.user_metadata?.full_name ||
+    user?.email?.split('@')[0] ||
+    'Vendeuse';
+
+  await notifyAdminsNewAbsence({
+    sellerName,
+    startDate: absDate,
+    endDate:   absDate
+  });
+
+  setMsgAbs("Demande d'absence envoyée. En attente de validation.");
+  setReasonAbs("");
+};
+
 
   /* ----------------- Congé (form) ----------------- */
   const submitLeave = async () => {
@@ -408,42 +432,69 @@ export default function AppSeller() {
       </div>
 
       {/* VOS ABSENCES (passées / aujourd’hui) */}
-      <div className="card">
-        <div className="hdr mb-2">Vos absences ce mois</div>
-        {myMonthAbs.length === 0 ? (
-          <div className="text-sm text-gray-600">Vous n&#39;avez aucune absence approuvée passée (ou aujourd&#39;hui) ce mois-ci.</div>
-        ) : (
-          <div className="text-sm">
-            {(() => {
-              const list = myMonthAbs.map(frDate);
-              const sentence = list.length === 1 ? list[0] : `${list.slice(0, -1).join(", ")} et ${list[list.length - 1]}`;
-              return <>Vous avez <span className="font-medium">{myMonthAbs.length}</span> jour(s) d&#39;absence ce mois-ci : {sentence}.</>;
-            })()}
-          </div>
-        )}
+      {/* VOS ABSENCES (passées / aujourd’hui) */}
+<div className="card">
+  <div className="hdr mb-2">Vos absences ce mois</div>
+  {myMonthAbs.length === 0 ? (
+    <>
+      {/* eslint-disable-next-line react/no-unescaped-entities */}
+      <div className="text-sm text-gray-600">
+        Vous n&#39;avez aucune absence approuvée passée (ou aujourd&#39;hui) ce mois-ci.
       </div>
+    </>
+  ) : (
+    <div className="text-sm">
+      {(() => {
+        const list = myMonthAbs.map(frDate);
+        const sentence =
+          list.length === 1
+            ? list[0]
+            : `${list.slice(0, -1).join(", ")} et ${list[list.length - 1]}`;
+        return (
+          <>
+            Vous avez <span className="font-medium">{myMonthAbs.length}</span> jour(s)
+            d&#39;absence ce mois-ci : {sentence}.
+          </>
+        );
+      })()}
+    </div>
+  )}
+</div>
 
-      {/* VOS ABSENCES À VENIR (ce mois) + bouton Supprimer */}
-      <div className="card">
-        <div className="hdr mb-2">Vos absences à venir ce mois</div>
-        {myMonthUpcomingAbs.length === 0 ? (
-          <div className="text-sm text-gray-600">Aucune absence approuvée à venir ce mois-ci.</div>
-        ) : (
-          <ul className="space-y-2">
-            {myMonthUpcomingAbs.map(({ date, ids }) => (
-              <li key={date} className="flex items-center justify-between border rounded-2xl p-3">
-                <div className="text-sm">{frDate(date)}</div>
-                <button className="btn"
-                        onClick={() => deleteMyAbsencesForDate(date)}
-title={`Supprimer l&#39;absence du ${frDate(date)}`}
-                        style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
-                  Supprimer
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+{/* VOS ABSENCES À VENIR (ce mois) + bouton Supprimer */}
+<div className="card">
+  <div className="hdr mb-2">Vos absences à venir ce mois</div>
+  {myMonthUpcomingAbs.length === 0 ? (
+    <div className="text-sm text-gray-600">
+      Aucune absence approuvée à venir ce mois-ci.
+    </div>
+  ) : (
+    <ul className="space-y-2">
+      {myMonthUpcomingAbs.map(({ date, ids }) => (
+        <li
+          key={date}
+          className="flex items-center justify-between border rounded-2xl p-3"
+        >
+          <div className="text-sm">{frDate(date)}</div>
+          {/* eslint-disable-next-line react/no-unescaped-entities */}
+          <button
+            className="btn"
+            onClick={() => deleteMyAbsencesForDate(date)}
+            title={`Supprimer l&#39;absence du ${frDate(date)}`}
+            style={{
+              backgroundColor: "#dc2626",
+              color: "#fff",
+              borderColor: "transparent",
+            }}
+          >
+            Supprimer
+          </button>
+        </li>
+      ))}
+    </ul>
+  )}
+</div>
+
 
       {/* Demander une absence (1 jour) */}
       <div className="card">
