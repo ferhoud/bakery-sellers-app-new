@@ -1,41 +1,47 @@
-// /public/sw.js
-self.addEventListener('push', (event) => {
-  let data = {};
-  try {
-    data = event.data?.json() ?? {};
-  } catch (e) {
-    data = { title: 'Nouvelle notification', body: event.data?.text() ?? '' };
-  }
-// bump version to force update
-const SW_VERSION = 'v11';
-self.addEventListener('install', (e) => self.skipWaiting());
+// public/sw.js
+const SW_VERSION = 'v12';
+
+// Active immédiatement cette version
+self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
-  const title = data.title ?? 'Notification';
+// Réception push → notifie + réveille l'app
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch {}
+
+  const title = data.title || 'Notification';
+  const body  = data.body || '';
+  const url   = (data.data && data.data.url) || data.url || '/';
+
   const options = {
-    body: data.body ?? '',
-    icon: '/icons/icon-192.png',   // optionnel
-    badge: '/icons/badge-72.png',  // optionnel
-    data: { url: data.url ?? '/' },
+    body,
+    data: { url },
+    badge: '/icons/icon-192.png',
+    icon:  '/icons/icon-192.png',
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil((async () => {
+    const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    clientsList.forEach((c) => c.postMessage({ type: 'push', sw: SW_VERSION }));
+    if (title || body) {
+      await self.registration.showNotification(title, options);
+    }
+  })());
 });
 
+// Clic sur la notif → ouvrir / focus l’app
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = event.notification?.data?.url || '/';
-  event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      const origin = self.location.origin;
-      const absolute = new URL(targetUrl, origin).href;
-      for (const client of clientList) {
-        if (client.url === absolute) {
-          client.focus();
-          return;
-        }
-      }
-      return clients.openWindow(absolute);
-    })
-  );
+  const url = event.notification?.data?.url || '/';
+  event.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const sameOrigin = all.find((c) => c.url && new URL(c.url).origin === self.location.origin);
+    if (sameOrigin) {
+      sameOrigin.focus();
+      sameOrigin.postMessage({ type: 'open-url', url });
+    } else {
+      await self.clients.openWindow(url);
+    }
+  })());
 });
