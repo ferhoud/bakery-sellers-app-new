@@ -338,7 +338,7 @@ export default function Admin() {
     await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences();
   };
 
-  /* Attribuer / Refuser volontaire */
+    /* Attribuer / Refuser volontaire */
   const assignVolunteer = async (repl) => {
     const shift = selectedShift[repl.id];
     if (!shift) { alert("Choisis d’abord un créneau."); return; }
@@ -350,11 +350,20 @@ export default function Admin() {
       .select("date");
     if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
 
-    // 2) Marquer cette proposition comme acceptée et les autres comme refusées
-    await supabase.from("replacement_interest").update({ status: "accepted" }).eq("id", repl.id);
-    await supabase.from("replacement_interest").update({ status: "declined" }).eq("absence_id", repl.absence_id).neq("id", repl.id);
+    // 2) Marquer cette proposition comme acceptée et stocker le créneau accepté
+    await supabase
+      .from("replacement_interest")
+      .update({ status: "accepted", accepted_shift_code: shift })
+      .eq("id", repl.id);
 
-    // 3) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
+    // 3) Les autres propositions deviennent 'declined'
+    await supabase
+      .from("replacement_interest")
+      .update({ status: "declined" })
+      .eq("absence_id", repl.absence_id)
+      .neq("id", repl.id);
+
+    // 4) Si l’absence est encore 'pending', l’approuver
     const { data: absRow } = await supabase
       .from("absences")
       .select("status")
@@ -366,11 +375,12 @@ export default function Admin() {
 
     if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
 
-    // 4) Rafraîchir tous les blocs (y compris "à venir" du mois)
+    // 5) Rafraîchir
     setRefreshKey((k) => k + 1);
     await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences()]);
     alert("Volontaire attribuée et absence approuvée.");
   };
+
 
   const declineVolunteer = async (replId) => {
     const { error } = await supabase.from("replacement_interest").update({ status: "declined" }).eq("id", replId);
