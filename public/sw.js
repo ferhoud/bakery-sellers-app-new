@@ -1,10 +1,9 @@
 // public/sw.js
-const SW_VERSION = 'v15';
+const SW_VERSION = 'v16';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
-// Réception push → notifie + réveille l'app
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) {
@@ -29,7 +28,6 @@ self.addEventListener('push', (event) => {
   })());
 });
 
-// Clic sur la notif → ouvrir/focus l’app
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const targetUrl = event.notification?.data?.url || '/';
