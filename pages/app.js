@@ -20,9 +20,7 @@ const isSunday = (d) => d.getDay() === 0;
 const weekdayFR = (d) => d.toLocaleDateString("fr-FR", { weekday: "long" });
 const capFirst = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const betweenIso = (iso, start, end) => iso >= start && iso <= end;
-const frDate = (iso) => {
-  try { return new Date(iso + "T00:00:00").toLocaleDateString("fr-FR"); } catch { return iso; }
-};
+const frDate = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString("fr-FR"); } catch { return iso; } };
 function firstDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function lastDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
 function labelForShift(code) {
@@ -84,10 +82,6 @@ export default function AppSeller() {
   // [{ absence_id, date, absent_id, accepted_shift_code }]
   const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
   const [names, setNames] = useState({}); // user_id -> full_name
-
-  // Mes demandes d’annulation (en attente), par absence_id
-  // { [absence_id]: 'pending' }
-  const [myCancelReqs, setMyCancelReqs] = useState({});
 
   /* Sécurité / redirections */
   useEffect(() => {
@@ -189,11 +183,11 @@ export default function AppSeller() {
       .channel("absences_rt_seller_pending_approved")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "absences" }, async (payload) => {
         const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
-        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl(); await loadMyCancelRequests();
+        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl();
       })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "absences" }, async (payload) => {
         const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
-        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl(); await loadMyCancelRequests();
+        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl();
       })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -405,28 +399,8 @@ export default function AppSeller() {
     );
   }, [session?.user?.id]);
 
-  /* ----------------- Mes demandes d’annulation (en attente) ----------------- */
-  const loadMyCancelRequests = useCallback(async () => {
-    if (!session?.user?.id) return;
-    const { data } = await supabase
-      .from("absence_cancel_requests")
-      .select("absence_id, status")
-      .eq("requester_id", session.user.id)
-      .eq("status", "pending");
-    const map = {};
-    (data || []).forEach((r) => { map[r.absence_id] = r.status; });
-    setMyCancelReqs(map);
-  }, [session?.user?.id]);
-
-  useEffect(() => {
-    loadMyMonthAbs();
-    loadMyMonthUpcomingAbs();
-    reloadAccepted();
-    loadMyUpcomingRepl();
-    loadMyCancelRequests();
-  }, [session?.user?.id, myMonthFrom, myMonthTo, loadMyUpcomingRepl, loadMyCancelRequests]);
-
-  /* ----------------- DEMANDER l’annulation (aujourd’hui ou futur), même approuvée ----------------- */
+  /* ----------------- ANNULATION DIRECTE (suppression) ----------------- */
+  const [busy, setBusy] = useState(null);
   const deleteMyAbsencesForDate = async (date) => {
     if (!session?.user?.id) return;
 
@@ -435,7 +409,7 @@ export default function AppSeller() {
       alert("Vous ne pouvez pas annuler une absence déjà passée.");
       return;
     }
-    if (!window.confirm(`Demander l'annulation de votre absence du ${frDate(date)} ?`)) return;
+    if (!window.confirm(`Confirmer l'annulation de votre absence du ${frDate(date)} ?`)) return;
 
     // Récupérer toutes mes absences à cette date
     const { data: rows, error: qErr } = await supabase
@@ -447,32 +421,23 @@ export default function AppSeller() {
     const ids = (rows || []).map((r) => r.id);
     if (ids.length === 0) { alert("Aucune absence trouvée pour cette date."); return; }
 
-    // Créer une demande d’annulation pour chaque absence (si pas déjà en attente)
-    for (const id of ids) {
-      if (myCancelReqs[id] === 'pending') continue; // déjà demandée
+    setBusy(date);
+    try {
+      // Suppression directe des absences —
+      // NB: idéalement la FK replacement_interest(absence_id) est ON DELETE CASCADE
+      const { error: delErr } = await supabase
+        .from("absences")
+        .delete()
+        .in("id", ids);
+      if (delErr) { console.error(delErr); alert("Impossible d’annuler (RLS/FK). Contacte l’admin."); return; }
 
-      const { data: existing } = await supabase
-        .from("absence_cancel_requests")
-        .select("id, status")
-        .eq("absence_id", id)
-        .order("created_at", { ascending: false })
-        .limit(1);
-
-      if (existing && existing[0] && existing[0].status === "pending") continue;
-
-      const { error: insErr } = await supabase
-        .from("absence_cancel_requests")
-        .insert({
-          absence_id: id,
-          requester_id: session.user.id,
-          reason: null,
-          status: "pending",
-        });
-      if (insErr) { console.error(insErr); alert("Échec de la demande d’annulation."); return; }
+      // MAJ UI locale
+      setMyMonthUpcomingAbs((prev) => prev.filter((row) => row.date !== date));
+      await reloadAccepted();
+      await loadMyUpcomingRepl();
+    } finally {
+      setBusy(null);
     }
-
-    await loadMyCancelRequests();
-    alert("Demande d’annulation envoyée à l’administrateur.");
   };
 
   // Réveil / retour au premier plan (inclut iOS PWA)
@@ -483,7 +448,6 @@ export default function AppSeller() {
         loadMyMonthUpcomingAbs();
         reloadAccepted();
         loadMyUpcomingRepl();
-        loadMyCancelRequests();
       }
     };
     window.addEventListener('focus', onWake);
@@ -505,7 +469,6 @@ export default function AppSeller() {
         loadMyMonthUpcomingAbs();
         reloadAccepted();
         loadMyUpcomingRepl();
-        loadMyCancelRequests();
       }
     };
     navigator.serviceWorker.addEventListener('message', handler);
@@ -620,7 +583,7 @@ export default function AppSeller() {
         )}
       </div>
 
-      {/* VOS ABSENCES À VENIR (texte + badge + bouton d’annulation) */}
+      {/* VOS ABSENCES À VENIR (texte + badge + bouton) */}
       <div className="card">
         <div className="hdr mb-2">Vos absences à venir ce mois</div>
         {myMonthUpcomingAbs.length === 0 ? (
@@ -638,8 +601,6 @@ export default function AppSeller() {
                   break;
                 }
               }
-              // Demande d'annulation déjà en attente pour l'une des absences de cette date ?
-              const hasPendingCancel = ids.some((id) => myCancelReqs[id] === 'pending');
 
               return (
                 <li key={date} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
@@ -660,27 +621,22 @@ export default function AppSeller() {
                           En attente d’approbation
                         </span>
                       )}
-                      {hasPendingCancel && (
-                        <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d' }}>
-                          Annulation demandée — en attente
-                        </span>
-                      )}
                     </div>
                   </div>
 
                   <button
                     className="btn"
                     onClick={() => deleteMyAbsencesForDate(date)}
-                    title={`Demander l'annulation du ${frDate(date)}`}
-                    disabled={hasPendingCancel}
+                    title={`Annuler l\'absence du ${frDate(date)}`}
+                    disabled={busy === date}
                     style={{
-                      backgroundColor: hasPendingCancel ? "#9ca3af" : "#dc2626",
+                      backgroundColor: "#dc2626",
                       color: "#fff",
                       borderColor: "transparent",
-                      opacity: hasPendingCancel ? 0.8 : 1
+                      opacity: busy === date ? 0.8 : 1
                     }}
                   >
-                    {hasPendingCancel ? "Demande envoyée" : "Demander l'annulation"}
+                    {busy === date ? "Annulation…" : "Annuler l’absence"}
                   </button>
                 </li>
               );
