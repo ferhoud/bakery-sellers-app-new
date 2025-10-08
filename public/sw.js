@@ -1,21 +1,27 @@
 // public/sw.js
-const SW_VERSION = 'v14';
+const SW_VERSION = 'v15';
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 
+// Réception push → notifie + réveille l'app
 self.addEventListener('push', (event) => {
   let data = {};
-  try { data = event.data ? event.data.json() : {}; } catch {}
-  const title = data.title || 'Notification';
-  const body  = data.body || '';
+  try { data = event.data ? event.data.json() : {}; } catch (e) {
+    data = { title: 'Nouvelle notification', body: event.data?.text() ?? '' };
+  }
+
+  const title = data.title ?? 'Notification';
+  const body  = data.body ?? '';
   const url   = (data.data && data.data.url) || data.url || '/';
+
   const options = {
     body,
-    data: { url },
-    badge: '/icons/icon-192.png',
     icon:  '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    data: { url },
   };
+
   event.waitUntil((async () => {
     const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     clientsList.forEach((c) => c.postMessage({ type: 'push', sw: SW_VERSION }));
@@ -23,17 +29,20 @@ self.addEventListener('push', (event) => {
   })());
 });
 
+// Clic sur la notif → ouvrir/focus l’app
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const url = event.notification?.data?.url || '/';
+  const targetUrl = event.notification?.data?.url || '/';
   event.waitUntil((async () => {
     const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    const sameOrigin = all.find((c) => c.url && new URL(c.url).origin === self.location.origin);
-    if (sameOrigin) {
-      sameOrigin.focus();
-      sameOrigin.postMessage({ type: 'open-url', url });
-    } else {
-      await self.clients.openWindow(url);
+    const origin = self.location.origin;
+    const absolute = new URL(targetUrl, origin).href;
+    const same = all.find((c) => c.url === absolute || c.url === origin + '/');
+    if (same) {
+      same.focus();
+      same.postMessage({ type: 'open-url', url: targetUrl });
+      return;
     }
+    await self.clients.openWindow(absolute);
   })());
 });
