@@ -7,7 +7,7 @@ export default function MyApp({ Component, pageProps }) {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.getRegistration().then((r) => {
         if (!r) {
-          navigator.serviceWorker.register('/sw.js').catch(() => {});
+          navigator.serviceWorker.register('/sw.js?v=12').catch(() => {});
         }
       });
     }
