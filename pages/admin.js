@@ -1,3 +1,13 @@
+// en haut des imports
+import Link from "next/link";
+
+// ...dans le header, remplace le bloc des boutons par :
+<div className="flex items-center gap-2">
+  <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gérer les vendeuses</a></Link>
+  <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
+  <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
+</div>
+
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
