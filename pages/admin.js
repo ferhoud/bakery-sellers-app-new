@@ -1,4 +1,4 @@
-// touch: 2025-10-08 v-admin-2025-10-08-abs-cancel+count
+// touch: 2025-10-08 v-admin-2025-10-08-abs-cancel+count+acr-compat
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
@@ -58,7 +58,11 @@ export default function Admin() {
   const [assign, setAssign] = useState({});                 // "YYYY-MM-DD|SHIFT" -> seller_id
   const [absencesToday, setAbsencesToday] = useState([]);   // d’aujourd’hui (pending/approved)
   const [pendingAbs, setPendingAbs] = useState([]);         // absences à venir (pending)
-  const [pendingCancelAbs, setPendingCancelAbs] = useState([]); // annulations demandées (cancel_requested)
+
+  // Annulations (2 modèles pris en charge)
+  const [pendingCancelAbs, setPendingCancelAbs] = useState([]); // absences.status = 'cancel_requested'
+  const [pendingCancelReqs, setPendingCancelReqs] = useState([]); // absence_cancel_requests.status = 'pending'
+
   const [replList, setReplList] = useState([]);             // volontaires (pending) sur absences approuvées
   const [selectedShift, setSelectedShift] = useState({});   // {replacement_interest_id: "MIDDAY"}
   const [latestRepl, setLatestRepl] = useState(null);       // bannière: dernier volontariat reçu
@@ -163,7 +167,7 @@ export default function Admin() {
   };
   useEffect(() => { loadPendingAbs(); }, [todayIso]);
 
-  /* Annulations d'absence (cancel_requested) */
+  /* Annulations d'absence (modèle 1: column status) */
   const loadPendingCancelAbs = async () => {
     const { data } = await supabase
       .from("absences")
@@ -173,7 +177,35 @@ export default function Admin() {
       .order("date", { ascending: true });
     setPendingCancelAbs(data || []);
   };
-  useEffect(() => { loadPendingCancelAbs(); }, [todayIso]);
+
+  /* Annulations d'absence (modèle 2: table absence_cancel_requests) */
+  const loadPendingCancelReqs = async () => {
+    const { data, error } = await supabase
+      .from("absence_cancel_requests")
+      .select(`id, status, created_at, absence_id,
+               absences!inner(id, date, seller_id)`)
+      .eq("status", "pending")
+      .order("created_at", { ascending: false });
+    if (error) {
+      // table peut ne pas exister : ignorer
+      setPendingCancelReqs([]);
+      return;
+    }
+    // normaliser objets pour l'UI
+    const list = (data || []).map((r) => ({
+      _type: "acr",
+      acr_id: r.id,
+      id: r.absence_id,
+      seller_id: r.absences?.seller_id,
+      date: r.absences?.date,
+      reason: null,
+      status: "cancel_requested",
+      created_at: r.created_at,
+    }));
+    setPendingCancelReqs(list);
+  };
+
+  useEffect(() => { loadPendingCancelAbs(); loadPendingCancelReqs(); }, [todayIso]);
 
   /* Volontaires (absences approuvées) */
   const loadReplacements = async () => {
@@ -315,7 +347,7 @@ export default function Admin() {
   useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, refreshKey]);
   useEffect(() => { loadMonthAcceptedRepl(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [monthAbsences, monthUpcomingAbsences]);
 
-  /* Realtime : absences + replacement + leaves */
+  /* Realtime : absences + replacement + leaves + absence_cancel_requests (compat) */
   useEffect(() => {
     const chAbs = supabase
       .channel("absences_rt_admin")
@@ -354,7 +386,18 @@ export default function Admin() {
         await loadApprovedLeaves();
       }).subscribe();
 
-    return () => { supabase.removeChannel(chAbs); supabase.removeChannel(chRepl); supabase.removeChannel(chLeaves); };
+    const chAcr = supabase
+      .channel("acr_rt_admin")
+      .on("postgres_changes", { event: "*", schema: "public", table: "absence_cancel_requests" }, async () => {
+        await loadPendingCancelReqs();
+      }).subscribe();
+
+    return () => {
+      supabase.removeChannel(chAbs);
+      supabase.removeChannel(chRepl);
+      supabase.removeChannel(chLeaves);
+      supabase.removeChannel(chAcr);
+    };
   }, [todayIso]);
 
   /* Sauvegarde d'une affectation */
@@ -402,13 +445,13 @@ export default function Admin() {
     await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
   };
 
-  /* Actions annulation d'absence */
+  /* Actions annulation d'absence — modèle 1 (colonne status) */
   const approveCancelAbs = async (id) => {
     const { error } = await supabase.from("absences").update({ status: "cancelled" }).eq("id", id);
     if (error) { alert("Impossible d'approuver l'annulation."); return; }
     // Invalider propositions en cours liées
     await supabase.from("replacement_interest")
-      .update({ status: "void" })
+      .update({ status: "declined" })
       .eq("absence_id", id)
       .in("status", ["pending","accepted"])
       .catch(() => {});
@@ -425,54 +468,51 @@ export default function Admin() {
     await loadMonthUpcomingAbsences();
   };
 
-  /* Attribuer / Refuser volontaire */
-  const assignVolunteer = async (repl) => {
-    const shift = selectedShift[repl.id];
-    if (!shift) { alert("Choisis d’abord un créneau."); return; }
-
-    // 1) Mettre la volontaire dans le planning
-    const { error: errUpsert } = await supabase
-      .from("shifts")
-      .upsert({ date: repl.date, shift_code: shift, seller_id: repl.volunteer_id }, { onConflict: "date,shift_code" })
-      .select("date");
-    if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
-
-    // 2) Marquer cette proposition comme acceptée + stocker le créneau accepté
-    await supabase
-      .from("replacement_interest")
-      .update({ status: "accepted", accepted_shift_code: shift })
-      .eq("id", repl.id);
-
-    // 3) Les autres propositions deviennent 'declined'
-    await supabase
-      .from("replacement_interest")
-      .update({ status: "declined" })
-      .eq("absence_id", repl.absence_id)
-      .neq("id", repl.id);
-
-    // 4) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
-    const { data: absRow } = await supabase
+  /* Actions annulation — modèle 2 (table absence_cancel_requests) */
+  const approveCancelReq = async (acr_id, absence_id) => {
+    // 1) approuver la demande
+    const { error: up1 } = await supabase
+      .from("absence_cancel_requests")
+      .update({ status: "approved" })
+      .eq("id", acr_id);
+    if (up1) { alert("RLS: échec de mise à jour de la demande."); return; }
+    // 2) annuler l'absence
+    const { error: up2 } = await supabase
       .from("absences")
-      .select("status")
-      .eq("id", repl.absence_id)
-      .single();
-    if (absRow?.status !== "approved") {
-      await supabase.from("absences").update({ status: "approved" }).eq("id", repl.absence_id);
-    }
-
-    if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
-
-    // 5) Rafraîchir tous les blocs
-    setRefreshKey((k) => k + 1);
-    await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences(), loadMonthAcceptedRepl()]);
-    alert("Volontaire attribuée et absence approuvée.");
+      .update({ status: "cancelled" })
+      .eq("id", absence_id);
+    if (up2) { alert("RLS: échec d'annulation de l'absence."); }
+    // 3) invalider remplacements
+    await supabase.from("replacement_interest")
+      .update({ status: "declined" })
+      .eq("absence_id", absence_id)
+      .in("status", ["pending","accepted"])
+      .catch(() => {});
+    await loadPendingCancelReqs();
+    await loadPendingCancelAbs(); // au cas où
+    await loadReplacements();
   };
 
-  const declineVolunteer = async (replId) => {
-    const { error } = await supabase.from("replacement_interest").update({ status: "declined" }).eq("id", replId);
-    if (error) { console.error(error); alert("Impossible de refuser ce volontaire."); return; }
-    if (latestRepl && latestRepl.id === replId) setLatestRepl(null);
-    await loadReplacements(); await loadMonthAcceptedRepl();
+  const rejectCancelReq = async (acr_id, absence_id) => {
+    const { error } = await supabase
+      .from("absence_cancel_requests")
+      .update({ status: "rejected" })
+      .eq("id", acr_id);
+    if (error) { alert("RLS: échec rejet demande."); return; }
+    // revalider l'absence si besoin
+    await supabase.from("absences").update({ status: "approved" }).eq("id", absence_id).catch(() => {});
+    await loadPendingCancelReqs();
+    await loadPendingCancelAbs();
+  };
+
+  /* Gestion des congés (actions) */
+  const approveLeave = async (id) => {
+    const { error } = await supabase.from("leaves").update({ status: "approved" }).eq("id", id);
+    if (!error) { await loadPendingLeaves(); await loadApprovedLeaves(); } else { alert("Impossible d'approuver le congé."); }
+  };
+  const rejectLeave = async (id) => {
+    const { error } = await supabase.from("leaves").update({ status: "rejected" }).eq("id", id);
+    if (!error) { await loadPendingLeaves(); await loadApprovedLeaves(); } else { alert("Impossible de rejeter le congé."); }
   };
 
   /* Boutons colorés */
@@ -496,6 +536,7 @@ export default function Admin() {
     const count =
       (pendingAbs?.length || 0) +
       (pendingCancelAbs?.length || 0) +
+      (pendingCancelReqs?.length || 0) +
       (pendingLeaves?.length || 0) +
       (replList?.length || 0);
 
@@ -507,13 +548,14 @@ export default function Admin() {
     } else if (nav?.clearAppBadge) {
       nav.clearAppBadge().catch(() => {});
     }
-  }, [pendingAbs?.length, pendingCancelAbs?.length, pendingLeaves?.length, replList?.length]);
+  }, [pendingAbs?.length, pendingCancelAbs?.length, pendingCancelReqs?.length, pendingLeaves?.length, replList?.length]);
 
   // Regroupe les rechargements + efface la pastille à l’ouverture
   const reloadAll = useCallback(async () => {
     await Promise.all([
       loadPendingAbs?.(),
       loadPendingCancelAbs?.(),
+      loadPendingCancelReqs?.(),
       loadAbsencesToday?.(),
       loadReplacements?.(),
       loadPendingLeaves?.(),
@@ -529,6 +571,7 @@ export default function Admin() {
   }, [
     loadPendingAbs,
     loadPendingCancelAbs,
+    loadPendingCancelReqs,
     loadAbsencesToday,
     loadReplacements,
     loadPendingLeaves,
@@ -641,17 +684,18 @@ export default function Admin() {
         )}
       </div>
 
-      {/* Demandes d’annulation d’absence — en attente */}
+      {/* Demandes d’annulation d’absence — en attente (supporte 2 modèles) */}
       <div className="card">
         <div className="hdr mb-2">Demandes d’annulation d’absence — en attente</div>
-        {pendingCancelAbs.length === 0 ? (
+        {pendingCancelAbs.length === 0 && pendingCancelReqs.length === 0 ? (
           <div className="text-sm text-gray-600">Aucune demande d’annulation.</div>
         ) : (
           <div className="space-y-2">
+            {/* Modèle 1 : absences.status = cancel_requested */}
             {pendingCancelAbs.map((a) => {
               const name = nameFromId(a.seller_id);
               return (
-                <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                <div key={`abs-${a.id}`} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                   <div>
                     <div className="font-medium">{name}</div>
                     <div className="text-sm text-gray-600">
@@ -661,6 +705,25 @@ export default function Admin() {
                   <div className="flex gap-2">
                     <ApproveBtn onClick={() => approveCancelAbs(a.id)}>Approuver l’annulation</ApproveBtn>
                     <RejectBtn onClick={() => rejectCancelAbs(a.id)}>Rejeter l’annulation</RejectBtn>
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Modèle 2 : absence_cancel_requests */}
+            {pendingCancelReqs.map((a) => {
+              const name = nameFromId(a.seller_id);
+              return (
+                <div key={`acr-${a.acr_id}`} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                  <div>
+                    <div className="font-medium">{name}</div>
+                    <div className="text-sm text-gray-600">
+                      {a.date} — <span className="italic">annulation demandée (via demande)</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <ApproveBtn onClick={() => approveCancelReq(a.acr_id, a.id)}>Approuver l’annulation</ApproveBtn>
+                    <RejectBtn onClick={() => rejectCancelReq(a.acr_id, a.id)}>Rejeter l’annulation</RejectBtn>
                   </div>
                 </div>
               );
