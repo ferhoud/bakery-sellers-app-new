@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
@@ -29,6 +29,7 @@ const weekdayFR  = (d) => d.toLocaleDateString("fr-FR", { weekday: "long" });
 const capFirst   = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const betweenIso = (iso, start, end) => iso >= start && iso <= end;
 const frDate = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString("fr-FR"); } catch { return iso; } };
+function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "—"; }
 
 function Chip({ name }) {
   if (!name || name === "—") return <span className="text-sm text-gray-500">—</span>;
@@ -64,8 +65,11 @@ export default function Admin() {
   const [approvedLeaves, setApprovedLeaves] = useState([]); // congés approuvés (end_date >= today)
 
   // Absences approuvées du mois sélectionné
-  const [monthAbsences, setMonthAbsences] = useState([]);           // passées/aujourd’hui
-  const [monthUpcomingAbsences, setMonthUpcomingAbsences] = useState([]); // à venir
+  const [monthAbsences, setMonthAbsences] = useState([]);           // passées/aujourd’hui (items avec id)
+  const [monthUpcomingAbsences, setMonthUpcomingAbsences] = useState([]); // à venir (items avec id)
+
+  // Remplacements acceptés du mois (absence_id -> { volunteer_id, volunteer_name, shift })
+  const [monthAcceptedRepl, setMonthAcceptedRepl] = useState({});
 
   const [refreshKey, setRefreshKey] = useState(0);          // recalcul totaux mois
   const today = new Date();
@@ -219,7 +223,7 @@ export default function Admin() {
     const tIso = fmtISODate(new Date());
     const { data } = await supabase
       .from("absences")
-      .select("seller_id, date, status")
+      .select("id, seller_id, date, status")
       .eq("status", "approved")
       .gte("date", monthFrom)
       .lte("date", monthTo)
@@ -238,7 +242,7 @@ export default function Admin() {
     const tIso = fmtISODate(new Date());
     const { data } = await supabase
       .from("absences")
-      .select("seller_id, date, status")
+      .select("id, seller_id, date, status")
       .eq("status", "approved")
       .gte("date", monthFrom)
       .lte("date", monthTo)
@@ -253,8 +257,47 @@ export default function Admin() {
     setMonthUpcomingAbsences(uniq);
   };
 
+  // Remplacements acceptés pour les absences du mois (passées/à venir)
+  const loadMonthAcceptedRepl = async () => {
+    const ids = [
+      ...(monthAbsences || []).map(a => a.id),
+      ...(monthUpcomingAbsences || []).map(a => a.id),
+    ];
+    const uniq = Array.from(new Set(ids)).filter(Boolean);
+    if (uniq.length === 0) { setMonthAcceptedRepl({}); return; }
+
+    const { data: rows } = await supabase
+      .from("replacement_interest")
+      .select("absence_id, volunteer_id, accepted_shift_code")
+      .in("absence_id", uniq)
+      .eq("status", "accepted");
+
+    if (!rows || rows.length === 0) { setMonthAcceptedRepl({}); return; }
+
+    const vIds = Array.from(new Set(rows.map(r => r.volunteer_id).filter(Boolean)));
+    let names = {};
+    if (vIds.length) {
+      const { data: profs } = await supabase
+        .from("profiles")
+        .select("user_id, full_name")
+        .in("user_id", vIds);
+      (profs || []).forEach(p => { names[p.user_id] = p.full_name; });
+    }
+
+    const map = {};
+    rows.forEach(r => {
+      map[r.absence_id] = {
+        volunteer_id: r.volunteer_id,
+        volunteer_name: names[r.volunteer_id] || "—",
+        shift: r.accepted_shift_code || null,
+      };
+    });
+    setMonthAcceptedRepl(map);
+  };
+
   useEffect(() => { loadPendingLeaves(); loadLatestLeave(); loadApprovedLeaves(); }, [todayIso]);
   useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, refreshKey]);
+  useEffect(() => { loadMonthAcceptedRepl(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [monthAbsences, monthUpcomingAbsences]);
 
   /* Realtime : absences + replacement + leaves */
   useEffect(() => {
@@ -280,7 +323,7 @@ export default function Admin() {
             absent_name: absName.data?.full_name || "—", status: r.status,
           });
         }
-        loadReplacements();
+        loadReplacements(); loadMonthAcceptedRepl();
       }).subscribe();
 
     const chLeaves = supabase
@@ -330,15 +373,15 @@ export default function Admin() {
   const approveAbs = async (id) => {
     const { error } = await supabase.from("absences").update({ status: "approved" }).eq("id", id);
     if (error) { alert("Impossible d'approuver (RLS ?)"); return; }
-    await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences();
+    await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
   };
   const rejectAbs = async (id) => {
     const { error } = await supabase.from("absences").update({ status: "rejected" }).eq("id", id);
     if (error) { alert("Impossible de rejeter (RLS ?)"); return; }
-    await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences();
+    await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
   };
 
-    /* Attribuer / Refuser volontaire */
+  /* Attribuer / Refuser volontaire */
   const assignVolunteer = async (repl) => {
     const shift = selectedShift[repl.id];
     if (!shift) { alert("Choisis d’abord un créneau."); return; }
@@ -350,7 +393,7 @@ export default function Admin() {
       .select("date");
     if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
 
-    // 2) Marquer cette proposition comme acceptée et stocker le créneau accepté
+    // 2) Marquer cette proposition comme acceptée + stocker le créneau accepté
     await supabase
       .from("replacement_interest")
       .update({ status: "accepted", accepted_shift_code: shift })
@@ -363,7 +406,7 @@ export default function Admin() {
       .eq("absence_id", repl.absence_id)
       .neq("id", repl.id);
 
-    // 4) Si l’absence est encore 'pending', l’approuver
+    // 4) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
     const { data: absRow } = await supabase
       .from("absences")
       .select("status")
@@ -375,18 +418,17 @@ export default function Admin() {
 
     if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
 
-    // 5) Rafraîchir
+    // 5) Rafraîchir tous les blocs (y compris "à venir" du mois)
     setRefreshKey((k) => k + 1);
-    await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences()]);
+    await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences(), loadMonthAcceptedRepl()]);
     alert("Volontaire attribuée et absence approuvée.");
   };
-
 
   const declineVolunteer = async (replId) => {
     const { error } = await supabase.from("replacement_interest").update({ status: "declined" }).eq("id", replId);
     if (error) { console.error(error); alert("Impossible de refuser ce volontaire."); return; }
     if (latestRepl && latestRepl.id === replId) setLatestRepl(null);
-    await loadReplacements();
+    await loadReplacements(); await loadMonthAcceptedRepl();
   };
 
   /* Actions congé */
@@ -704,29 +746,41 @@ export default function Admin() {
       <div className="card">
         <div className="hdr mb-2">Absences approuvées — mois : {labelMonthFR(selectedMonth)}</div>
         {(() => {
+          if (!monthAbsences || monthAbsences.length === 0) {
+            return <div className="text-sm text-gray-600">Aucune absence (passée/aujourd’hui) sur ce mois.</div>;
+          }
+          // Grouper par vendeuse
           const bySeller = {};
           monthAbsences.forEach((a) => {
             if (!bySeller[a.seller_id]) bySeller[a.seller_id] = [];
-            bySeller[a.seller_id].push(a.date);
+            bySeller[a.seller_id].push(a);
           });
           const entries = Object.entries(bySeller);
-          if (entries.length === 0) {
-            return <div className="text-sm text-gray-600">Aucune absence (passée/aujourd’hui) sur ce mois.</div>;
-          }
           return (
-            <ul className="space-y-2">
-              {entries.map(([sid, dates]) => {
-                dates.sort((a, b) => a.localeCompare(b));
+            <div className="space-y-3">
+              {entries.map(([sid, arr]) => {
+                arr.sort((a, b) => a.date.localeCompare(b.date));
                 const name = nameFromId(sid);
-                const fr = dates.map(frDate);
-                const list = fr.length === 1 ? fr[0] : `${fr.slice(0, -1).join(", ")} et ${fr[fr.length - 1]}`;
                 return (
-                  <li key={sid} className="text-sm">
-                    <span className="font-medium">{name}</span> : {dates.length} jour(s) — {list}
-                  </li>
+                  <div key={sid} className="border rounded-2xl p-3">
+                    <div className="font-medium mb-1">{name}</div>
+                    <ul className="text-sm space-y-1">
+                      {arr.map((a) => {
+                        const repl = monthAcceptedRepl[a.id];
+                        return (
+                          <li key={a.id}>
+                            <span className="font-medium">{frDate(a.date)}</span>
+                            {repl ? (
+                              <> — <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
                 );
               })}
-            </ul>
+            </div>
           );
         })()}
       </div>
@@ -735,29 +789,43 @@ export default function Admin() {
       <div className="card">
         <div className="hdr mb-2">Absences approuvées à venir — mois : {labelMonthFR(selectedMonth)}</div>
         {(() => {
+          if (!monthUpcomingAbsences || monthUpcomingAbsences.length === 0) {
+            return <div className="text-sm text-gray-600">Aucune absence à venir sur ce mois.</div>;
+          }
+          // Grouper par vendeuse
           const bySeller = {};
           monthUpcomingAbsences.forEach((a) => {
             if (!bySeller[a.seller_id]) bySeller[a.seller_id] = [];
-            bySeller[a.seller_id].push(a.date);
+            bySeller[a.seller_id].push(a);
           });
           const entries = Object.entries(bySeller);
-          if (entries.length === 0) {
-            return <div className="text-sm text-gray-600">Aucune absence à venir sur ce mois.</div>;
-          }
           return (
-            <ul className="space-y-2">
-              {entries.map(([sid, dates]) => {
-                dates.sort((a, b) => a.localeCompare(b));
+            <div className="space-y-3">
+              {entries.map(([sid, arr]) => {
+                arr.sort((a, b) => a.date.localeCompare(b.date));
                 const name = nameFromId(sid);
-                const fr = dates.map(frDate);
-                const list = fr.length === 1 ? fr[0] : `${fr.slice(0, -1).join(", ")} et ${fr[fr.length - 1]}`;
                 return (
-                  <li key={sid} className="text-sm">
-                    <span className="font-medium">{name}</span> : {dates.length} jour(s) — {list}
-                  </li>
+                  <div key={sid} className="border rounded-2xl p-3">
+                    <div className="font-medium mb-1">{name}</div>
+                    <ul className="text-sm space-y-1">
+                      {arr.map((a) => {
+                        const repl = monthAcceptedRepl[a.id];
+                        return (
+                          <li key={a.id}>
+                            <span className="font-medium">{frDate(a.date)}</span>
+                            {repl ? (
+                              <> — <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
+                            ) : (
+                              <> — <span className="text-gray-500">pas de volontaire accepté</span></>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
                 );
               })}
-            </ul>
+            </div>
           );
         })()}
       </div>
