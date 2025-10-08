@@ -2,7 +2,7 @@
 
 import { notifyAdminsNewAbsence } from '../lib/pushNotify';
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
@@ -25,6 +25,15 @@ const frDate = (iso) => {
 };
 function firstDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function lastDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
+function labelForShift(code) {
+  switch (code) {
+    case "MORNING": return "Matin (6h30–13h30)";
+    case "MIDDAY": return "Midi (7h–13h)";
+    case "SUNDAY_EXTRA": return "Dimanche 9h–13h30";
+    case "EVENING": return "Soir (13h30–20h30)";
+    default: return code || "—";
+  }
+}
 
 export default function AppSeller() {
   const { session, profile, loading } = useAuth();
@@ -60,7 +69,7 @@ export default function AppSeller() {
   const myMonthFrom = fmtISODate(firstDayOfMonth(now));
   const myMonthTo = fmtISODate(lastDayOfMonth(now));
 
-  // Passées/aujourd’hui (approuvées)
+  // Passées (approuvées)
   const [myMonthAbs, setMyMonthAbs] = useState([]);
 
   // À venir (pending/approved), regroupées par date avec statut agrégé
@@ -68,8 +77,13 @@ export default function AppSeller() {
   const [myMonthUpcomingAbs, setMyMonthUpcomingAbs] = useState([]);
 
   // Remplacements acceptés pour MES absences (par absence_id)
-  // { [absence_id]: { volunteer_id, volunteer_name } }
+  // { [absence_id]: { volunteer_id, volunteer_name, shift: accepted_shift_code } }
   const [acceptedByAbsence, setAcceptedByAbsence] = useState({});
+
+  // Mes remplacements à venir (je suis volontaire accepté)
+  // [{ absence_id, date, absent_id, accepted_shift_code }]
+  const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
+  const [names, setNames] = useState({}); // user_id -> full_name
 
   /* Sécurité / redirections */
   useEffect(() => {
@@ -171,11 +185,11 @@ export default function AppSeller() {
       .channel("absences_rt_seller_pending_approved")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "absences" }, async (payload) => {
         const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
-        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted();
+        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl();
       })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "absences" }, async (payload) => {
         const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
-        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted();
+        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl();
       })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -230,8 +244,8 @@ export default function AppSeller() {
           const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", abs?.seller_id).single();
           setApprovalMsg({ absence_id: payload.new.absence_id, date: abs?.date, absent_name: prof?.full_name || "Une vendeuse" });
         }
-        // 👉 Dans tous les cas, recharge la carte "Vos absences à venir" (pour afficher "<NOM> a accepté...")
         await reloadAccepted();
+        await loadMyUpcomingRepl();
       }).subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [session?.user?.id]);
@@ -259,12 +273,12 @@ export default function AppSeller() {
       .eq("status", "approved").gte("end_date", todayIso).order("start_date", { ascending: true });
     if (!data) { setApprovedLeaves([]); return; }
     const ids = Array.from(new Set(data.map((l) => l.seller_id)));
-    let names = {};
+    let namesMap = {};
     if (ids.length > 0) {
       const { data: profs } = await supabase.from("profiles").select("user_id, full_name").in("user_id", ids);
-      (profs || []).forEach((p) => { names[p.user_id] = p.full_name; });
+      (profs || []).forEach((p) => { namesMap[p.user_id] = p.full_name; });
     }
-    setApprovedLeaves(data.map((l) => ({ ...l, seller_name: names[l.seller_id] || "—" })));
+    setApprovedLeaves(data.map((l) => ({ ...l, seller_name: namesMap[l.seller_id] || "—" })));
   };
   useEffect(() => { loadApprovedLeaves(); }, []);
   useEffect(() => {
@@ -274,7 +288,7 @@ export default function AppSeller() {
     return () => { supabase.removeChannel(chLeaves); };
   }, []);
 
-  /* ----------------- Mes absences approuvées — mois courant (passées/aujourd’hui) ----------------- */
+  /* ----------------- Mes absences approuvées — mois courant (passées uniquement) ----------------- */
   const loadMyMonthAbs = async () => {
     if (!session?.user?.id) return;
     const todayIso = fmtISODate(new Date());
@@ -285,7 +299,7 @@ export default function AppSeller() {
       .eq("status", "approved")
       .gte("date", myMonthFrom)
       .lte("date", myMonthTo)
-      .lt("date", todayIso); // seulement passées (exclut aujourd’hui)
+      .lt("date", todayIso); // passées uniquement
     const arr = Array.from(new Set((data || []).map((r) => r.date))).sort((a, b) => a.localeCompare(b));
     setMyMonthAbs(arr);
   };
@@ -298,10 +312,10 @@ export default function AppSeller() {
       .from("absences")
       .select("id, date, status")
       .eq("seller_id", session.user.id)
-      .in("status", ["approved", "pending"])   // on exclut "rejected"
+      .in("status", ["approved", "pending"])
       .gte("date", myMonthFrom)
       .lte("date", myMonthTo)
-      .gte("date", todayIso); // >= aujourd’hui
+      .gte("date", todayIso);
     const byDate = {};
     (data || []).forEach((r) => {
       if (!byDate[r.date]) byDate[r.date] = { ids: [], approved: false, pending: false };
@@ -325,7 +339,7 @@ export default function AppSeller() {
     const todayIso = fmtISODate(new Date());
     const { data: rows, error } = await supabase
       .from('replacement_interest')
-      .select('id, status, volunteer_id, absence_id, absences(id, seller_id, date)')
+      .select('id, status, volunteer_id, accepted_shift_code, absence_id, absences(id, seller_id, date)')
       .eq('status', 'accepted')
       .eq('absences.seller_id', session.user.id)
       .gte('absences.date', todayIso)
@@ -333,24 +347,65 @@ export default function AppSeller() {
     if (error) { setAcceptedByAbsence({}); return; }
 
     const volunteerIds = Array.from(new Set((rows || []).map(r => r.volunteer_id).filter(Boolean)));
-    let names = {};
+    let vnames = {};
     if (volunteerIds.length) {
       const { data: profs } = await supabase
         .from('profiles')
         .select('user_id, full_name')
         .in('user_id', volunteerIds);
-      (profs || []).forEach(p => { names[p.user_id] = p.full_name; });
+      (profs || []).forEach(p => { vnames[p.user_id] = p.full_name; });
     }
     const map = {};
     (rows || []).forEach(r => {
-      map[r.absence_id] = { volunteer_id: r.volunteer_id, volunteer_name: names[r.volunteer_id] || '—' };
+      map[r.absence_id] = {
+        volunteer_id: r.volunteer_id,
+        volunteer_name: vnames[r.volunteer_id] || '—',
+        shift: r.accepted_shift_code || null,
+      };
     });
     setAcceptedByAbsence(map);
   };
 
-  useEffect(() => { loadMyMonthAbs(); loadMyMonthUpcomingAbs(); reloadAccepted(); }, [session?.user?.id, myMonthFrom, myMonthTo]);
+  /* ----------------- Mes remplacements à venir (je suis la volontaire acceptée) ----------------- */
+  const loadMyUpcomingRepl = useCallback(async () => {
+    if (!session?.user?.id) return;
+    const todayIso = fmtISODate(new Date());
+    const { data: myReplRows } = await supabase
+      .from("replacement_interest")
+      .select("absence_id, volunteer_id, status, accepted_shift_code, absences(id, seller_id, date)")
+      .eq("volunteer_id", session.user.id)
+      .eq("status", "accepted")
+      .gte("absences.date", todayIso)
+      .order("absences.date", { ascending: true });
 
-  /* ----------------- SUPPRIMER une absence (aujourd’hui ou futur) ----------------- */
+    const absentIds = (myReplRows || [])
+      .map((r) => r.absences?.seller_id)
+      .filter(Boolean);
+
+    if (absentIds.length) {
+      const { data: profs } = await supabase
+        .from("profiles")
+        .select("user_id, full_name")
+        .in("user_id",(Array.from(new Set(absentIds))));
+      const map = {};
+      (profs || []).forEach((p) => (map[p.user_id] = p.full_name));
+      setNames((prev) => ({ ...prev, ...map }));
+    }
+
+    setMyUpcomingRepl(
+      (myReplRows || []).map((r) => ({
+        absence_id: r.absence_id,
+        date: r.absences?.date,
+        absent_id: r.absences?.seller_id,
+        accepted_shift_code: r.accepted_shift_code,
+      }))
+    );
+  }, [session?.user?.id]);
+
+  useEffect(() => { loadMyMonthAbs(); loadMyMonthUpcomingAbs(); reloadAccepted(); loadMyUpcomingRepl(); }, [session?.user?.id, myMonthFrom, myMonthTo, loadMyUpcomingRepl]);
+
+  /* ----------------- ANNULER une absence (aujourd’hui ou futur), même approuvée ----------------- */
+  // Utilise la RPC cancel_absence(p_absence_id uuid) si tu l'as créée (recommandé)
   const deleteMyAbsencesForDate = async (date) => {
     if (!session?.user?.id) return;
 
@@ -359,7 +414,7 @@ export default function AppSeller() {
       alert("Vous ne pouvez pas supprimer une absence déjà passée.");
       return;
     }
-    if (!window.confirm(`Supprimer votre absence du ${frDate(date)} ?`)) return;
+    if (!window.confirm(`Supprimer/annuler votre absence du ${frDate(date)} ?`)) return;
 
     // Récupérer toutes mes absences à cette date
     const { data: rows, error: qErr } = await supabase
@@ -371,40 +426,19 @@ export default function AppSeller() {
     const ids = (rows || []).map((r) => r.id);
     if (ids.length === 0) { alert("Aucune absence trouvée pour cette date."); return; }
 
-    // Si un remplacement est déjà ACCEPTÉ, on bloque
-    const { data: repl } = await supabase
-      .from("replacement_interest")
-      .select("id, status")
-      .in("absence_id", ids);
-    const hasAccepted = (repl || []).some((r) => r.status === "accepted");
-    if (hasAccepted) {
-      alert("Cette absence a déjà un remplacement validé. Merci de contacter l’admin pour l’annuler.");
-      return;
+    // Annuler proprement chaque absence via la RPC (gère approved + remplacement accepté)
+    for (const id of ids) {
+      const { error: rpcErr } = await supabase.rpc("cancel_absence", { p_absence_id: id });
+      if (rpcErr) { console.error(rpcErr); alert("Échec de l’annulation."); return; }
     }
-
-    // Supprimer d’abord les propositions (si présentes)
-    if ((repl || []).length > 0) {
-      const { error: delReplErr } = await supabase
-        .from("replacement_interest")
-        .delete()
-        .in("absence_id", ids);
-      if (delReplErr) { console.error(delReplErr); alert("Suppression des propositions impossible."); return; }
-    }
-
-    // Supprimer l’absence
-    const { error: delErr } = await supabase
-      .from("absences")
-      .delete()
-      .eq("seller_id", session.user.id)
-      .eq("date", date);
-    if (delErr) { console.error(delErr); alert("Suppression impossible (droits RLS ?)"); return; }
 
     await loadMyMonthUpcomingAbs();
     await loadMyMonthAbs();
     await reloadAccepted();
+    await loadMyUpcomingRepl();
     if (replAsk?.date === date) setReplAsk(null);
 
-    alert("Absence supprimée.");
+    alert("Absence annulée.");
   };
 
   // Réveil / retour au premier plan (inclut iOS PWA)
@@ -414,6 +448,7 @@ export default function AppSeller() {
         loadMyMonthAbs();
         loadMyMonthUpcomingAbs();
         reloadAccepted();
+        loadMyUpcomingRepl();
       }
     };
     window.addEventListener('focus', onWake);
@@ -434,6 +469,7 @@ export default function AppSeller() {
         loadMyMonthAbs();
         loadMyMonthUpcomingAbs();
         reloadAccepted();
+        loadMyUpcomingRepl();
       }
     };
     navigator.serviceWorker.addEventListener('message', handler);
@@ -456,15 +492,8 @@ export default function AppSeller() {
             <span className="font-medium">{replAsk.date}</span>. Voulez-vous la remplacer ?
           </div>
           <div className="flex gap-2">
-            <button className="btn" onClick={async () => {
-              const { error } = await supabase.from("replacement_interest").insert({
-                absence_id: replAsk.absence_id, volunteer_id: session.user.id, status: "pending",
-              });
-              if (error) { console.error(error); alert("Impossible d’enregistrer votre volontariat."); return; }
-              setReplAsk(null);
-              alert("Merci ! Votre proposition de remplacement a été envoyée à l’admin.");
-            }} style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>Oui</button>
-            <button className="btn" onClick={() => setReplAsk(null)}  style={{ backgroundColor: "#6b7280", color: "#fff", borderColor: "transparent" }}>Non</button>
+            <button className="btn" onClick={volunteerYes} style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>Oui</button>
+            <button className="btn" onClick={volunteerNo}  style={{ backgroundColor: "#6b7280", color: "#fff", borderColor: "transparent" }}>Non</button>
           </div>
         </div>
       )}
@@ -482,6 +511,22 @@ export default function AppSeller() {
                   style={{ backgroundColor: "#15803d", color: "#fff", borderColor: "transparent" }}>
             OK
           </button>
+        </div>
+      )}
+
+      {/* ✅ Nouvelle bannière persistante : mes remplacements à venir (reste tant que la date n'est pas passée) */}
+      {myUpcomingRepl.length > 0 && (
+        <div className="border rounded-2xl p-3"
+             style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
+          <div className="font-medium mb-2">Rappels — remplacements à venir</div>
+          <ul className="list-disc pl-6 space-y-1 text-sm">
+            {myUpcomingRepl.map((r) => (
+              <li key={r.absence_id}>
+                Tu remplaces <b>{names[r.absent_id] || "—"}</b> le <b>{r.date}</b>
+                {r.accepted_shift_code ? <> — <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(r.accepted_shift_code)}</span></> : null}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -510,7 +555,7 @@ export default function AppSeller() {
         )}
       </div>
 
-      {/* VOS ABSENCES (passées / aujourd’hui) */}
+      {/* VOS ABSENCES (passées) */}
       <div className="card">
         <div className="hdr mb-2">Vos absences ce mois</div>
         {myMonthAbs.length === 0 ? (
@@ -528,7 +573,7 @@ export default function AppSeller() {
         )}
       </div>
 
-      {/* VOS ABSENCES À VENIR (ce mois) + statuts + remplaçante acceptée + bouton Supprimer conditionnel */}
+      {/* ✅ VOS ABSENCES À VENIR (texte à côté de la date + bouton Supprimer même si “approved”) */}
       <div className="card">
         <div className="hdr mb-2">Vos absences à venir ce mois</div>
         {myMonthUpcomingAbs.length === 0 ? (
@@ -538,14 +583,25 @@ export default function AppSeller() {
             {myMonthUpcomingAbs.map(({ date, ids, status }) => {
               // Si un remplacement accepté existe pour cette date (pour n'importe quel id)
               let accepted;
+              let acceptedShift = null;
               for (const id of ids) {
-                if (acceptedByAbsence[id]) { accepted = acceptedByAbsence[id]; break; }
+                if (acceptedByAbsence[id]) {
+                  accepted = acceptedByAbsence[id];
+                  acceptedShift = acceptedByAbsence[id].shift || null;
+                  break;
+                }
               }
               return (
                 <li key={date} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                  <div>
-                    <div className="font-medium">{frDate(date)}</div>
-                    <div className="flex flex-wrap items-center gap-2 mt-1">
+                  <div className="text-sm">
+                    <b>{frDate(date)}</b>
+                    {/* Texte à côté de la date */}
+                    {accepted ? (
+                      <> — <b>{accepted.volunteer_name}</b> remplace <b>{profile?.full_name || "vous"}</b>
+                        {acceptedShift ? <> (<span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(acceptedShift)}</span>)</> : null}
+                      </>
+                    ) : null}
+                    <div className="mt-1">
                       {status === 'approved' ? (
                         <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: '#16a34a' }}>
                           Absence approuvée par l’administrateur
@@ -555,25 +611,18 @@ export default function AppSeller() {
                           En attente d’approbation
                         </span>
                       )}
-                      {accepted && (
-                        <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: '#2563eb' }}>
-                          {accepted.volunteer_name} a accepté de vous remplacer
-                        </span>
-                      )}
                     </div>
                   </div>
 
-                  {/* Bouton Supprimer : seulement pour "pending" */}
-                  {status === 'pending' ? (
-                    <button
-                      className="btn"
-                      onClick={() => deleteMyAbsencesForDate(date)}
-                      title={`Supprimer l'absence du ${frDate(date)}`}
-                      style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
-                    >
-                      Supprimer
-                    </button>
-                  ) : null}
+                  {/* ✅ Bouton Supprimer/Annuler : autorisé pour pending ET approved (date future/aujourd’hui) */}
+                  <button
+                    className="btn"
+                    onClick={() => deleteMyAbsencesForDate(date)}
+                    title={`Supprimer/annuler l'absence du ${frDate(date)}`}
+                    style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
+                  >
+                    Supprimer
+                  </button>
                 </li>
               );
             })}
