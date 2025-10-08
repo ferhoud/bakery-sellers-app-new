@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 
-// ⚠ serveur uniquement
+// serveur uniquement
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -22,25 +22,18 @@ async function getAuthUser(req) {
 }
 
 export default async function handler(req, res) {
-  // --- GET = mode peek/debug ---
+  // --- GET = peek/debug ---
   if (req.method === 'GET') {
     const user = await getAuthUser(req);
     if (!user) return res.status(401).json({ error: 'Unauthorized' });
     const date = String(req.query.date || '').trim();
-    const peek = String(req.query.peek || '0') === '1';
-
     if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       return res.status(400).json({ error: 'Invalid or missing date (YYYY-MM-DD)' });
     }
-
     const { data: absRows, error: selErr } = await supabaseAdmin
-      .from('absences')
-      .select('id, seller_id, date, status')
-      .eq('seller_id', user.id)
-      .eq('date', date);
-
+      .from('absences').select('id, seller_id, date, status')
+      .eq('seller_id', user.id).eq('date', date);
     if (selErr) return res.status(500).json({ error: selErr.message });
-
     return res.status(200).json({
       ok: true,
       mode: 'peek',
@@ -48,8 +41,7 @@ export default async function handler(req, res) {
       userId: user.id,
       date,
       found: (absRows || []).map(r => ({ id: r.id, status: r.status })),
-      count: absRows?.length || 0,
-      note: peek ? 'peek only' : undefined
+      count: absRows?.length || 0
     });
   }
 
