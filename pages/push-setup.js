@@ -42,7 +42,8 @@ export default function PushSetupPage() {
       try {
         // évite double registres
         const existing = await navigator.serviceWorker.getRegistration();
-        const registration = existing || (await navigator.serviceWorker.register('/sw.js'));
+        const registration = existing || (await navigator.serviceWorker.register('/sw.js?v=12'));
+
         if (unmounted) return;
         setReg(registration);
 
