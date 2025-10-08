@@ -405,38 +405,19 @@ export default function AppSeller() {
 
   /* ----------------- ANNULER une absence (direct, sans admin) ----------------- */
   const deleteMyAbsencesForDate = async (date) => {
-    if (!session?.user?.id) return;
+  if (!window.confirm(`Annuler votre absence du ${frDate(date)} ?`)) return;
+  const { data: { session: s } } = await supabase.auth.getSession();
+  const resp = await fetch('/api/absences/delete-by-date', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s?.access_token||''}` },
+    body: JSON.stringify({ date })
+  });
+  const json = await resp.json().catch(()=>({}));
+  if (!resp.ok || !json.ok) { alert(`Échec de l’annulation: ${json.error || resp.statusText}`); return; }
+  await Promise.all([loadMyMonthUpcomingAbs?.(), reloadAccepted?.(), loadMyUpcomingRepl?.()]);
+  alert('Absence annulée.');
+};
 
-    if (date < todayIso) {
-      alert("Vous ne pouvez pas annuler une absence déjà passée.");
-      return;
-    }
-    if (!window.confirm(`Annuler votre absence du ${frDate(date)} ?`)) return;
-
-    // Récupérer toutes mes absences à cette date
-    const { data: rows, error: qErr } = await supabase
-      .from("absences")
-      .select("id")
-      .eq("seller_id", session.user.id)
-      .eq("date", date);
-    if (qErr) { console.error(qErr); alert("Lecture impossible."); return; }
-    const ids = (rows || []).map((r) => r.id);
-    if (ids.length === 0) { alert("Aucune absence trouvée pour cette date."); return; }
-
-    // Invalider/supprimer les propositions liées (sécurisant si la FK n'est pas en ON DELETE CASCADE)
-    await supabase.from("replacement_interest").delete().in("absence_id", ids).catch(() => {});
-
-    // Supprimer l’absence
-    const { error: delErr } = await supabase.from("absences").delete().in("id", ids);
-    if (delErr) { console.error(delErr); alert("Échec de l’annulation (RLS ?)"); return; }
-
-    alert("Absence annulée.");
-    await Promise.all([
-      loadMyMonthUpcomingAbs?.(),
-      reloadAccepted?.(),
-      loadMyUpcomingRepl?.()
-    ]);
-  };
 
   // Réveil / retour au premier plan (inclut iOS PWA)
   useEffect(() => {
