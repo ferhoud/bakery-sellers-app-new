@@ -1,5 +1,5 @@
 // public/sw.js
-const SW_VERSION = 'v12';
+const SW_VERSION = 'v13';
 
 // Active immédiatement cette version
 self.addEventListener('install', () => self.skipWaiting());
