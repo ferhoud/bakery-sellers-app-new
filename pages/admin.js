@@ -1,6 +1,5 @@
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import Link from "next/link";
-
-import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
@@ -105,45 +104,43 @@ export default function Admin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monday]);
 
-  /* Absences d'aujourd'hui */
+  /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
   const loadAbsencesToday = async () => {
-  const { data: abs } = await supabase
-    .from("absences")
-    .select("id, seller_id, status, reason, date")
-    .eq("date", todayIso)
-    .in("status", ["pending", "approved"]);
+    const { data: abs } = await supabase
+      .from("absences")
+      .select("id, seller_id, status, reason, date")
+      .eq("date", todayIso)
+      .in("status", ["pending", "approved"]);
 
-  // Chercher, pour ces absences d'aujourd'hui, un remplacement ACCEPTÉ
-  const ids = (abs || []).map(a => a.id);
-  let mapRepl = {};
-  if (ids.length > 0) {
-    const { data: repl } = await supabase
-      .from("replacement_interest")
-      .select("absence_id, volunteer_id, status")
-      .in("absence_id", ids)
-      .eq("status", "accepted");
+    const ids = (abs || []).map(a => a.id);
+    let mapRepl = {};
+    if (ids.length > 0) {
+      const { data: repl } = await supabase
+        .from("replacement_interest")
+        .select("absence_id, volunteer_id, status")
+        .in("absence_id", ids)
+        .eq("status", "accepted");
 
-    const volunteerIds = Array.from(new Set((repl || []).map(r => r.volunteer_id)));
-    let names = {};
-    if (volunteerIds.length) {
-      const { data: profs } = await supabase
-        .from("profiles")
-        .select("user_id, full_name")
-        .in("user_id", volunteerIds);
-      (profs || []).forEach(p => { names[p.user_id] = p.full_name; });
+      const volunteerIds = Array.from(new Set((repl || []).map(r => r.volunteer_id)));
+      let names = {};
+      if (volunteerIds.length) {
+        const { data: profs } = await supabase
+          .from("profiles")
+          .select("user_id, full_name")
+          .in("user_id", volunteerIds);
+        (profs || []).forEach(p => { names[p.user_id] = p.full_name; });
+      }
+      (repl || []).forEach(r => {
+        mapRepl[r.absence_id] = {
+          volunteer_id: r.volunteer_id,
+          volunteer_name: names[r.volunteer_id] || "—",
+        };
+      });
     }
-    (repl || []).forEach(r => {
-      mapRepl[r.absence_id] = {
-        volunteer_id: r.volunteer_id,
-        volunteer_name: names[r.volunteer_id] || "—",
-      };
-    });
-  }
 
-  const rows = (abs || []).map(a => ({ ...a, replacement: mapRepl[a.id] || null }));
-  setAbsencesToday(rows);
-};
-
+    const rows = (abs || []).map(a => ({ ...a, replacement: mapRepl[a.id] || null }));
+    setAbsencesToday(rows);
+  };
   useEffect(() => { loadAbsencesToday(); }, [todayIso]);
 
   /* Absences en attente (toutes à venir) */
@@ -219,43 +216,42 @@ export default function Admin() {
 
   /* ======= ABSENCES DU MOIS (APPROUVÉES) ======= */
   const loadMonthAbsences = async () => {
-  const tIso = fmtISODate(new Date());
-  const { data } = await supabase
-    .from("absences")
-    .select("seller_id, date, status")
-    .eq("status", "approved")
-    .gte("date", monthFrom)
-    .lte("date", monthTo)
-    .lte("date", tIso); // passées/aujourd’hui
+    const tIso = fmtISODate(new Date());
+    const { data } = await supabase
+      .from("absences")
+      .select("seller_id, date, status")
+      .eq("status", "approved")
+      .gte("date", monthFrom)
+      .lte("date", monthTo)
+      .lte("date", tIso); // passées/aujourd’hui
 
-  const seen = new Set();
-  const uniq = [];
-  (data || []).forEach(r => {
-    const key = `${r.seller_id}|${r.date}`;
-    if (!seen.has(key)) { seen.add(key); uniq.push(r); }
-  });
-  setMonthAbsences(uniq);
-};
+    const seen = new Set();
+    const uniq = [];
+    (data || []).forEach(r => {
+      const key = `${r.seller_id}|${r.date}`;
+      if (!seen.has(key)) { seen.add(key); uniq.push(r); }
+    });
+    setMonthAbsences(uniq);
+  };
 
   const loadMonthUpcomingAbsences = async () => {
-  const tIso = fmtISODate(new Date());
-  const { data } = await supabase
-    .from("absences")
-    .select("seller_id, date, status")
-    .eq("status", "approved")
-    .gte("date", monthFrom)
-    .lte("date", monthTo)
-    .gt("date", tIso); // futures
+    const tIso = fmtISODate(new Date());
+    const { data } = await supabase
+      .from("absences")
+      .select("seller_id, date, status")
+      .eq("status", "approved")
+      .gte("date", monthFrom)
+      .lte("date", monthTo)
+      .gt("date", tIso); // futures
 
-  const seen = new Set();
-  const uniq = [];
-  (data || []).forEach(r => {
-    const key = `${r.seller_id}|${r.date}`;
-    if (!seen.has(key)) { seen.add(key); uniq.push(r); }
-  });
-  setMonthUpcomingAbsences(uniq);
-};
-
+    const seen = new Set();
+    const uniq = [];
+    (data || []).forEach(r => {
+      const key = `${r.seller_id}|${r.date}`;
+      if (!seen.has(key)) { seen.add(key); uniq.push(r); }
+    });
+    setMonthUpcomingAbsences(uniq);
+  };
 
   useEffect(() => { loadPendingLeaves(); loadLatestLeave(); loadApprovedLeaves(); }, [todayIso]);
   useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, refreshKey]);
@@ -344,37 +340,37 @@ export default function Admin() {
 
   /* Attribuer / Refuser volontaire */
   const assignVolunteer = async (repl) => {
-  const shift = selectedShift[repl.id];
-  if (!shift) { alert("Choisis d’abord un créneau."); return; }
+    const shift = selectedShift[repl.id];
+    if (!shift) { alert("Choisis d’abord un créneau."); return; }
 
-  // 1) Mettre la volontaire dans le planning
-  const { error: errUpsert } = await supabase
-    .from("shifts")
-    .upsert({ date: repl.date, shift_code: shift, seller_id: repl.volunteer_id }, { onConflict: "date,shift_code" })
-    .select("date");
-  if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
+    // 1) Mettre la volontaire dans le planning
+    const { error: errUpsert } = await supabase
+      .from("shifts")
+      .upsert({ date: repl.date, shift_code: shift, seller_id: repl.volunteer_id }, { onConflict: "date,shift_code" })
+      .select("date");
+    if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
 
-  // 2) Marquer cette proposition comme acceptée et les autres comme refusées
-  await supabase.from("replacement_interest").update({ status: "accepted" }).eq("id", repl.id);
-  await supabase.from("replacement_interest").update({ status: "declined" }).eq("absence_id", repl.absence_id).neq("id", repl.id);
+    // 2) Marquer cette proposition comme acceptée et les autres comme refusées
+    await supabase.from("replacement_interest").update({ status: "accepted" }).eq("id", repl.id);
+    await supabase.from("replacement_interest").update({ status: "declined" }).eq("absence_id", repl.absence_id).neq("id", repl.id);
 
-  // 3) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
-  const { data: absRow } = await supabase
-    .from("absences")
-    .select("status")
-    .eq("id", repl.absence_id)
-    .single();
-  if (absRow?.status !== "approved") {
-    await supabase.from("absences").update({ status: "approved" }).eq("id", repl.absence_id);
-  }
+    // 3) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
+    const { data: absRow } = await supabase
+      .from("absences")
+      .select("status")
+      .eq("id", repl.absence_id)
+      .single();
+    if (absRow?.status !== "approved") {
+      await supabase.from("absences").update({ status: "approved" }).eq("id", repl.absence_id);
+    }
 
-  if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
+    if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
 
-  // 4) Rafraîchir tous les blocs (y compris "à venir" du mois)
-  setRefreshKey((k) => k + 1);
-  await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences()]);
-  alert("Volontaire attribuée et absence approuvée.");
-};
+    // 4) Rafraîchir tous les blocs (y compris "à venir" du mois)
+    setRefreshKey((k) => k + 1);
+    await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences()]);
+    alert("Volontaire attribuée et absence approuvée.");
+  };
 
   const declineVolunteer = async (replId) => {
     const { error } = await supabase.from("replacement_interest").update({ status: "declined" }).eq("id", replId);
@@ -401,19 +397,83 @@ export default function Admin() {
   const ApproveBtn = ({ onClick }) => <button className="btn" onClick={onClick} style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>Approuver</button>;
   const RejectBtn  = ({ onClick }) => <button className="btn" onClick={onClick} style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>Rejeter</button>;
 
+  /* ---------- 🔔 BADGE + REFRESH AUTO (ajouts) ---------- */
+
+  // Recalcule la pastille selon les éléments en attente
+  useEffect(() => {
+    const count =
+      (pendingAbs?.length || 0) +
+      (pendingLeaves?.length || 0) +
+      (replList?.length || 0);
+
+    const nav = typeof navigator !== 'undefined' ? navigator : null;
+    if (!nav) return;
+
+    if (count > 0 && nav.setAppBadge) {
+      nav.setAppBadge(count).catch(() => {});
+    } else if (nav?.clearAppBadge) {
+      nav.clearAppBadge().catch(() => {});
+    }
+  }, [pendingAbs?.length, pendingLeaves?.length, replList?.length]);
+
+  // Regroupe tous les rechargements + efface la pastille à l’ouverture
+  const reloadAll = useCallback(async () => {
+    await Promise.all([
+      loadPendingAbs?.(),
+      loadAbsencesToday?.(),
+      loadReplacements?.(),
+      loadPendingLeaves?.(),
+      loadApprovedLeaves?.(),
+      loadMonthAbsences?.(),
+      loadMonthUpcomingAbsences?.(),
+    ]);
+    setRefreshKey((k) => k + 1);
+
+    if (typeof navigator !== 'undefined' && navigator.clearAppBadge) {
+      try { await navigator.clearAppBadge(); } catch {}
+    }
+  }, [
+    loadPendingAbs,
+    loadAbsencesToday,
+    loadReplacements,
+    loadPendingLeaves,
+    loadApprovedLeaves,
+    loadMonthAbsences,
+    loadMonthUpcomingAbsences,
+  ]);
+
+  // Recharge quand l’app revient au premier plan
+  useEffect(() => {
+    const onWake = () => reloadAll();
+    window.addEventListener('focus', onWake);
+    document.addEventListener('visibilitychange', onWake);
+    return () => {
+      window.removeEventListener('focus', onWake);
+      document.removeEventListener('visibilitychange', onWake);
+    };
+  }, [reloadAll]);
+
+  // Écoute les messages du Service Worker (reçu à chaque push) → recharge
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return;
+    const handler = (e) => {
+      if (e?.data?.type === 'push') reloadAll();
+    };
+    navigator.serviceWorker.addEventListener('message', handler);
+    return () => navigator.serviceWorker.removeEventListener('message', handler);
+  }, [reloadAll]);
+
+  /* ----------------- UI ----------------- */
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-  <div className="hdr">
-    Compte: {profile?.full_name || "—"} <span className="sub">(admin)</span>
-  </div>
- <div className="flex items-center gap-2">
-  <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gérer les vendeuses</a></Link>
-  <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
-  <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
-</div>
-
-
+        <div className="hdr">Compte: {profile?.full_name || "—"} <span className="sub">(admin)</span></div>
+        <div className="flex items-center gap-2">
+          <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
+          <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
+          <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
+        </div>
+      </div>
 
       {/* BANNIÈRE : Demande de congé (la plus récente) */}
       {latestLeave && (
@@ -451,21 +511,20 @@ export default function Admin() {
         <div className="hdr mb-2">Absences aujourd’hui</div>
         {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourd’hui</div> : (
           <ul className="list-disc pl-6 space-y-1">
-  {absencesToday.map((a) => (
-    <li key={a.id}>
-      <Chip name={nameFromId(a.seller_id)} /> — {a.status}
-      {a.reason ? ` · ${a.reason}` : ""}
-      {a.replacement ? (
-        <>
-          {" · "}
-          <span>Remplacement accepté : </span>
-          <Chip name={a.replacement.volunteer_name} />
-        </>
-      ) : null}
-    </li>
-  ))}
-</ul>
-
+            {absencesToday.map((a) => (
+              <li key={a.id}>
+                <Chip name={nameFromId(a.seller_id)} /> — {a.status}
+                {a.reason ? ` · ${a.reason}` : ""}
+                {a.replacement ? (
+                  <>
+                    {" · "}
+                    <span>Remplacement accepté : </span>
+                    <Chip name={a.replacement.volunteer_name} />
+                  </>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 
@@ -604,15 +663,32 @@ export default function Admin() {
         <div className="grid sm:grid-cols-3 gap-3 items-center">
           <div className="sm:col-span-2">
             <div className="text-sm mb-1">Mois</div>
-            <input type="month" className="input" value={monthInputValue(selectedMonth)} onChange={(e) => {
-              const [y, m] = e.target.value.split("-").map(Number); setSelectedMonth(new Date(y, m - 1, 1)); }} />
+            <input
+              type="month"
+              className="input"
+              value={monthInputValue(selectedMonth)}
+              onChange={(e) => {
+                const [y, m] = e.target.value.split("-").map(Number);
+                setSelectedMonth(new Date(y, m - 1, 1));
+              }}
+            />
           </div>
-          <div className="text-sm text-gray-600">Mois sélectionné : <span className="font-medium">{labelMonthFR(selectedMonth)}</span></div>
+          <div className="text-sm text-gray-600">
+            Mois sélectionné : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>
+          </div>
         </div>
       </div>
 
       {/* Totaux */}
-      <TotalsGrid sellers={sellers} days={days} assign={assign} monthFrom={monthFrom} monthTo={monthTo} monthLabel={labelMonthFR(selectedMonth)} refreshKey={refreshKey} />
+      <TotalsGrid
+        sellers={sellers}
+        days={days}
+        assign={assign}
+        monthFrom={monthFrom}
+        monthTo={monthTo}
+        monthLabel={labelMonthFR(selectedMonth)}
+        refreshKey={refreshKey}
+      />
 
       {/* Absences approuvées — MOIS (passées / aujourd’hui) */}
       <div className="card">
@@ -630,7 +706,7 @@ export default function Admin() {
           return (
             <ul className="space-y-2">
               {entries.map(([sid, dates]) => {
-                dates.sort((a,b)=>a.localeCompare(b));
+                dates.sort((a, b) => a.localeCompare(b));
                 const name = nameFromId(sid);
                 const fr = dates.map(frDate);
                 const list = fr.length === 1 ? fr[0] : `${fr.slice(0, -1).join(", ")} et ${fr[fr.length - 1]}`;
@@ -645,7 +721,7 @@ export default function Admin() {
         })()}
       </div>
 
-      {/* === NOUVEAU : Absences approuvées à venir — MOIS (dates futures) === */}
+      {/* Absences approuvées à venir — MOIS (dates futures) */}
       <div className="card">
         <div className="hdr mb-2">Absences approuvées à venir — mois : {labelMonthFR(selectedMonth)}</div>
         {(() => {
@@ -661,7 +737,7 @@ export default function Admin() {
           return (
             <ul className="space-y-2">
               {entries.map(([sid, dates]) => {
-                dates.sort((a,b)=>a.localeCompare(b));
+                dates.sort((a, b) => a.localeCompare(b));
                 const name = nameFromId(sid);
                 const fr = dates.map(frDate);
                 const list = fr.length === 1 ? fr[0] : `${fr.slice(0, -1).join(", ")} et ${fr[fr.length - 1]}`;
@@ -691,7 +767,11 @@ function ShiftSelect({ dateStr, value, onChange }) {
   return (
     <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
       <option value="">— Choisir un créneau —</option>
-      {options.map(op => <option key={op.code} value={op.code}>{op.label}</option>)}
+      {options.map((op) => (
+        <option key={op.code} value={op.code}>
+          {op.label}
+        </option>
+      ))}
     </select>
   );
 }
@@ -728,9 +808,15 @@ function ShiftRow({ label, iso, code, value, onChange, sellers, chipName }) {
       <div className="text-sm">{label}</div>
       <select className="select" value={value} onChange={(e) => onChange(iso, code, e.target.value || null)}>
         <option value="">— Choisir vendeuse —</option>
-        {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
+        {sellers.map((s) => (
+          <option key={s.user_id} value={s.user_id}>
+            {s.full_name}
+          </option>
+        ))}
       </select>
-      <div><Chip name={chipName} /></div>
+      <div>
+        <Chip name={chipName} />
+      </div>
     </div>
   );
 }
@@ -759,15 +845,29 @@ function TotalsGrid({ sellers, days, assign, monthFrom, monthTo, monthLabel, ref
         const mq = await supabase.from("shifts").select("date, shift_code, seller_id").gte("date", monthFrom).lte("date", monthTo);
         const rows = mq.data || [];
         const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
-        rows.forEach((r) => { if (!r.seller_id) return; const hrs = SHIFT_HOURS[r.shift_code] || 0; dict[r.seller_id] = (dict[r.seller_id] || 0) + hrs; });
+        rows.forEach((r) => {
+          if (!r.seller_id) return;
+          const hrs = SHIFT_HOURS[r.shift_code] || 0;
+          dict[r.seller_id] = (dict[r.seller_id] || 0) + hrs;
+        });
         if (!cancelled) setMonthTotals(dict);
-      } finally { if (!cancelled) setLoading(false); }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     };
     run();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [sellers, monthFrom, monthTo, refreshKey]);
 
-  if (!sellers || sellers.length === 0) return (<div className="card"><div className="hdr mb-2">Total heures vendeuses</div><div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div></div>);
+  if (!sellers || sellers.length === 0)
+    return (
+      <div className="card">
+        <div className="hdr mb-2">Total heures vendeuses</div>
+        <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
+      </div>
+    );
   return (
     <div className="card">
       <div className="hdr mb-1">Total heures — semaine affichée & mois : {monthLabel}</div>
@@ -778,7 +878,9 @@ function TotalsGrid({ sellers, days, assign, monthFrom, monthTo, monthLabel, ref
           const month = monthTotals[s.user_id] || 0;
           return (
             <div key={s.user_id} className="border rounded-2xl p-3 space-y-2">
-              <div className="flex items-center justify-between"><Chip name={s.full_name} /></div>
+              <div className="flex items-center justify-between">
+                <Chip name={s.full_name} />
+              </div>
               <div className="text-sm text-gray-600">Semaine</div>
               <div className="text-2xl font-semibold">{week}</div>
               <div className="text-sm text-gray-600 mt-2">Mois ({monthLabel})</div>
