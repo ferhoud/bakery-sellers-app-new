@@ -85,6 +85,10 @@ export default function AppSeller() {
   const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
   const [names, setNames] = useState({}); // user_id -> full_name
 
+  // Mes demandes d’annulation (en attente), par absence_id
+  // { [absence_id]: 'pending' }
+  const [myCancelReqs, setMyCancelReqs] = useState({});
+
   /* Sécurité / redirections */
   useEffect(() => {
     if (loading) return;
@@ -185,11 +189,11 @@ export default function AppSeller() {
       .channel("absences_rt_seller_pending_approved")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "absences" }, async (payload) => {
         const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
-        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl();
+        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl(); await loadMyCancelRequests();
       })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "absences" }, async (payload) => {
         const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
-        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl();
+        await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl(); await loadMyCancelRequests();
       })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -229,7 +233,6 @@ export default function AppSeller() {
   /* ----------------- mémoriser les “validé” déjà vus (localStorage) ----------------- */
   const seenKey = (absenceId) => `ri_seen_${absenceId}`;
   const isSeen = (absenceId) => typeof window !== "undefined" && localStorage.getItem(seenKey(absenceId)) === "1";
-  const markSeen = (absenceId) => { if (typeof window !== "undefined") localStorage.setItem(seenKey(absenceId), "1"); };
 
   /* ----------------- NOTIF “VALIDÉ” pour la volontaire (temps réel) ----------------- */
   useEffect(() => {
@@ -402,19 +405,37 @@ export default function AppSeller() {
     );
   }, [session?.user?.id]);
 
-  useEffect(() => { loadMyMonthAbs(); loadMyMonthUpcomingAbs(); reloadAccepted(); loadMyUpcomingRepl(); }, [session?.user?.id, myMonthFrom, myMonthTo, loadMyUpcomingRepl]);
+  /* ----------------- Mes demandes d’annulation (en attente) ----------------- */
+  const loadMyCancelRequests = useCallback(async () => {
+    if (!session?.user?.id) return;
+    const { data } = await supabase
+      .from("absence_cancel_requests")
+      .select("absence_id, status")
+      .eq("requester_id", session.user.id)
+      .eq("status", "pending");
+    const map = {};
+    (data || []).forEach((r) => { map[r.absence_id] = r.status; });
+    setMyCancelReqs(map);
+  }, [session?.user?.id]);
 
-  /* ----------------- ANNULER une absence (aujourd’hui ou futur), même approuvée ----------------- */
-  // Utilise la RPC cancel_absence(p_absence_id uuid) si tu l'as créée (recommandé)
+  useEffect(() => {
+    loadMyMonthAbs();
+    loadMyMonthUpcomingAbs();
+    reloadAccepted();
+    loadMyUpcomingRepl();
+    loadMyCancelRequests();
+  }, [session?.user?.id, myMonthFrom, myMonthTo, loadMyUpcomingRepl, loadMyCancelRequests]);
+
+  /* ----------------- DEMANDER l’annulation (aujourd’hui ou futur), même approuvée ----------------- */
   const deleteMyAbsencesForDate = async (date) => {
     if (!session?.user?.id) return;
 
     const todayIso = fmtISODate(new Date());
     if (date < todayIso) {
-      alert("Vous ne pouvez pas supprimer une absence déjà passée.");
+      alert("Vous ne pouvez pas annuler une absence déjà passée.");
       return;
     }
-    if (!window.confirm(`Supprimer/annuler votre absence du ${frDate(date)} ?`)) return;
+    if (!window.confirm(`Demander l'annulation de votre absence du ${frDate(date)} ?`)) return;
 
     // Récupérer toutes mes absences à cette date
     const { data: rows, error: qErr } = await supabase
@@ -426,19 +447,32 @@ export default function AppSeller() {
     const ids = (rows || []).map((r) => r.id);
     if (ids.length === 0) { alert("Aucune absence trouvée pour cette date."); return; }
 
-    // Annuler proprement chaque absence via la RPC (gère approved + remplacement accepté)
+    // Créer une demande d’annulation pour chaque absence (si pas déjà en attente)
     for (const id of ids) {
-      const { error: rpcErr } = await supabase.rpc("cancel_absence", { p_absence_id: id });
-      if (rpcErr) { console.error(rpcErr); alert("Échec de l’annulation."); return; }
+      if (myCancelReqs[id] === 'pending') continue; // déjà demandée
+
+      const { data: existing } = await supabase
+        .from("absence_cancel_requests")
+        .select("id, status")
+        .eq("absence_id", id)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (existing && existing[0] && existing[0].status === "pending") continue;
+
+      const { error: insErr } = await supabase
+        .from("absence_cancel_requests")
+        .insert({
+          absence_id: id,
+          requester_id: session.user.id,
+          reason: null,
+          status: "pending",
+        });
+      if (insErr) { console.error(insErr); alert("Échec de la demande d’annulation."); return; }
     }
 
-    await loadMyMonthUpcomingAbs();
-    await loadMyMonthAbs();
-    await reloadAccepted();
-    await loadMyUpcomingRepl();
-    if (replAsk?.date === date) setReplAsk(null);
-
-    alert("Absence annulée.");
+    await loadMyCancelRequests();
+    alert("Demande d’annulation envoyée à l’administrateur.");
   };
 
   // Réveil / retour au premier plan (inclut iOS PWA)
@@ -449,6 +483,7 @@ export default function AppSeller() {
         loadMyMonthUpcomingAbs();
         reloadAccepted();
         loadMyUpcomingRepl();
+        loadMyCancelRequests();
       }
     };
     window.addEventListener('focus', onWake);
@@ -470,6 +505,7 @@ export default function AppSeller() {
         loadMyMonthUpcomingAbs();
         reloadAccepted();
         loadMyUpcomingRepl();
+        loadMyCancelRequests();
       }
     };
     navigator.serviceWorker.addEventListener('message', handler);
@@ -507,17 +543,28 @@ export default function AppSeller() {
             <span className="font-medium">{approvalMsg.date}</span> a été <span className="font-medium">validé</span>.
           </div>
           <button className="btn"
-                  onClick={() => { if (approvalMsg?.absence_id) { localStorage.setItem(`ri_seen_${approvalMsg.absence_id}`, "1"); } setApprovalMsg(null); }}
+                  onClick={async () => {
+                    try {
+                      if (approvalMsg?.absence_id) {
+                        const { error } = await supabase.rpc("acknowledge_replacement", { p_absence_id: approvalMsg.absence_id });
+                        if (error) console.warn("acknowledge_replacement failed, fallback to localStorage", error);
+                        localStorage.setItem(`ri_seen_${approvalMsg.absence_id}`, "1");
+                      }
+                    } finally {
+                      setApprovalMsg(null);
+                      await loadMyUpcomingRepl();
+                    }
+                  }}
                   style={{ backgroundColor: "#15803d", color: "#fff", borderColor: "transparent" }}>
             OK
           </button>
         </div>
       )}
 
-      {/* ✅ Nouvelle bannière persistante : mes remplacements à venir (reste tant que la date n'est pas passée) */}
+      {/* 🟨 Bannière persistante : mes remplacements à venir (reste tant que la date n'est pas passée) */}
       {myUpcomingRepl.length > 0 && (
         <div className="border rounded-2xl p-3"
-             style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
+             style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}>
           <div className="font-medium mb-2">Rappels — remplacements à venir</div>
           <ul className="list-disc pl-6 space-y-1 text-sm">
             {myUpcomingRepl.map((r) => (
@@ -573,7 +620,7 @@ export default function AppSeller() {
         )}
       </div>
 
-      {/* ✅ VOS ABSENCES À VENIR (texte à côté de la date + bouton Supprimer même si “approved”) */}
+      {/* VOS ABSENCES À VENIR (texte + badge + bouton d’annulation) */}
       <div className="card">
         <div className="hdr mb-2">Vos absences à venir ce mois</div>
         {myMonthUpcomingAbs.length === 0 ? (
@@ -581,7 +628,7 @@ export default function AppSeller() {
         ) : (
           <ul className="space-y-2">
             {myMonthUpcomingAbs.map(({ date, ids, status }) => {
-              // Si un remplacement accepté existe pour cette date (pour n'importe quel id)
+              // Remplaçante acceptée ?
               let accepted;
               let acceptedShift = null;
               for (const id of ids) {
@@ -591,17 +638,19 @@ export default function AppSeller() {
                   break;
                 }
               }
+              // Demande d'annulation déjà en attente pour l'une des absences de cette date ?
+              const hasPendingCancel = ids.some((id) => myCancelReqs[id] === 'pending');
+
               return (
                 <li key={date} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                   <div className="text-sm">
                     <b>{frDate(date)}</b>
-                    {/* Texte à côté de la date */}
                     {accepted ? (
                       <> — <b>{accepted.volunteer_name}</b> remplace <b>{profile?.full_name || "vous"}</b>
                         {acceptedShift ? <> (<span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(acceptedShift)}</span>)</> : null}
                       </>
                     ) : null}
-                    <div className="mt-1">
+                    <div className="mt-1 flex flex-wrap gap-2">
                       {status === 'approved' ? (
                         <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: '#16a34a' }}>
                           Absence approuvée par l’administrateur
@@ -611,17 +660,27 @@ export default function AppSeller() {
                           En attente d’approbation
                         </span>
                       )}
+                      {hasPendingCancel && (
+                        <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#fef3c7', color: '#92400e', border: '1px solid #fcd34d' }}>
+                          Annulation demandée — en attente
+                        </span>
+                      )}
                     </div>
                   </div>
 
-                  {/* ✅ Bouton Supprimer/Annuler : autorisé pour pending ET approved (date future/aujourd’hui) */}
                   <button
                     className="btn"
                     onClick={() => deleteMyAbsencesForDate(date)}
-                    title={`Supprimer/annuler l'absence du ${frDate(date)}`}
-                    style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
+                    title={`Demander l'annulation du ${frDate(date)}`}
+                    disabled={hasPendingCancel}
+                    style={{
+                      backgroundColor: hasPendingCancel ? "#9ca3af" : "#dc2626",
+                      color: "#fff",
+                      borderColor: "transparent",
+                      opacity: hasPendingCancel ? 0.8 : 1
+                    }}
                   >
-                    Supprimer
+                    {hasPendingCancel ? "Demande envoyée" : "Demander l'annulation"}
                   </button>
                 </li>
               );
