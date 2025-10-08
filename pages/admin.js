@@ -1,3 +1,5 @@
+// touch: 2025-10-08 v-admin-2025-10-08-abs-cancel+count
+
 import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
@@ -30,6 +32,7 @@ const capFirst   = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 const betweenIso = (iso, start, end) => iso >= start && iso <= end;
 const frDate = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString("fr-FR"); } catch { return iso; } };
 function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "—"; }
+const isSameISO = (d, iso) => fmtISODate(d) === iso;
 
 function Chip({ name }) {
   if (!name || name === "—") return <span className="text-sm text-gray-500">—</span>;
@@ -55,6 +58,7 @@ export default function Admin() {
   const [assign, setAssign] = useState({});                 // "YYYY-MM-DD|SHIFT" -> seller_id
   const [absencesToday, setAbsencesToday] = useState([]);   // d’aujourd’hui (pending/approved)
   const [pendingAbs, setPendingAbs] = useState([]);         // absences à venir (pending)
+  const [pendingCancelAbs, setPendingCancelAbs] = useState([]); // annulations demandées (cancel_requested)
   const [replList, setReplList] = useState([]);             // volontaires (pending) sur absences approuvées
   const [selectedShift, setSelectedShift] = useState({});   // {replacement_interest_id: "MIDDAY"}
   const [latestRepl, setLatestRepl] = useState(null);       // bannière: dernier volontariat reçu
@@ -158,6 +162,18 @@ export default function Admin() {
     setPendingAbs(data || []);
   };
   useEffect(() => { loadPendingAbs(); }, [todayIso]);
+
+  /* Annulations d'absence (cancel_requested) */
+  const loadPendingCancelAbs = async () => {
+    const { data } = await supabase
+      .from("absences")
+      .select("id, seller_id, date, reason, status")
+      .gte("date", todayIso)
+      .eq("status", "cancel_requested")
+      .order("date", { ascending: true });
+    setPendingCancelAbs(data || []);
+  };
+  useEffect(() => { loadPendingCancelAbs(); }, [todayIso]);
 
   /* Volontaires (absences approuvées) */
   const loadReplacements = async () => {
@@ -304,7 +320,12 @@ export default function Admin() {
     const chAbs = supabase
       .channel("absences_rt_admin")
       .on("postgres_changes", { event: "*", schema: "public", table: "absences" }, () => {
-        loadPendingAbs(); loadAbsencesToday(); loadReplacements(); loadMonthAbsences(); loadMonthUpcomingAbsences();
+        loadPendingAbs();
+        loadPendingCancelAbs();
+        loadAbsencesToday();
+        loadReplacements();
+        loadMonthAbsences();
+        loadMonthUpcomingAbsences();
       }).subscribe();
 
     const chRepl = supabase
@@ -381,6 +402,29 @@ export default function Admin() {
     await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
   };
 
+  /* Actions annulation d'absence */
+  const approveCancelAbs = async (id) => {
+    const { error } = await supabase.from("absences").update({ status: "cancelled" }).eq("id", id);
+    if (error) { alert("Impossible d'approuver l'annulation."); return; }
+    // Invalider propositions en cours liées
+    await supabase.from("replacement_interest")
+      .update({ status: "void" })
+      .eq("absence_id", id)
+      .in("status", ["pending","accepted"])
+      .catch(() => {});
+    await loadPendingCancelAbs();
+    await loadMonthAbsences();
+    await loadMonthUpcomingAbsences();
+    await loadReplacements();
+  };
+  const rejectCancelAbs = async (id) => {
+    const { error } = await supabase.from("absences").update({ status: "approved" }).eq("id", id);
+    if (error) { alert("Impossible de rejeter l’annulation."); return; }
+    await loadPendingCancelAbs();
+    await loadMonthAbsences();
+    await loadMonthUpcomingAbsences();
+  };
+
   /* Attribuer / Refuser volontaire */
   const assignVolunteer = async (repl) => {
     const shift = selectedShift[repl.id];
@@ -418,7 +462,7 @@ export default function Admin() {
 
     if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
 
-    // 5) Rafraîchir tous les blocs (y compris "à venir" du mois)
+    // 5) Rafraîchir tous les blocs
     setRefreshKey((k) => k + 1);
     await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences(), loadMonthAcceptedRepl()]);
     alert("Volontaire attribuée et absence approuvée.");
@@ -431,30 +475,27 @@ export default function Admin() {
     await loadReplacements(); await loadMonthAcceptedRepl();
   };
 
-  /* Actions congé */
-  const approveLeave = async (id) => {
-    const { error } = await supabase.from("leaves").update({ status: "approved" }).eq("id", id);
-    if (error) { alert("Impossible d'approuver le congé."); return; }
-    if (latestLeave && latestLeave.id === id) setLatestLeave(null);
-    await loadPendingLeaves(); await loadApprovedLeaves();
-  };
-  const rejectLeave = async (id) => {
-    const { error } = await supabase.from("leaves").update({ status: "rejected" }).eq("id", id);
-    if (error) { alert("Impossible de rejeter le congé."); return; }
-    if (latestLeave && latestLeave.id === id) setLatestLeave(null);
-    await loadPendingLeaves(); await loadApprovedLeaves();
-  };
-
   /* Boutons colorés */
-  const ApproveBtn = ({ onClick }) => <button className="btn" onClick={onClick} style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>Approuver</button>;
-  const RejectBtn  = ({ onClick }) => <button className="btn" onClick={onClick} style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>Rejeter</button>;
+  const ApproveBtn = ({ onClick, children = "Approuver" }) => (
+    <button type="button" className="btn" onClick={onClick}
+      style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>
+      {children}
+    </button>
+  );
+  const RejectBtn  = ({ onClick, children = "Rejeter" }) => (
+    <button type="button" className="btn" onClick={onClick}
+      style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
+      {children}
+    </button>
+  );
 
-  /* ---------- 🔔 BADGE + REFRESH AUTO (ajouts) ---------- */
+  /* ---------- 🔔 BADGE + REFRESH AUTO ---------- */
 
-  // Recalcule la pastille selon les éléments en attente
+  // Pastille selon éléments en attente
   useEffect(() => {
     const count =
       (pendingAbs?.length || 0) +
+      (pendingCancelAbs?.length || 0) +
       (pendingLeaves?.length || 0) +
       (replList?.length || 0);
 
@@ -466,12 +507,13 @@ export default function Admin() {
     } else if (nav?.clearAppBadge) {
       nav.clearAppBadge().catch(() => {});
     }
-  }, [pendingAbs?.length, pendingLeaves?.length, replList?.length]);
+  }, [pendingAbs?.length, pendingCancelAbs?.length, pendingLeaves?.length, replList?.length]);
 
-  // Regroupe tous les rechargements + efface la pastille à l’ouverture
+  // Regroupe les rechargements + efface la pastille à l’ouverture
   const reloadAll = useCallback(async () => {
     await Promise.all([
       loadPendingAbs?.(),
+      loadPendingCancelAbs?.(),
       loadAbsencesToday?.(),
       loadReplacements?.(),
       loadPendingLeaves?.(),
@@ -486,6 +528,7 @@ export default function Admin() {
     }
   }, [
     loadPendingAbs,
+    loadPendingCancelAbs,
     loadAbsencesToday,
     loadReplacements,
     loadPendingLeaves,
@@ -523,7 +566,7 @@ export default function Admin() {
         <div className="flex items-center gap-2">
           <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
           <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
-          <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
+          <button type="button" className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
         </div>
       </div>
 
@@ -552,8 +595,8 @@ export default function Admin() {
           </div>
           <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
             <ShiftSelect dateStr={latestRepl.date} value={selectedShift[latestRepl.id] || ""} onChange={(val) => setSelectedShift(prev => ({ ...prev, [latestRepl.id]: val }))} />
-            <button className="btn" onClick={() => assignVolunteer(latestRepl)} style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>Approuver</button>
-            <button className="btn" onClick={() => declineVolunteer(latestRepl.id)} style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>Refuser</button>
+            <ApproveBtn onClick={() => assignVolunteer(latestRepl)}>Approuver</ApproveBtn>
+            <RejectBtn onClick={() => declineVolunteer(latestRepl.id)}>Refuser</RejectBtn>
           </div>
         </div>
       )}
@@ -591,6 +634,34 @@ export default function Admin() {
                 <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                   <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date} {a.reason ? `· ${a.reason}` : ""}</div></div>
                   <div className="flex gap-2"><ApproveBtn onClick={() => approveAbs(a.id)} /><RejectBtn onClick={() => rejectAbs(a.id)} /></div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Demandes d’annulation d’absence — en attente */}
+      <div className="card">
+        <div className="hdr mb-2">Demandes d’annulation d’absence — en attente</div>
+        {pendingCancelAbs.length === 0 ? (
+          <div className="text-sm text-gray-600">Aucune demande d’annulation.</div>
+        ) : (
+          <div className="space-y-2">
+            {pendingCancelAbs.map((a) => {
+              const name = nameFromId(a.seller_id);
+              return (
+                <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                  <div>
+                    <div className="font-medium">{name}</div>
+                    <div className="text-sm text-gray-600">
+                      {a.date} {a.reason ? `· ${a.reason}` : ""} — <span className="italic">annulation demandée</span>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <ApproveBtn onClick={() => approveCancelAbs(a.id)}>Approuver l’annulation</ApproveBtn>
+                    <RejectBtn onClick={() => rejectCancelAbs(a.id)}>Rejeter l’annulation</RejectBtn>
+                  </div>
                 </div>
               );
             })}
@@ -662,15 +733,20 @@ export default function Admin() {
             onToday={() => setMonday(startOfWeek(new Date()))}
             onNext={() => setMonday(addDays(monday, 7))}
           />
-          <button className="btn" onClick={copyWeekToNext}>Copier la semaine → la suivante</button>
+          <button type="button" className="btn" onClick={copyWeekToNext}>Copier la semaine → la suivante</button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
           {days.map((d) => {
             const iso = fmtISODate(d);
             const sunday = isSunday(d);
+            const highlight = isSameISO(d, todayIso);
             return (
-              <div key={iso} className="border rounded-2xl p-3 space-y-3">
+              <div
+                key={iso}
+                className="border rounded-2xl p-3 space-y-3"
+                style={highlight ? { boxShadow: "inset 0 0 0 2px rgba(37,99,235,0.5)" } : {}}
+              >
                 <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
                 <div className="font-semibold">{iso}</div>
 
@@ -740,6 +816,8 @@ export default function Admin() {
         monthTo={monthTo}
         monthLabel={labelMonthFR(selectedMonth)}
         refreshKey={refreshKey}
+        monthAbsences={monthAbsences}
+        monthUpcomingAbsences={monthUpcomingAbsences}
       />
 
       {/* Absences approuvées — MOIS (passées / aujourd’hui) */}
@@ -899,9 +977,16 @@ function ShiftRow({ label, iso, code, value, onChange, sellers, chipName }) {
   );
 }
 
-function TotalsGrid({ sellers, days, assign, monthFrom, monthTo, monthLabel, refreshKey }) {
+function TotalsGrid({
+  sellers, days, assign,
+  monthFrom, monthTo, monthLabel, refreshKey,
+  monthAbsences = [],
+  monthUpcomingAbsences = [],
+}) {
   const [monthTotals, setMonthTotals] = useState({});
   const [loading, setLoading] = useState(false);
+
+  // Heures semaine
   const weekTotals = useMemo(() => {
     const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
     const isoDays = days.map((d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`);
@@ -914,6 +999,7 @@ function TotalsGrid({ sellers, days, assign, monthFrom, monthTo, monthLabel, ref
     return dict;
   }, [sellers, days, assign]);
 
+  // Heures mois
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -934,10 +1020,18 @@ function TotalsGrid({ sellers, days, assign, monthFrom, monthTo, monthLabel, ref
       }
     };
     run();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [sellers, monthFrom, monthTo, refreshKey]);
+
+  // Compteur d'absences du mois (approved, passées + à venir) — compte même s'il y a remplaçante
+  const absencesCount = useMemo(() => {
+    const all = [...(monthAbsences || []), ...(monthUpcomingAbsences || [])];
+    const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
+    all.forEach(a => {
+      if (a?.seller_id) dict[a.seller_id] = (dict[a.seller_id] || 0) + 1;
+    });
+    return dict;
+  }, [sellers, monthAbsences, monthUpcomingAbsences]);
 
   if (!sellers || sellers.length === 0)
     return (
@@ -946,6 +1040,7 @@ function TotalsGrid({ sellers, days, assign, monthFrom, monthTo, monthLabel, ref
         <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
       </div>
     );
+
   return (
     <div className="card">
       <div className="hdr mb-1">Total heures — semaine affichée & mois : {monthLabel}</div>
@@ -954,6 +1049,7 @@ function TotalsGrid({ sellers, days, assign, monthFrom, monthTo, monthLabel, ref
         {sellers.map((s) => {
           const week = weekTotals[s.user_id] || 0;
           const month = monthTotals[s.user_id] || 0;
+          const absCount = absencesCount[s.user_id] || 0;
           return (
             <div key={s.user_id} className="border rounded-2xl p-3 space-y-2">
               <div className="flex items-center justify-between">
@@ -963,6 +1059,8 @@ function TotalsGrid({ sellers, days, assign, monthFrom, monthTo, monthLabel, ref
               <div className="text-2xl font-semibold">{week}</div>
               <div className="text-sm text-gray-600 mt-2">Mois ({monthLabel})</div>
               <div className="text-2xl font-semibold">{month}</div>
+              <div className="text-sm text-gray-600 mt-2">Absences (mois)</div>
+              <div className="text-2xl font-semibold">{absCount}</div>
             </div>
           );
         })}
