@@ -72,6 +72,8 @@ export default function SellersAdminPage() {
   };
 
   return (
+    <div style={{fontSize:12,opacity:.6}}>BUILD sellers.tsx v4</div>
+
     <div className="p-4 max-w-3xl mx-auto space-y-6">
       <div className="hdr">Gérer les vendeuses</div>
       <div style={{fontSize:12,opacity:.6}}>{buildMarker}</div>
