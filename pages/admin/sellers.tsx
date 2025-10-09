@@ -30,7 +30,6 @@ export default function SellersAdminPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [sellers, setSellers] = useState<Seller[]>([]);
 
-  // Guard admin
   useEffect(() => {
     if (loading) return;
     if (!session) r.replace("/login");
