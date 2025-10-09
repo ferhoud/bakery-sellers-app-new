@@ -4,12 +4,17 @@ import { useRouter } from "next/router";
 import { useAuth } from "@/lib/useAuth";
 import { supabase } from "@/lib/supabaseClient";
 
+// ✅ Mets cette constante sur l'URL qui correspond à TON fichier API.
+// Si ton fichier s'appelle create-sellers.ts (pluriel), garde comme ça.
+// Si tu l'as nommé create-seller.ts (singulier), remplace par "/api/admin/create-seller".
+const API_PATH = "/api/admin/create-sellers";
+
 type Seller = { user_id: string; full_name: string; role?: string };
 
 async function createSellerAPI({ full_name, email, password }: {
   full_name: string; email: string; password: string;
 }) {
-  const r = await fetch("/api/admin/create-seller", {
+  const r = await fetch(API_PATH, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ full_name, email, password }),
@@ -29,6 +34,10 @@ export default function SellersAdminPage() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [sellers, setSellers] = useState<Seller[]>([]);
+
+  // Petit marqueur visuel pour vérifier qu’on voit la bonne page
+  // (tu peux le supprimer après test)
+  const buildMarker = "BUILD sellers.tsx v3";
 
   useEffect(() => {
     if (loading) return;
@@ -65,6 +74,7 @@ export default function SellersAdminPage() {
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-6">
       <div className="hdr">Gérer les vendeuses</div>
+      <div style={{fontSize:12,opacity:.6}}>{buildMarker}</div>
 
       <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
         <div>
@@ -101,7 +111,9 @@ export default function SellersAdminPage() {
                   <div className="font-medium">{s.full_name || "—"}</div>
                   <div className="text-sm text-gray-600">{s.user_id}</div>
                 </div>
-                <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#f3f4f6" }}>{s.role || "seller"}</span>
+                <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#f3f4f6" }}>
+                  {s.role || "seller"}
+                </span>
               </li>
             ))}
           </ul>
