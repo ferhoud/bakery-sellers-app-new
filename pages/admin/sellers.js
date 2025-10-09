@@ -1,14 +1,10 @@
-// pages/admin/sellers.tsx
+// pages/admin/sellers.js
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "@/lib/useAuth";
 import { supabase } from "@/lib/supabaseClient";
 
-type Seller = { user_id: string; full_name: string; role?: string };
-
-async function createSellerAPI({ full_name, email, password }: {
-  full_name: string; email: string; password: string;
-}) {
+async function createSellerAPI({ full_name, email, password }) {
   const r = await fetch("/api/admin/create-seller", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -27,8 +23,8 @@ export default function SellersAdminPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [sellers, setSellers] = useState<Seller[]>([]);
+  const [msg, setMsg] = useState(null);
+  const [sellers, setSellers] = useState([]);
 
   // Guard admin
   useEffect(() => {
@@ -42,12 +38,12 @@ export default function SellersAdminPage() {
       .from("profiles")
       .select("user_id, full_name, role")
       .order("full_name", { ascending: true });
-    if (!error) setSellers((data || []) as Seller[]);
+    if (!error) setSellers(data || []);
   };
 
   useEffect(() => { loadSellers(); }, []);
 
-  const onSubmit = async (e: React.FormEvent) => {
+  const onSubmit = async (e) => {
     e.preventDefault();
     setMsg(null);
     setBusy(true);
@@ -56,7 +52,7 @@ export default function SellersAdminPage() {
       setMsg("Vendeuse créée !");
       setFullName(""); setEmail(""); setPassword("");
       await loadSellers();
-    } catch (err: any) {
+    } catch (err) {
       setMsg(err?.message ?? "Erreur");
     } finally {
       setBusy(false);
