@@ -1,4 +1,4 @@
-// touch: 2025-10-09 v-admin-weekly-pastdays-db + banner
+// touch: 2025-10-09 v-admin-weekly-pastdays-db + cancel-future-leave + annual-leave-days
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
@@ -223,7 +223,7 @@ export default function Admin() {
     setApprovedLeaves(data || []);
   };
 
-  // Actions congés (manquaient dans ta version longue)
+  // Actions congés
   const approveLeave = async (id) => {
     const { error } = await supabase.from("leaves").update({ status: "approved" }).eq("id", id);
     if (error) { alert("Impossible d'approuver (RLS ?)"); return; }
@@ -233,6 +233,21 @@ export default function Admin() {
     const { error } = await supabase.from("leaves").update({ status: "rejected" }).eq("id", id);
     if (error) { alert("Impossible de rejeter (RLS ?)"); return; }
     await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
+  };
+  const cancelFutureLeave = async (id) => {
+    // admin-only action (on est déjà sur /admin avec role admin)
+    // Vérifie que le congé est à venir, puis supprime l'entrée
+    const { data: leave } = await supabase.from("leaves").select("start_date,status").eq("id", id).single();
+    if (!leave) { alert("Congé introuvable."); return; }
+    if (!(leave.status === "approved" || leave.status === "pending")) { alert("Seuls les congés approuvés/en attente peuvent être annulés."); return; }
+    const tIso = fmtISODate(new Date());
+    if (!(leave.start_date > tIso)) { alert("On ne peut annuler que les congés à venir."); return; }
+
+    const { error } = await supabase.from("leaves").delete().eq("id", id);
+    if (error) { console.error(error); alert("Échec de l’annulation du congé."); return; }
+
+    await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
+    alert("Congé à venir annulé. La vendeuse peut refaire une demande.");
   };
 
   /* ======= ABSENCES DU MOIS (APPROUVÉES) ======= */
@@ -668,15 +683,25 @@ export default function Admin() {
           <div className="space-y-2">
             {approvedLeaves.map((l) => {
               const name = nameFromId(l.seller_id);
-              const tag = betweenIso(todayIso, l.start_date, l.end_date) ? "En cours" : "À venir";
-              const tagBg = tag === "En cours" ? "#16a34a" : "#2563eb";
+              const isOngoing = betweenIso(todayIso, l.start_date, l.end_date);
+              const tag = isOngoing ? "En cours" : "À venir";
+              const tagBg = isOngoing ? "#16a34a" : "#2563eb";
               return (
                 <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                   <div>
                     <div className="font-medium">{name}</div>
                     <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}</div>
                   </div>
-                  <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>{tag}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>{tag}</span>
+                    {/* Bouton admin pour ANNULER un congé à venir */}
+                    {!isOngoing && l.start_date > todayIso ? (
+                      <button type="button" className="btn" onClick={() => cancelFutureLeave(l.id)}
+                        style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
+                        Annuler le congé
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
               );
             })}
@@ -951,6 +976,7 @@ function TotalsGrid({
 }) {
   const [weekTotals, setWeekTotals] = useState({});
   const [monthTotals, setMonthTotals] = useState({});
+  const [annualLeaveDays, setAnnualLeaveDays] = useState({});
   const [loading, setLoading] = useState(false);
 
   // Heures semaine — depuis la DB, **semaine en cours** et **uniquement les jours passés** (date < aujourd’hui)
@@ -1021,6 +1047,40 @@ function TotalsGrid({
     return () => { cancelled = true; };
   }, [sellers, monthFrom, monthTo, refreshKey]);
 
+  // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd’hui inclus)
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      if (!sellers || sellers.length === 0) { setAnnualLeaveDays({}); return; }
+      const now = new Date();
+      const yearStart = `${now.getFullYear()}-01-01`;
+      const yearEnd   = `${now.getFullYear()}-12-31`;
+      const todayIso  = fmtISODate(now);
+
+      const { data } = await supabase
+        .from("leaves")
+        .select("seller_id, start_date, end_date, status")
+        .eq("status", "approved")
+        .lte("start_date", yearEnd)
+        .gte("end_date", yearStart);
+
+      const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
+      (data || []).forEach(l => {
+        // chevauchement avec [yearStart, min(today, yearEnd)]
+        const start = l.start_date > yearStart ? l.start_date : yearStart;
+        const endLimit = todayIso < yearEnd ? todayIso : yearEnd;
+        const end = l.end_date < endLimit ? l.end_date : endLimit;
+        if (start <= end) {
+          const days = (new Date(end + "T00:00:00") - new Date(start + "T00:00:00")) / (1000*60*60*24) + 1;
+          dict[l.seller_id] = (dict[l.seller_id] || 0) + Math.max(0, Math.floor(days));
+        }
+      });
+      if (!cancelled) setAnnualLeaveDays(dict);
+    };
+    run();
+    return () => { cancelled = true; };
+  }, [sellers, refreshKey]);
+
   // Compteur d'absences du mois (approved, passées + à venir)
   const absencesCount = useMemo(() => {
     const all = [...(monthAbsences || []), ...(monthUpcomingAbsences || [])];
@@ -1048,6 +1108,7 @@ function TotalsGrid({
           const week = weekTotals[s.user_id] || 0;
           const month = monthTotals[s.user_id] || 0;
           const absCount = absencesCount[s.user_id] || 0;
+          const leaveDays = annualLeaveDays[s.user_id] || 0;
           return (
             <div key={s.user_id} className="border rounded-2xl p-3 space-y-2">
               <div className="flex items-center justify-between">
@@ -1059,6 +1120,8 @@ function TotalsGrid({
               <div className="text-2xl font-semibold">{month}</div>
               <div className="text-sm text-gray-600 mt-2">Absences (mois)</div>
               <div className="text-2xl font-semibold">{absCount}</div>
+              <div className="text-sm text-gray-600 mt-2">Congés pris (année)</div>
+              <div className="text-2xl font-semibold">{leaveDays}</div>
             </div>
           );
         })}
