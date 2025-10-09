@@ -1,273 +1,113 @@
-// pages/admin/sellers.js
-import { useEffect, useMemo, useState, useCallback } from "react";
-import Link from "next/link";
+// pages/admin/sellers.tsx
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
+import { supabase } from "@/lib/supabaseClient";
 
-/**
- * Hypothèses de schéma Supabase (recommandé)
- *
- * create table if not exists public.sellers (
- *   id uuid primary key default gen_random_uuid(),
- *   full_name text not null,
- *   is_active boolean not null default true,
- *   created_at timestamptz not null default now()
- * );
- *
- * -- RLS (si activé) : seul admin peut modifier
- * -- Exemple de politique :
- * -- create policy "sellers_read_admin" on sellers for select using ( auth.jwt() ->> 'role' = 'admin' );
- * -- create policy "sellers_write_admin" on sellers for all using ( auth.jwt() ->> 'role' = 'admin' );
- *
- * NOTE : Ton `admin.js` utilise supabase.rpc("list_sellers"). Assure-toi que l’RPC renvoie uniquement les vendeuses actives
- * et mappe les colonnes en { user_id: id, full_name } si tu veux conserver la même forme.
- * Exemple d’RPC côté DB (optionnel si tu préfères .from("sellers")) :
- *
- * create or replace function public.list_sellers()
- * returns table (user_id uuid, full_name text)
- * language sql
- * security definer
- * set search_path = public
- * as $$
- *   select id as user_id, full_name
- *   from sellers
- *   where is_active = true
- *   order by full_name;
- * $$;
- */
+type Seller = { user_id: string; full_name: string; role?: string };
 
-function Row({ s, onRename, onToggleActive, onDeleteHard }) {
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState(s.full_name);
-  const activeTag = s.is_active ? { txt: "Actif", bg: "#16a34a" } : { txt: "Inactif", bg: "#9ca3af" };
-
-  const save = async () => {
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    await onRename(s.id, trimmed);
-    setEditing(false);
-  };
-
-  return (
-    <div className="flex flex-col md:flex-row md:items-center md:justify-between border rounded-2xl p-3 gap-3">
-      <div className="flex-1">
-        {editing ? (
-          <input
-            className="input"
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && save()}
-          />
-        ) : (
-          <div className="font-medium">{s.full_name}</div>
-        )}
-        <div className="text-xs text-gray-500 mt-1">ID: {s.id}</div>
-      </div>
-
-      <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: activeTag.bg }}>
-          {activeTag.txt}
-        </span>
-
-        {editing ? (
-          <>
-            <button className="btn" onClick={save}>💾 Enregistrer</button>
-            <button className="btn" onClick={() => { setName(s.full_name); setEditing(false); }}>✖️ Annuler</button>
-          </>
-        ) : (
-          <>
-            <button className="btn" onClick={() => setEditing(true)}>✏️ Renommer</button>
-            <button
-              className="btn"
-              onClick={() => onToggleActive(s.id, !s.is_active)}
-              style={{ backgroundColor: s.is_active ? "#dc2626" : "#16a34a", color: "#fff", borderColor: "transparent" }}
-            >
-              {s.is_active ? "Désactiver" : "Réactiver"}
-            </button>
-            <button
-              className="btn"
-              onClick={() => onDeleteHard(s.id)}
-              title="Suppression définitive (à éviter si des plannings/absences pointent vers cette vendeuse)"
-              style={{ backgroundColor: "#7c2d12", color: "#fff", borderColor: "transparent" }}
-            >
-              🗑️ Supprimer (hard)
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  );
+async function createSellerAPI({ full_name, email, password }: {
+  full_name: string; email: string; password: string;
+}) {
+  const r = await fetch("/api/admin/create-seller", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ full_name, email, password }),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Création échouée");
+  return j;
 }
 
-export default function SellersAdmin() {
+export default function SellersAdminPage() {
   const { session, profile, loading } = useAuth();
   const r = useRouter();
 
-  const [list, setList] = useState([]);
-  const [filter, setFilter] = useState("all"); // all | active | inactive
-  const [newName, setNewName] = useState("");
+  const [full_name, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [sellers, setSellers] = useState<Seller[]>([]);
 
-  // Sécurité / redirections
+  // Guard admin
   useEffect(() => {
     if (loading) return;
     if (!session) r.replace("/login");
     if (profile && profile.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
-  const load = useCallback(async () => {
-    // Si tu préfères l’RPC que tu utilises dans admin.js, tu peux remplacer par:
-    // const { data } = await supabase.rpc("list_sellers");
-    // et mapper pour afficher.
+  const loadSellers = async () => {
     const { data, error } = await supabase
-      .from("sellers")
-      .select("id, full_name, is_active, created_at")
+      .from("profiles")
+      .select("user_id, full_name, role")
       .order("full_name", { ascending: true });
+    if (!error) setSellers((data || []) as Seller[]);
+  };
 
-    if (error) {
-      console.error(error);
-      alert("Impossible de charger les vendeuses.");
-      return;
-    }
-    setList(data || []);
-  }, []);
+  useEffect(() => { loadSellers(); }, []);
 
-  useEffect(() => { load(); }, [load]);
-
-  // Realtime pour garder la page synchro
-  useEffect(() => {
-    const ch = supabase
-      .channel("sellers_rt")
-      .on("postgres_changes", { event: "*", schema: "public", table: "sellers" }, () => load())
-      .subscribe();
-
-    return () => supabase.removeChannel(ch);
-  }, [load]);
-
-  const visible = useMemo(() => {
-    if (filter === "active") return list.filter((s) => s.is_active);
-    if (filter === "inactive") return list.filter((s) => !s.is_active);
-    return list;
-  }, [list, filter]);
-
-  const addSeller = async () => {
-    const name = newName.trim();
-    if (!name) return;
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setMsg(null);
     setBusy(true);
     try {
-      const { error } = await supabase.from("sellers").insert({ full_name: name });
-      if (error) throw error;
-      setNewName("");
-    } catch (e) {
-      console.error(e);
-      alert("Échec d’ajout.");
+      await createSellerAPI({ full_name, email, password });
+      setMsg("Vendeuse créée !");
+      setFullName(""); setEmail(""); setPassword("");
+      await loadSellers();
+    } catch (err: any) {
+      setMsg(err?.message ?? "Erreur");
     } finally {
       setBusy(false);
     }
   };
 
-  const renameSeller = async (id, name) => {
-    try {
-      const { error } = await supabase.from("sellers").update({ full_name: name }).eq("id", id);
-      if (error) throw error;
-    } catch (e) {
-      console.error(e);
-      alert("Échec de renommage.");
-    }
-  };
-
-  const toggleActive = async (id, newVal) => {
-    try {
-      const { error } = await supabase.from("sellers").update({ is_active: newVal }).eq("id", id);
-      if (error) throw error;
-    } catch (e) {
-      console.error(e);
-      alert("Échec de la mise à jour actif/inactif.");
-    }
-  };
-
-  // Suppression définitive (⚠️ attention aux FKs si tes plannings/absences pointent vers sellers.id)
-  const deleteHard = async (id) => {
-    if (!confirm("Supprimer définitivement cette vendeuse ? (irréversible)")) return;
-    try {
-      const { error } = await supabase.from("sellers").delete().eq("id", id);
-      if (error) throw error;
-    } catch (e) {
-      console.error(e);
-      alert("Échec de suppression (peut-être des références existantes : plannings, absences…). Utilise plutôt Désactiver.");
-    }
-  };
-
   return (
-    <div className="p-4 max-w-5xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="hdr">Gérer les vendeuses</div>
-        <div className="flex items-center gap-2">
-          <Link href="/admin" legacyBehavior><a className="btn">⬅️ Retour admin</a></Link>
-        </div>
-      </div>
+    <div className="p-4 max-w-3xl mx-auto space-y-6">
+      <div className="hdr">Gérer les vendeuses</div>
 
-      {/* Ajouter */}
+      <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
+        <div>
+          <label className="block text-sm mb-1">Nom complet</label>
+          <input className="input w-full" value={full_name}
+                 onChange={(e) => setFullName(e.target.value)} required />
+        </div>
+        <div>
+          <label className="block text-sm mb-1">Email</label>
+          <input className="input w-full" type="email" value={email}
+                 onChange={(e) => setEmail(e.target.value)} required
+                 placeholder="vendeuse@vendeuses.local" />
+        </div>
+        <div>
+          <label className="block text-sm mb-1">Mot de passe</label>
+          <input className="input w-full" type="password" value={password}
+                 onChange={(e) => setPassword(e.target.value)} required />
+        </div>
+        <button type="submit" className="btn" disabled={busy}>
+          {busy ? "Création..." : "Créer la vendeuse"}
+        </button>
+        {msg && <div className="text-sm mt-2">{msg}</div>}
+      </form>
+
       <div className="card">
-        <div className="font-semibold mb-2">Ajouter une vendeuse</div>
-        <div className="grid sm:grid-cols-3 gap-2">
-          <input
-            className="input sm:col-span-2"
-            placeholder="Nom et prénom"
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addSeller()}
-          />
-          <button className="btn" onClick={addSeller} disabled={busy}>
-            ➕ Ajouter
-          </button>
-        </div>
-        <div className="text-xs text-gray-500 mt-2">
-          Astuce : préfère <b>Désactiver</b> plutôt que supprimer si cette vendeuse a déjà des lignes de planning/absences.
-        </div>
-      </div>
-
-      {/* Filtre */}
-      <div className="flex items-center gap-2">
-        <span className="text-sm">Filtrer :</span>
-        <button className="btn" onClick={() => setFilter("all")} style={{ opacity: filter === "all" ? 1 : 0.7 }}>Toutes</button>
-        <button className="btn" onClick={() => setFilter("active")} style={{ opacity: filter === "active" ? 1 : 0.7 }}>Actives</button>
-        <button className="btn" onClick={() => setFilter("inactive")} style={{ opacity: filter === "inactive" ? 1 : 0.7 }}>Inactives</button>
-      </div>
-
-      {/* Liste */}
-      <div className="space-y-2">
-        {visible.length === 0 ? (
-          <div className="text-sm text-gray-600">Aucune vendeuse.</div>
+        <div className="hdr mb-2">Vendeuses existantes</div>
+        {sellers.length === 0 ? (
+          <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
         ) : (
-          visible.map((s) => (
-            <Row
-              key={s.id}
-              s={s}
-              onRename={renameSeller}
-              onToggleActive={toggleActive}
-              onDeleteHard={deleteHard}
-            />
-          ))
+          <ul className="space-y-2">
+            {sellers.map((s) => (
+              <li key={s.user_id} className="border rounded-2xl p-3 flex items-center justify-between">
+                <div>
+                  <div className="font-medium">{s.full_name || "—"}</div>
+                  <div className="text-sm text-gray-600">{s.user_id}</div>
+                </div>
+                <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#f3f4f6" }}>{s.role || "seller"}</span>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
-
-      {/* Styles de secours au cas où */}
-      <style jsx global>{`
-        .btn {
-          display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
-          padding: 0.55rem 0.9rem; border: 1px solid #e5e7eb; border-radius: 0.75rem;
-          background: #111827; color: #fff; font-weight: 600; cursor: pointer;
-        }
-        .btn:hover { opacity: 0.9; }
-        .card { border: 1px solid #e5e7eb; border-radius: 1rem; padding: 1rem; background: #fff; }
-        .hdr { font-size: 1.125rem; font-weight: 700; }
-        .select, .input {
-          width: 100%; border: 1px solid #e5e7eb; border-radius: 0.75rem; padding: 0.5rem 0.75rem; background: #fff;
-        }
-      `}</style>
     </div>
   );
 }
