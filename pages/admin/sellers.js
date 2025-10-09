@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "@/lib/useAuth";
 import { supabase } from "@/lib/supabaseClient";
+import { notifyAdminsNewAbsence } from '../../lib/pushNotify';
 
 const API_PATH = "/api/admin/create-seller"; // doit matcher le nom du fichier API
 
