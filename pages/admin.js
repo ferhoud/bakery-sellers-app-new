@@ -968,36 +968,49 @@ function TotalsGrid({
   }, [sellers, days, assign]);
 
   // Heures mois
-  useEffect(() => {
-    let cancelled = false;
-    const run = async () => {
-      if (!sellers || sellers.length === 0) { setMonthTotals({}); return; }
-      setLoading(true);
-      try {
-        const mq = await supabase.from("shifts").select("date, shift_code, seller_id").gte("date", monthFrom).lte("date", monthTo);
-        const rows = mq.data || [];
-        const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
-const seen = new Set(); // évite de compter 2× le même créneau pour la même vendeuse
+  // Heures mois (dédupliqué + sans jours futurs si mois courant)
+useEffect(() => {
+  let cancelled = false;
+  const run = async () => {
+    if (!sellers || sellers.length === 0) { setMonthTotals({}); return; }
+    setLoading(true);
+    try {
+      const todayIso = fmtISODate(new Date());
+      const isCurrentMonth = todayIso >= monthFrom && todayIso <= monthTo;
+      const upper = isCurrentMonth ? todayIso : monthTo;
 
-(rows || []).forEach((r) => {
-  if (!r.seller_id) return;
-  const key = `${r.date}|${r.shift_code}|${r.seller_id}`;
-  if (seen.has(key)) return;
-  seen.add(key);
-  const hrs = SHIFT_HOURS[r.shift_code] || 0;
-  dict[r.seller_id] = (dict[r.seller_id] || 0) + hrs;
-});
+      const mq = await supabase
+        .from("shifts")
+        .select("date, shift_code, seller_id")
+        .gte("date", monthFrom)
+        .lte("date", upper);
 
-setMonthTotals(dict);
+      const rows = mq.data || [];
+      const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
+      const seen = new Set(); // évite le surcomptage si doublons accidentels
 
-        if (!cancelled) setMonthTotals(dict);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    run();
-    return () => { cancelled = true; };
-  }, [sellers, monthFrom, monthTo, refreshKey]);
+      rows.forEach((r) => {
+        if (!r.seller_id) return;
+        const key = `${r.date}|${r.shift_code}|${r.seller_id}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        const hrs =
+          r.shift_code === "MORNING"      ? 7  :
+          r.shift_code === "MIDDAY"       ? 6  :
+          r.shift_code === "EVENING"      ? 7  :
+          r.shift_code === "SUNDAY_EXTRA" ? 4.5: 0;
+        dict[r.seller_id] = (dict[r.seller_id] || 0) + hrs;
+      });
+
+      if (!cancelled) setMonthTotals(dict);
+    } finally {
+      if (!cancelled) setLoading(false);
+    }
+  };
+  run();
+  return () => { cancelled = true; };
+}, [sellers, monthFrom, monthTo, refreshKey]);
+
 
   // Compteur d'absences du mois (approved, passées + à venir)
   const absencesCount = useMemo(() => {
