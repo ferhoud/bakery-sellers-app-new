@@ -1,10 +1,10 @@
+// pages/admin/sellers.js
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import { useAuth } from "@/lib/useAuth";
-import { supabase } from "@/lib/supabaseClient";
-import { notifyAdminsNewAbsence } from '../../lib/pushNotify';
+import { useAuth } from "../../lib/useAuth";
+import { supabase } from "../../lib/supabaseClient";
 
-const API_PATH = "/api/admin/create-seller"; // doit matcher le nom du fichier API
+const API_PATH = "/api/admin/create-seller"; // doit correspondre à pages/api/admin/create-seller.js
 
 async function createSellerAPI({ full_name, email, password }) {
   const r = await fetch(API_PATH, {
@@ -34,17 +34,20 @@ export default function SellersAdminPage() {
     if (profile && profile.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
-  useEffect(() => { (async () => {
-    const { data } = await supabase
-      .from("profiles")
-      .select("user_id, full_name, role")
-      .order("full_name", { ascending: true });
-    setSellers(data || []);
-  })(); }, []);
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("profiles")
+        .select("user_id, full_name, role")
+        .order("full_name", { ascending: true });
+      setSellers(data || []);
+    })();
+  }, []);
 
   const onSubmit = async (e) => {
     e.preventDefault();
-    setMsg(null); setBusy(true);
+    setMsg(null);
+    setBusy(true);
     try {
       await createSellerAPI({ full_name, email, password });
       setMsg("Vendeuse créée !");
@@ -61,12 +64,10 @@ export default function SellersAdminPage() {
     }
   };
 
-  if (typeof window !== "undefined") console.log("BUILD sellers.js v0-clean");
-
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-6">
       <div className="hdr">Gérer les vendeuses</div>
-      <div style={{fontSize:12,opacity:.6}}>BUILD sellers.js v0-clean</div>
+      <div style={{fontSize:12,opacity:.6}}>BUILD sellers.js (clean)</div>
 
       <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
         <div>
