@@ -1,13 +1,16 @@
-// pages/admin/sellers.js
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "@/lib/useAuth";
 import { supabase } from "@/lib/supabaseClient";
 
-// Mets ici le chemin de TON endpoint : /api/admin/create-seller (singulier) OU /api/admin/create-sellers (pluriel)
+// ⚠️ Si ton fichier API s'appelle create-sellers.js (pluriel), remplace par "/api/admin/create-sellers"
 const API_PATH = "/api/admin/create-seller";
 
-async function createSellerAPI({ full_name, email, password }) {
+type Seller = { user_id: string; full_name: string; role?: string };
+
+async function createSellerAPI({ full_name, email, password }: {
+  full_name: string; email: string; password: string;
+}) {
   const r = await fetch(API_PATH, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -26,8 +29,10 @@ export default function SellersAdminPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
-  const [sellers, setSellers] = useState([]);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [sellers, setSellers] = useState<Seller[]>([]);
+
+  const buildMarker = "BUILD sellers.tsx v6";
 
   useEffect(() => {
     if (loading) return;
@@ -36,16 +41,16 @@ export default function SellersAdminPage() {
   }, [session, profile, loading, r]);
 
   const loadSellers = async () => {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("profiles")
       .select("user_id, full_name, role")
       .order("full_name", { ascending: true });
-    if (!error) setSellers(data || []);
+    setSellers(data || []);
   };
 
   useEffect(() => { loadSellers(); }, []);
 
-  const onSubmit = async (e) => {
+  const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMsg(null);
     setBusy(true);
@@ -54,7 +59,7 @@ export default function SellersAdminPage() {
       setMsg("Vendeuse créée !");
       setFullName(""); setEmail(""); setPassword("");
       await loadSellers();
-    } catch (err) {
+    } catch (err: any) {
       setMsg(err?.message ?? "Erreur");
     } finally {
       setBusy(false);
@@ -64,7 +69,7 @@ export default function SellersAdminPage() {
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-6">
       <div className="hdr">Gérer les vendeuses</div>
-      <div style={{fontSize:12,opacity:.6}}>BUILD sellers.js v1</div>
+      <div style={{fontSize:12,opacity:.6}}>{buildMarker}</div>
 
       <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
         <div>
@@ -101,7 +106,9 @@ export default function SellersAdminPage() {
                   <div className="font-medium">{s.full_name || "—"}</div>
                   <div className="text-sm text-gray-600">{s.user_id}</div>
                 </div>
-                <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#f3f4f6" }}>{s.role || "seller"}</span>
+                <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#f3f4f6" }}>
+                  {s.role || "seller"}
+                </span>
               </li>
             ))}
           </ul>
