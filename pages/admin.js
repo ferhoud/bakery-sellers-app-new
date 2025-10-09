@@ -977,11 +977,19 @@ function TotalsGrid({
         const mq = await supabase.from("shifts").select("date, shift_code, seller_id").gte("date", monthFrom).lte("date", monthTo);
         const rows = mq.data || [];
         const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
-        rows.forEach((r) => {
-          if (!r.seller_id) return;
-          const hrs = SHIFT_HOURS[r.shift_code] || 0;
-          dict[r.seller_id] = (dict[r.seller_id] || 0) + hrs;
-        });
+const seen = new Set(); // évite de compter 2× le même créneau pour la même vendeuse
+
+(rows || []).forEach((r) => {
+  if (!r.seller_id) return;
+  const key = `${r.date}|${r.shift_code}|${r.seller_id}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  const hrs = SHIFT_HOURS[r.shift_code] || 0;
+  dict[r.seller_id] = (dict[r.seller_id] || 0) + hrs;
+});
+
+setMonthTotals(dict);
+
         if (!cancelled) setMonthTotals(dict);
       } finally {
         if (!cancelled) setLoading(false);
