@@ -1,9 +1,10 @@
-﻿import { useEffect, useState } from "react";
+// pages/admin/sellers.tsx
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "@/lib/useAuth";
 import { supabase } from "@/lib/supabaseClient";
 
-// ⚠️ Si ton fichier API s'appelle create-sellers.js (pluriel), remplace par "/api/admin/create-sellers"
+// ⚠️ Si ton fichier API s’appelle create-sellers.js (pluriel), change cette constante :
 const API_PATH = "/api/admin/create-seller";
 
 type Seller = { user_id: string; full_name: string; role?: string };
@@ -32,7 +33,8 @@ export default function SellersAdminPage() {
   const [msg, setMsg] = useState<string | null>(null);
   const [sellers, setSellers] = useState<Seller[]>([]);
 
-  const buildMarker = "BUILD sellers.tsx v6";
+  // 🔵 Marqueur très visible pour confirmer que c'est la bonne page servie
+  const buildMarker = "BUILD sellers.tsx v7";
 
   useEffect(() => {
     if (loading) return;
@@ -66,10 +68,16 @@ export default function SellersAdminPage() {
     }
   };
 
+  if (typeof window !== "undefined") {
+    console.log("USING sellers.tsx v7");
+  }
+
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-6">
       <div className="hdr">Gérer les vendeuses</div>
-      <div style={{fontSize:12,opacity:.6}}>{buildMarker}</div>
+      <div style={{fontSize:14,opacity:.7, padding:"6px 10px", background:"#fff7ed", border:"1px solid #fdba74", borderRadius:12}}>
+        {buildMarker} — API: <code>{API_PATH}</code>
+      </div>
 
       <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
         <div>
