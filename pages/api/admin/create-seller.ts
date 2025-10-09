@@ -28,8 +28,7 @@ type Body = {
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-  // (Optionnel) Sécurité supplémentaire : vous pouvez vérifier ici que l'appelant est bien un admin.
-  // Exemples: vérifier un cookie de session, relire son profil et son rôle, un header partagé, etc.
+  // (Optionnel) Ajoute ta vérif "admin" si nécessaire
 
   const { full_name, email, password } = (req.body || {}) as Body;
 
@@ -47,7 +46,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   });
 
   if (createErr) {
-    // Message plus clair si l'utilisateur existe déjà
     const msg = createErr.message?.toLowerCase().includes("registered")
       ? "Un utilisateur avec cet email existe déjà."
       : createErr.message || "Échec de création de l'utilisateur.";
@@ -57,9 +55,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   const user = userData.user;
   if (!user) return res.status(500).json({ error: "Utilisateur créé mais non retourné." });
 
-  // 2) Créer/mettre à jour la ligne dans `profiles`
-  // Si vous avez un trigger Postgres qui remplit `profiles` automatiquement à la création
-  // d'un user (recommandé), vous pouvez sauter cet upsert.
+  // 2) Upsert profil (si pas de trigger automatique)
   const { error: upsertErr } = await supabaseAdmin
     .from("profiles")
     .upsert(
@@ -72,15 +68,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     );
 
   if (upsertErr) {
-    // Vous pouvez choisir de supprimer l'utilisateur si l’upsert profil échoue.
-    // Ici, on renvoie juste une erreur claire.
     return res.status(500).json({
       error: "Utilisateur créé mais échec lors de l'upsert du profil.",
       user_id: user.id,
     });
   }
 
-  // 3) OK
   return res.status(200).json({
     ok: true,
     user_id: user.id,
