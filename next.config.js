@@ -2,22 +2,16 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  swcMinify: true,
 
-  async headers() {
-    return [
-      {
-        source: "/sw.js",
-        headers: [
-          { key: "Cache-Control", value: "no-store, max-age=0" },
-          { key: "Service-Worker-Allowed", value: "/" },
-        ],
-      },
-      {
-        source: "/manifest.json",
-        headers: [{ key: "Cache-Control", value: "no-cache" }],
-      },
-    ];
-  },
+  // 🔴 IMPORTANT : permettre à Next de servir aussi les pages .ts/.tsx
+  pageExtensions: ['ts', 'tsx', 'js', 'jsx'],
+
+  // (Optionnel) Si des erreurs ESLint bloquent le build, décommente temporairement :
+  // eslint: { ignoreDuringBuilds: true },
+
+  // (Optionnel) Pendant une migration vers TypeScript, pour ne pas bloquer le build :
+  // typescript: { ignoreBuildErrors: true },
 };
 
 module.exports = nextConfig;
