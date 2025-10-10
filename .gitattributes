@@ -1,0 +1,11 @@
+@'
+# Normalise en LF dans le repo (Windows peut convertir en CRLF au checkout selon ta config)
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+'@ | Out-File -Encoding ascii .gitattributes
