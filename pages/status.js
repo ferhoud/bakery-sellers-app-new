@@ -23,7 +23,6 @@ export default function StatusPage() {
       }
 
       try {
-        // Ping léger : si RLS bloque list_sellers, on affiche l’erreur proprement
         const { error: dbErr } = await supabase.rpc("list_sellers");
         if (dbErr) setDb({ ok: false, error: dbErr.message });
         else setDb({ ok: true, error: null });
