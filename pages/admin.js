@@ -120,14 +120,37 @@ export default function Admin() {
     if (profile && profile.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
-  /* Vendeuses */
-  const loadSellers = useCallback(async () => {
+  /* Vendeuses (robuste : RPC list_sellers -> profiles fallback) */
+const loadSellers = useCallback(async () => {
+  // 1) Essai via RPC (ta fonction SQL)
+  let rows = [];
+  try {
     const { data, error } = await supabase.rpc("list_sellers");
-    if (error) console.error("list_sellers error:", error);
-    setSellers(data || []);
-  }, []);
-  useEffect(() => { loadSellers(); }, [loadSellers]);
-  const nameFromId = useCallback((id) => sellers.find((s) => s.user_id === id)?.full_name || "-", [sellers]);
+    if (error) console.warn("list_sellers RPC error:", error);
+    if (Array.isArray(data) && data.length) rows = data;
+  } catch (e) {
+    console.warn("list_sellers RPC threw:", e);
+  }
+
+  // 2) Fallback : lire directement la table 'profiles'
+  if (rows.length === 0) {
+    try {
+      // Adapte les colonnes/flags selon ton schéma: role/active/enabled…
+      const { data: profs, error: e2 } = await supabase
+        .from("profiles")
+        .select("user_id, full_name, role, active")
+        .eq("role", "seller"); // .eq("active", true) si tu as ce champ
+      if (e2) console.warn("profiles fallback error:", e2);
+      if (Array.isArray(profs) && profs.length) {
+        rows = profs.map(({ user_id, full_name }) => ({ user_id, full_name }));
+      }
+    } catch (e) {
+      console.warn("profiles fallback threw:", e);
+    }
+  }
+
+  setSellers(rows || []);
+}, []);
 
   /* Planning semaine (avec fallback direct sur table shifts) */
   const loadWeekAssignments = useCallback(async (fromIso, toIso) => {
