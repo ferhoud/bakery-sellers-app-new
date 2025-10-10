@@ -76,6 +76,11 @@ function DebugPanel({ supabase, buildTag }) {
 
 
 const BUILD_TAG = "ADMIN PROBE — 10/10/2025 11:25";
+{/* Affiche ce panel SEULEMENT quand l’URL contient ?debug=1 */}
+{typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debug") && (
+  <DebugPanel supabase={supabase} buildTag={BUILD_TAG} />
+)}
+
 
 /* Heures par créneau (inclut le dimanche spécial) */
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
