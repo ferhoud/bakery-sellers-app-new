@@ -1,17 +1,13 @@
-<<<<<<< HEAD
-// pages/logout.js
-import { useEffect } from "react";
-=======
 ﻿import { useEffect } from "react";
->>>>>>> deploy-sellers
+import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
 
 export default function Logout() {
+  const r = useRouter();
   useEffect(() => {
     (async () => {
-      try { await supabase.auth.signOut(); } catch {}
-      window.location.replace("/login");
+      try { await supabase.auth.signOut(); } finally { r.replace("/login"); }
     })();
-  }, []);
-  return <div style={{padding:24, textAlign:"center"}}>Déconnexion…</div>;
+  }, [r]);
+  return <div style={{padding:20,fontFamily:"system-ui"}}>Déconnexion…</div>;
 }
