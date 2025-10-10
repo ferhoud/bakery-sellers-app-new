@@ -35,7 +35,7 @@ const frDate = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateS
 const isSameISO = (d, iso) => fmtISODate(d) === iso;
 
 function Chip({ name }) {
-  if (!name || name === "—") return <span className="text-sm text-gray-500">—</span>;
+  if (!name || name === "-") return <span className="text-sm text-gray-500">-</span>;
   const bg = colorForName(name);
   return <span style={{ backgroundColor: bg, color: "#fff", borderRadius: 9999, padding: "2px 10px", fontSize: "0.8rem" }}>{name}</span>;
 }
@@ -109,7 +109,7 @@ export default function Admin() {
     setSellers(data || []);
   }, []);
   useEffect(() => { loadSellers(); }, [loadSellers]);
-  const nameFromId = useCallback((id) => sellers.find((s) => s.user_id === id)?.full_name || "—", [sellers]);
+  const nameFromId = useCallback((id) => sellers.find((s) => s.user_id === id)?.full_name || "-", [sellers]);
 
   /* Planning semaine */
   const loadWeekAssignments = useCallback(async (fromIso, toIso) => {
@@ -160,7 +160,7 @@ export default function Admin() {
       (repl || []).forEach(r => {
         mapRepl[r.absence_id] = {
           volunteer_id: r.volunteer_id,
-          volunteer_name: names[r.volunteer_id] || "—",
+          volunteer_name: names[r.volunteer_id] || "-",
         };
       });
     }
@@ -200,9 +200,9 @@ export default function Admin() {
       (profs || []).forEach((p) => (names[p.user_id] = p.full_name));
     }
     const list = (rows || []).map((r) => ({
-      id: r.id, volunteer_id: r.volunteer_id, volunteer_name: names[r.volunteer_id] || "—",
+      id: r.id, volunteer_id: r.volunteer_id, volunteer_name: names[r.volunteer_id] || "-",
       absence_id: r.absence_id, date: r.absences?.date, absent_id: r.absences?.seller_id,
-      absent_name: names[r.absences?.seller_id] || "—", status: r.status,
+      absent_name: names[r.absences?.seller_id] || "-", status: r.status,
     }));
     setReplList(list);
   }, [todayIso]);
@@ -231,7 +231,7 @@ export default function Admin() {
     if (!data || data.length === 0) { setLatestLeave(null); return; }
     const leave = data[0];
     const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", leave.seller_id).single();
-    setLatestLeave({ ...leave, seller_name: prof?.full_name || "—" });
+    setLatestLeave({ ...leave, seller_name: prof?.full_name || "-" });
   }, [todayIso]);
 
   const loadApprovedLeaves = useCallback(async () => {
@@ -345,7 +345,7 @@ export default function Admin() {
     rows.forEach(r => {
       map[r.absence_id] = {
         volunteer_id: r.volunteer_id,
-        volunteer_name: names[r.volunteer_id] || "—",
+        volunteer_name: names[r.volunteer_id] || "-",
         shift: r.accepted_shift_code || null,
       };
     });
@@ -379,9 +379,9 @@ export default function Admin() {
             supabase.from("profiles").select("full_name").eq("user_id", abs?.seller_id).single(),
           ]);
           setLatestRepl({
-            id: r.id, volunteer_id: r.volunteer_id, volunteer_name: vol.data?.full_name || "—",
+            id: r.id, volunteer_id: r.volunteer_id, volunteer_name: vol.data?.full_name || "-",
             absence_id: r.absence_id, date: abs?.date, absent_id: abs?.seller_id,
-            absent_name: absName.data?.full_name || "—", status: r.status,
+            absent_name: absName.data?.full_name || "-", status: r.status,
           });
         }
         loadReplacements(); loadMonthAcceptedRepl();
@@ -408,7 +408,7 @@ export default function Admin() {
             .select("full_name")
             .eq("user_id", old.seller_id)
             .single();
-          setLatestCancel({ name: prof?.full_name || "—", date: old.date });
+          setLatestCancel({ name: prof?.full_name || "-", date: old.date });
           setTimeout(() => setLatestCancel(null), 5000);
         }
       )
@@ -591,7 +591,7 @@ export default function Admin() {
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-        <div className="hdr">Compte: {profile?.full_name || "—"} <span className="sub">(admin)</span></div>
+        <div className="hdr">Compte: {profile?.full_name || "-"} <span className="sub">(admin)</span></div>
         <div className="flex items-center gap-2">
           <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
           <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
@@ -617,7 +617,7 @@ export default function Admin() {
           <div className="text-sm">
             <span className="font-medium">{latestLeave.seller_name}</span> demande un congé du{" "}
             <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
-            {latestLeave.reason ? <> — <span>{latestLeave.reason}</span></> : null}.
+            {latestLeave.reason ? <> - <span>{latestLeave.reason}</span></> : null}.
           </div>
           <div className="flex gap-2">
             <ApproveBtn onClick={() => approveLeave(latestLeave.id)} />
@@ -641,14 +641,14 @@ export default function Admin() {
         </div>
       )}
 
-      {/* Absences aujourd’hui — disparaît après le jour J */}
+      {/* Absences aujourd’hui - disparaît après le jour J */}
       <div className="card">
         <div className="hdr mb-2">Absences aujourd’hui</div>
         {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourd’hui</div> : (
           <ul className="list-disc pl-6 space-y-1">
             {absencesToday.map((a) => (
               <li key={a.id}>
-                <Chip name={nameFromId(a.seller_id)} /> — {a.status}
+                <Chip name={nameFromId(a.seller_id)} /> - {a.status}
                 {a.reason ? ` · ${a.reason}` : ""}
                 {a.replacement ? (
                   <>
@@ -663,9 +663,9 @@ export default function Admin() {
         )}
       </div>
 
-      {/* Demandes d’absence — en attente */}
+      {/* Demandes d’absence - en attente */}
       <div className="card">
-        <div className="hdr mb-2">Demandes d’absence — en attente (à venir)</div>
+        <div className="hdr mb-2">Demandes d’absence - en attente (à venir)</div>
         {pendingAbs.length === 0 ? <div className="text-sm text-gray-600">Aucune demande en attente.</div> : (
           <div className="space-y-2">
             {pendingAbs.map((a) => {
@@ -681,9 +681,9 @@ export default function Admin() {
         )}
       </div>
 
-      {/* Demandes de congé — en attente */}
+      {/* Demandes de congé - en attente */}
       <div className="card">
-        <div className="hdr mb-2">Demandes de congé — en attente</div>
+        <div className="hdr mb-2">Demandes de congé - en attente</div>
         {pendingLeaves.length === 0 ? <div className="text-sm text-gray-600">Aucune demande de congé en attente.</div> : (
           <div className="space-y-2">
             {pendingLeaves.map((l) => {
@@ -705,9 +705,9 @@ export default function Admin() {
         )}
       </div>
 
-      {/* Congés approuvés — en cours ou à venir */}
+      {/* Congés approuvés - en cours ou à venir */}
       <div className="card">
-        <div className="hdr mb-2">Congés approuvés — en cours ou à venir</div>
+        <div className="hdr mb-2">Congés approuvés - en cours ou à venir</div>
         {approvedLeaves.length === 0 ? (
           <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
         ) : (
@@ -778,12 +778,12 @@ export default function Admin() {
                   <ShiftRow label="Midi (7h-13h)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
                 ) : (
                   <div className="space-y-1">
-                    <div className="text-sm">Midi — deux postes</div>
+                    <div className="text-sm">Midi - deux postes</div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <div className="text-xs mb-1">7h-13h</div>
                         <select className="select" value={assign[`${iso}|MIDDAY`] || ""} onChange={(e) => save(iso, "MIDDAY", e.target.value || null)}>
-                          <option value="">— Choisir vendeuse —</option>
+                          <option value="">- Choisir vendeuse -</option>
                           {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
                         </select>
                         <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|MIDDAY`])} /></div>
@@ -791,7 +791,7 @@ export default function Admin() {
                       <div>
                         <div className="text-xs mb-1">9h-13h30</div>
                         <select className="select" value={assign[`${iso}|SUNDAY_EXTRA`] || ""} onChange={(e) => save(iso, "SUNDAY_EXTRA", e.target.value || null)}>
-                          <option value="">— Choisir vendeuse —</option>
+                          <option value="">- Choisir vendeuse -</option>
                           {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
                         </select>
                         <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|SUNDAY_EXTRA`])} /></div>
@@ -840,9 +840,9 @@ export default function Admin() {
         monthUpcomingAbsences={monthUpcomingAbsences}
       />
 
-      {/* Absences approuvées — MOIS (passées / aujourd’hui) */}
+      {/* Absences approuvées - MOIS (passées / aujourd’hui) */}
       <div className="card">
-        <div className="hdr mb-2">Absences approuvées — mois : {labelMonthFR(selectedMonth)}</div>
+        <div className="hdr mb-2">Absences approuvées - mois : {labelMonthFR(selectedMonth)}</div>
         {(() => {
           if (!monthAbsences || monthAbsences.length === 0) {
             return <div className="text-sm text-gray-600">Aucune absence (passée/aujourd’hui) sur ce mois.</div>;
@@ -869,7 +869,7 @@ export default function Admin() {
                           <li key={a.id}>
                             <span className="font-medium">{frDate(a.date)}</span>
                             {repl ? (
-                              <> — <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
+                              <> - <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
                             ) : null}
                           </li>
                         );
@@ -883,9 +883,9 @@ export default function Admin() {
         })()}
       </div>
 
-      {/* Absences approuvées à venir — MOIS (dates futures) */}
+      {/* Absences approuvées à venir - MOIS (dates futures) */}
       <div className="card">
-        <div className="hdr mb-2">Absences approuvées à venir — mois : {labelMonthFR(selectedMonth)}</div>
+        <div className="hdr mb-2">Absences approuvées à venir - mois : {labelMonthFR(selectedMonth)}</div>
         {(() => {
           if (!monthUpcomingAbsences || monthUpcomingAbsences.length === 0) {
             return <div className="text-sm text-gray-600">Aucune absence à venir sur ce mois.</div>;
@@ -912,9 +912,9 @@ export default function Admin() {
                           <li key={a.id}>
                             <span className="font-medium">{frDate(a.date)}</span>
                             {repl ? (
-                              <> — <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
+                              <> - <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
                             ) : (
-                              <> — <span className="text-gray-500">pas de volontaire accepté</span></>
+                              <> - <span className="text-gray-500">pas de volontaire accepté</span></>
                             )}
                           </li>
                         );
@@ -932,7 +932,7 @@ export default function Admin() {
 }
 
 /* ---------- Composants ---------- */
-function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "—"; }
+function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "-"; }
 
 function ShiftSelect({ dateStr, value, onChange }) {
   const sunday = isSunday(new Date(dateStr));
@@ -944,7 +944,7 @@ function ShiftSelect({ dateStr, value, onChange }) {
   ];
   return (
     <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">— Choisir un créneau —</option>
+      <option value="">- Choisir un créneau -</option>
       {options.map((op) => (
         <option key={op.code} value={op.code}>
           {op.label}
@@ -971,7 +971,7 @@ function TodayColorBlocks({ today, todayIso, assign, nameFromId }) {
           return (
             <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
               <div className="font-medium">{label}</div>
-              <div className="text-sm mt-1">{assigned ? name : "—"}</div>
+              <div className="text-sm mt-1">{assigned ? name : "-"}</div>
             </div>
           );
         })}
@@ -985,7 +985,7 @@ function ShiftRow({ label, iso, code, value, onChange, sellers, chipName }) {
     <div className="space-y-1">
       <div className="text-sm">{label}</div>
       <select className="select" value={value} onChange={(e) => onChange(iso, code, e.target.value || null)}>
-        <option value="">— Choisir vendeuse —</option>
+        <option value="">- Choisir vendeuse -</option>
         {sellers.map((s) => (
           <option key={s.user_id} value={s.user_id}>
             {s.full_name}
@@ -1010,7 +1010,7 @@ function TotalsGrid({
   const [annualLeaveDays, setAnnualLeaveDays] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // Heures semaine — depuis la DB, **semaine en cours** et **uniquement les jours passés** (date < aujourd’hui)
+  // Heures semaine - depuis la DB, **semaine en cours** et **uniquement les jours passés** (date < aujourd’hui)
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -1132,7 +1132,7 @@ function TotalsGrid({
 
   return (
     <div className="card">
-      <div className="hdr mb-1">Total heures — semaine en cours (jusqu’à hier) & mois : {monthLabel}</div>
+      <div className="hdr mb-1">Total heures - semaine en cours (jusqu’à hier) & mois : {monthLabel}</div>
       {loading && <div className="text-sm text-gray-500 mb-3">Calcul en cours…</div>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {sellers.map((s) => {
@@ -1174,4 +1174,6 @@ const RejectBtn  = ({ onClick, children = "Rejeter" }) => (
     {children}
   </button>
 );
+
+
 

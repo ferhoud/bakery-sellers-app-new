@@ -1,4 +1,4 @@
-// pages/api/push/test.js
+﻿// pages/api/push/test.js
 import webpush from 'web-push';
 import { getSupabaseAdmin } from '@/lib/server/supabaseAdmin';
 
@@ -43,3 +43,4 @@ export default async function handler(req,res){
     return res.status(500).json({ error:'Failed to send push' });
   }
 }
+

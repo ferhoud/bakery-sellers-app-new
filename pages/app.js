@@ -10,7 +10,7 @@ import WeekNav from "@/components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
 
 /* LibellÃ©s + crÃ©neau dimanche (doit exister dans shift_types) */
-const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9hâ€“13h30" };
+const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
 /* Couleurs (identiques Ã  lâ€™admin) */
 const SELLER_COLORS = { Antonia: "#e57373", Olivia: "#64b5f6", Colleen: "#81c784", Ibtissam: "#ba68c8" };
@@ -25,10 +25,10 @@ function firstDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1);
 function lastDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
 function labelForShift(code) {
   switch (code) {
-    case "MORNING": return "Matin (6h30â€“13h30)";
-    case "MIDDAY": return "Midi (7hâ€“13h)";
-    case "SUNDAY_EXTRA": return "Dimanche 9hâ€“13h30";
-    case "EVENING": return "Soir (13h30â€“20h30)";
+    case "MORNING": return "Matin (6h30-13h30)";
+    case "MIDDAY": return "Midi (7h-13h)";
+    case "SUNDAY_EXTRA": return "Dimanche 9h-13h30";
+    case "EVENING": return "Soir (13h30-20h30)";
     default: return code || "â€”";
   }
 }
@@ -700,3 +700,4 @@ export default function AppSeller() {
     );
   }
 }
+

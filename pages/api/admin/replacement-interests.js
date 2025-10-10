@@ -1,4 +1,4 @@
-// pages/api/admin/replacement-interests.js
+﻿// pages/api/admin/replacement-interests.js
 import { createClient } from "@supabase/supabase-js";
 
 export default async function handler(req, res) {
@@ -40,3 +40,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: e?.message || "Server error" });
   }
 }
+

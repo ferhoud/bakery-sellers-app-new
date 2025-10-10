@@ -1,4 +1,4 @@
-// pages/api/push/broadcast.js
+﻿// pages/api/push/broadcast.js
 import webpush from 'web-push';
 import { getSupabaseAdmin } from '@/lib/server/supabaseAdmin';
 
@@ -51,3 +51,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Broadcast failed' });
   }
 }
+

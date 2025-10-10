@@ -24,3 +24,4 @@ export default function Home() {
   }, [r]);
   return <div style={{padding:20,fontFamily:"system-ui"}}>Redirection…</div>;
 }
+

@@ -11,3 +11,4 @@ export default function Logout() {
   }, [r]);
   return <div style={{padding:20,fontFamily:"system-ui"}}>Déconnexion…</div>;
 }
+

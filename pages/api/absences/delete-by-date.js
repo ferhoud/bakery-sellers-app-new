@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+﻿import { createClient } from '@supabase/supabase-js';
 
 // serveur uniquement
 const supabaseAdmin = createClient(
@@ -92,3 +92,4 @@ export default async function handler(req, res) {
     replacementsDeleted: replCount ?? 0
   });
 }
+

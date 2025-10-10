@@ -21,3 +21,4 @@ export default function Me(){
   }, []);
   return <pre style={{padding:20,background:"#f3f4f6",borderRadius:8,fontFamily:"system-ui"}}>{JSON.stringify(info,null,2)}</pre>;
 }
+

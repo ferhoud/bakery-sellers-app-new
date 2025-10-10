@@ -1,4 +1,4 @@
-// pages/api/admin/users/update.js
+﻿// pages/api/admin/users/update.js
 import { getSupabaseAdmin } from '@/lib/server/supabaseAdmin';
 
 export default async function handler(req, res) {
@@ -42,3 +42,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Server error' });
   }
 }
+
