@@ -2,12 +2,12 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "../../lib/useAuth";
-import { supabase } from "../../lib/supabaseClient";
 
-const API_PATH = "/api/admin/create-seller"; // doit correspondre à pages/api/admin/create-seller.js
+const API_CREATE = "/api/admin/create-seller";   // doit correspondre à pages/api/admin/create-seller.js
+const API_LIST   = "/api/admin/list-sellers";    // NOUVEAU : liste côté serveur (service role)
 
 async function createSellerAPI({ full_name, email, password }) {
-  const r = await fetch(API_PATH, {
+  const r = await fetch(API_CREATE, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ full_name, email, password }),
@@ -22,28 +22,45 @@ export default function SellersAdminPage() {
   const r = useRouter();
 
   const [full_name, setFullName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
-  const [sellers, setSellers] = useState([]);
+  const [busy, setBusy]         = useState(false);
+  const [msg, setMsg]           = useState(null);
 
+  const [sellers, setSellers]   = useState([]);
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError]     = useState(null);
+
+  // Garde d'authentification
   useEffect(() => {
     if (loading) return;
     if (!session) r.replace("/login");
     if (profile && profile.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
+  // Charge la liste via l'API route (service role côté serveur)
+  const loadSellers = async () => {
+    setListLoading(true);
+    setListError(null);
+    try {
+      const res = await fetch(API_LIST, { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Échec chargement vendeuses");
+      setSellers(json.sellers || []);
+    } catch (e) {
+      console.error("Load sellers failed:", e);
+      setListError(e.message || "Erreur");
+      setSellers([]);
+    } finally {
+      setListLoading(false);
+    }
+  };
+
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from("profiles")
-        .select("user_id, full_name, role")
-        .order("full_name", { ascending: true });
-      setSellers(data || []);
-    })();
+    loadSellers();
   }, []);
 
+  // Création d'une vendeuse + refresh liste
   const onSubmit = async (e) => {
     e.preventDefault();
     setMsg(null);
@@ -52,11 +69,7 @@ export default function SellersAdminPage() {
       await createSellerAPI({ full_name, email, password });
       setMsg("Vendeuse créée !");
       setFullName(""); setEmail(""); setPassword("");
-      const { data } = await supabase
-        .from("profiles")
-        .select("user_id, full_name, role")
-        .order("full_name", { ascending: true });
-      setSellers(data || []);
+      await loadSellers();
     } catch (err) {
       setMsg(err?.message ?? "Erreur");
     } finally {
@@ -67,24 +80,38 @@ export default function SellersAdminPage() {
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-6">
       <div className="hdr">Gérer les vendeuses</div>
-      <div style={{fontSize:12,opacity:.6}}>BUILD sellers.js (clean)</div>
+      <div style={{ fontSize: 12, opacity: .6 }}>BUILD sellers.js (server-list)</div>
 
       <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
         <div>
           <label className="block text-sm mb-1">Nom complet</label>
-          <input className="input w-full" value={full_name}
-                 onChange={(e) => setFullName(e.target.value)} required />
+          <input
+            className="input w-full"
+            value={full_name}
+            onChange={(e) => setFullName(e.target.value)}
+            required
+          />
         </div>
         <div>
           <label className="block text-sm mb-1">Email</label>
-          <input className="input w-full" type="email" value={email}
-                 onChange={(e) => setEmail(e.target.value)} required
-                 placeholder="vendeuse@vendeuses.local" />
+          <input
+            className="input w-full"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            required
+            placeholder="vendeuse@vendeuses.local"
+          />
         </div>
         <div>
           <label className="block text-sm mb-1">Mot de passe</label>
-          <input className="input w-full" type="password" value={password}
-                 onChange={(e) => setPassword(e.target.value)} required />
+          <input
+            className="input w-full"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
         </div>
         <button type="submit" className="btn" disabled={busy}>
           {busy ? "Création..." : "Créer la vendeuse"}
@@ -94,17 +121,27 @@ export default function SellersAdminPage() {
 
       <div className="card">
         <div className="hdr mb-2">Vendeuses existantes</div>
-        {sellers.length === 0 ? (
+
+        {listLoading ? (
+          <div className="text-sm text-gray-600">Chargement…</div>
+        ) : listError ? (
+          <div className="text-sm text-red-600">
+            Erreur lors du chargement : {listError}
+          </div>
+        ) : sellers.length === 0 ? (
           <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
         ) : (
           <ul className="space-y-2">
             {sellers.map((s) => (
-              <li key={s.user_id} className="border rounded-2xl p-3 flex items-center justify-between">
+              <li key={s.user_id || s.id} className="border rounded-2xl p-3 flex items-center justify-between">
                 <div>
                   <div className="font-medium">{s.full_name || "—"}</div>
-                  <div className="text-sm text-gray-600">{s.user_id}</div>
+                  <div className="text-sm text-gray-600">{s.user_id || s.id}</div>
                 </div>
-                <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#f3f4f6" }}>
+                <span
+                  className="text-xs px-2 py-1 rounded-full"
+                  style={{ backgroundColor: "#f3f4f6" }}
+                >
                   {s.role || "seller"}
                 </span>
               </li>
