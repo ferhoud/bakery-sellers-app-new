@@ -156,17 +156,22 @@ export default function Admin() {
 
   // Déconnexion robuste
   const [signingOut, setSigningOut] = useState(false);
-  const handleSignOut = useCallback(async () => {
-    if (signingOut) return;
-    setSigningOut(true);
-    try {
-      if (typeof navigator !== "undefined" && navigator?.clearAppBadge) { try { await navigator.clearAppBadge(); } catch {} }
-      await supabase.auth.signOut();
-    } finally {
-      setSigningOut(false);
-      r.replace("/login");
-    }
-  }, [r, signingOut]);
+
+async function handleSignOut() {
+  if (signingOut) return;
+  setSigningOut(true);
+  try {
+    await supabase.auth.signOut();
+    // Petit délai pour laisser SW/SPA se stabiliser
+    setTimeout(()=>{ window.location.href = "/login"; }, 50);
+  } catch (e) {
+    console.error(e);
+    alert("Erreur de déconnexion: " + (e?.message || e));
+  } finally {
+    setSigningOut(false);
+  }
+}
+
 
   /* Sécurité */
   useEffect(() => {
