@@ -121,36 +121,50 @@ export default function Admin() {
   }, [session, profile, loading, r]);
 
   /* Vendeuses (robuste : RPC list_sellers -> profiles fallback) */
-const loadSellers = useCallback(async () => {
-  // 1) Essai via RPC (ta fonction SQL)
-  let rows = [];
-  try {
-    const { data, error } = await supabase.rpc("list_sellers");
-    if (error) console.warn("list_sellers RPC error:", error);
-    if (Array.isArray(data) && data.length) rows = data;
-  } catch (e) {
-    console.warn("list_sellers RPC threw:", e);
-  }
-
-  // 2) Fallback : lire directement la table 'profiles'
-  if (rows.length === 0) {
+  const loadSellers = useCallback(async () => {
+    // 1) Essai via RPC (ta fonction SQL)
+    let rows = [];
     try {
-      // Adapte les colonnes/flags selon ton schéma: role/active/enabled…
-      const { data: profs, error: e2 } = await supabase
-        .from("profiles")
-        .select("user_id, full_name, role, active")
-        .eq("role", "seller"); // .eq("active", true) si tu as ce champ
-      if (e2) console.warn("profiles fallback error:", e2);
-      if (Array.isArray(profs) && profs.length) {
-        rows = profs.map(({ user_id, full_name }) => ({ user_id, full_name }));
-      }
+      const { data, error } = await supabase.rpc("list_sellers");
+      if (error) console.warn("list_sellers RPC error:", error);
+      if (Array.isArray(data) && data.length) rows = data;
     } catch (e) {
-      console.warn("profiles fallback threw:", e);
+      console.warn("list_sellers RPC threw:", e);
     }
-  }
 
-  setSellers(rows || []);
-}, []);
+    // 2) Fallback : lire directement la table 'profiles'
+    if (rows.length === 0) {
+      try {
+        const { data: profs, error: e2 } = await supabase
+          .from("profiles")
+          .select("user_id, full_name, role, active")
+          .eq("role", "seller");
+        if (e2) console.warn("profiles fallback error:", e2);
+        if (Array.isArray(profs) && profs.length) {
+          rows = profs.map(({ user_id, full_name }) => ({ user_id, full_name }));
+        }
+      } catch (e) {
+        console.warn("profiles fallback threw:", e);
+      }
+    }
+
+    setSellers(rows || []);
+  }, []);
+
+  /* ✅ Index vendeuses + helper id→nom (UTILISÉ PARTOUT DANS LE RENDER) */
+  const sellersById = useMemo(
+    () => new Map((sellers || []).map((s) => [s.user_id, s])),
+    [sellers]
+  );
+
+  const nameFromId = useCallback(
+    (id) => {
+      if (!id) return "";
+      const s = sellersById.get(id);
+      return s?.full_name || ""; // fallback vide si non trouvé
+    },
+    [sellersById]
+  );
 
   /* Planning semaine (avec fallback direct sur table shifts) */
   const loadWeekAssignments = useCallback(async (fromIso, toIso) => {
@@ -618,6 +632,7 @@ const loadSellers = useCallback(async () => {
 
   const reloadAll = useCallback(async () => {
     await Promise.all([
+      loadSellers(), // ✅ IMPORTANT : on charge la liste des vendeuses
       loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
       loadWeekAbsences(),
       loadPendingAbs?.(),
@@ -634,6 +649,7 @@ const loadSellers = useCallback(async () => {
     }
   }, [
     days,
+    loadSellers,
     loadWeekAssignments,
     loadWeekAbsences,
     loadPendingAbs,
@@ -839,7 +855,9 @@ const loadSellers = useCallback(async () => {
               onToday={() => setMonday(startOfWeek(new Date()))}
               onNext={() => setMonday(addDays(monday, 7))}
             />
-            <button type="button" className="btn" onClick={copyWeekToNext}>Copier la semaine → la suivante</button>
+            <button type="button" className="btn" onClick={copyWeekToNext}>
+              Copier la semaine {"\u2192"} la suivante
+            </button>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
@@ -874,18 +892,18 @@ const loadSellers = useCallback(async () => {
                       })}
                     </div>
                     <select
-  className="select w-full"
-  defaultValue=""
-  onChange={(e) => { const v = e.target.value; if (!v) return; setSellerAbsent(iso, v); e.target.value = ""; }}
->
-  <option value="" disabled>Marquer "Absent"</option>
-  {sellers.length === 0 && (
-    <option value="" disabled>(Aucune vendeuse — vérifier droits/RPC)</option>
-  )}
-  {sellers.filter((s) => !currentAbs.includes(s.user_id)).map((s) => (
-    <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
-  ))}
-</select>
+                      className="select w-full"
+                      defaultValue=""
+                      onChange={(e) => { const v = e.target.value; if (!v) return; setSellerAbsent(iso, v); e.target.value = ""; }}
+                    >
+                      <option value="" disabled>Marquer "Absent"</option>
+                      {sellers.length === 0 && (
+                        <option value="" disabled>(Aucune vendeuse — vérifier droits/RPC)</option>
+                      )}
+                      {sellers.filter((s) => !currentAbs.includes(s.user_id)).map((s) => (
+                        <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
+                      ))}
+                    </select>
 
                   </div>
 
@@ -1111,14 +1129,14 @@ function ShiftRow({ label, iso, code, value, onChange, sellers, chipName }) {
     <div className="space-y-1">
       <div className="text-sm">{label}</div>
       <select className="select" value={value} onChange={(e) => onChange(iso, code, e.target.value || null)}>
-  <option value="">- Choisir vendeuse -</option>
-  {sellers.length === 0 && (
-    <option value="" disabled>(Aucune vendeuse — vérifier droits/RPC)</option>
-  )}
-  {sellers.map((s) => (
-    <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
-  ))}
-</select>
+        <option value="">- Choisir vendeuse -</option>
+        {sellers.length === 0 && (
+          <option value="" disabled>(Aucune vendeuse — vérifier droits/RPC)</option>
+        )}
+        {sellers.map((s) => (
+          <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
+        ))}
+      </select>
 
       <div>
         <Chip name={chipName} />
