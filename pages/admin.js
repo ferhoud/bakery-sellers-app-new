@@ -1,4 +1,4 @@
-
+﻿
 // touch: 2025-10-10 v-admin-stable-loaders + solid-logout + ui-resume-fix
 
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
@@ -11,7 +11,7 @@ import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from ".
 
 /* Heures par créneau (inclut le dimanche spécial) */
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
-const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h–13h30" };
+const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
 /* Couleurs fixes par vendeuse */
 const SELLER_COLORS = {
@@ -772,16 +772,16 @@ export default function Admin() {
                 <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
                 <div className="font-semibold">{iso}</div>
 
-                <ShiftRow label="Matin (6h30–13h30)" iso={iso} code="MORNING" value={assign[`${iso}|MORNING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MORNING`])} />
+                <ShiftRow label="Matin (6h30-13h30)" iso={iso} code="MORNING" value={assign[`${iso}|MORNING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MORNING`])} />
 
                 {!sunday ? (
-                  <ShiftRow label="Midi (7h–13h)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
+                  <ShiftRow label="Midi (7h-13h)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
                 ) : (
                   <div className="space-y-1">
                     <div className="text-sm">Midi — deux postes</div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <div className="text-xs mb-1">7h–13h</div>
+                        <div className="text-xs mb-1">7h-13h</div>
                         <select className="select" value={assign[`${iso}|MIDDAY`] || ""} onChange={(e) => save(iso, "MIDDAY", e.target.value || null)}>
                           <option value="">— Choisir vendeuse —</option>
                           {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
@@ -789,7 +789,7 @@ export default function Admin() {
                         <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|MIDDAY`])} /></div>
                       </div>
                       <div>
-                        <div className="text-xs mb-1">9h–13h30</div>
+                        <div className="text-xs mb-1">9h-13h30</div>
                         <select className="select" value={assign[`${iso}|SUNDAY_EXTRA`] || ""} onChange={(e) => save(iso, "SUNDAY_EXTRA", e.target.value || null)}>
                           <option value="">— Choisir vendeuse —</option>
                           {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
@@ -800,7 +800,7 @@ export default function Admin() {
                   </div>
                 )}
 
-                <ShiftRow label="Soir (13h30–20h30)" iso={iso} code="EVENING" value={assign[`${iso}|EVENING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|EVENING`])} />
+                <ShiftRow label="Soir (13h30-20h30)" iso={iso} code="EVENING" value={assign[`${iso}|EVENING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|EVENING`])} />
               </div>
             );
           })}
@@ -937,10 +937,10 @@ function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "—"; }
 function ShiftSelect({ dateStr, value, onChange }) {
   const sunday = isSunday(new Date(dateStr));
   const options = [
-    { code: "MORNING", label: "Matin (6h30–13h30)" },
-    { code: "MIDDAY", label: "Midi (7h–13h)" },
-    ...(sunday ? [{ code: "SUNDAY_EXTRA", label: "9h–13h30" }] : []),
-    { code: "EVENING", label: "Soir (13h30–20h30)" },
+    { code: "MORNING", label: "Matin (6h30-13h30)" },
+    { code: "MIDDAY", label: "Midi (7h-13h)" },
+    ...(sunday ? [{ code: "SUNDAY_EXTRA", label: "9h-13h30" }] : []),
+    { code: "EVENING", label: "Soir (13h30-20h30)" },
   ];
   return (
     <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
@@ -1174,3 +1174,4 @@ const RejectBtn  = ({ onClick, children = "Rejeter" }) => (
     {children}
   </button>
 );
+
