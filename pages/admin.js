@@ -682,6 +682,20 @@ export default function Admin() {
     navigator.serviceWorker.addEventListener('message', handler);
     return () => navigator.serviceWorker.removeEventListener('message', handler);
   }, [reloadAll]);
+// ===== Helpers vendeuses: id -> nom =====
+const sellersById = useMemo(
+  () => new Map((sellers || []).map((s) => [s.user_id, s])),
+  [sellers]
+);
+
+const nameFromId = useCallback(
+  (id) => {
+    if (!id) return "";
+    const s = sellersById.get(id);
+    return s?.full_name || "";
+  },
+  [sellersById]
+);
 
   /* ----------------- RENDER ----------------- */
   return (
