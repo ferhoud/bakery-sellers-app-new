@@ -673,9 +673,10 @@ async function handleSignOut() {
         <div className="flex items-center gap-2">
           <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
           <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
-          <button type="button" className="btn" onClick={handleSignOut} disabled={signingOut}>
-            {signingOut ? "Déconnexion…" : "Se déconnecter"}
-          </button>
+          <button onClick={handleSignOut} disabled={signingOut} style={{opacity: signingOut ? .6 : 1}}>
+  🚪 {signingOut ? "Déconnexion..." : "Se déconnecter"}
+</button>
+
         </div>
       </div>
 
