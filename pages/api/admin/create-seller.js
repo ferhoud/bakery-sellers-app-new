@@ -1,4 +1,4 @@
-Ôªøimport { createClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY; // server-only
@@ -19,7 +19,7 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "full_name, email et password sont requis." });
   }
 
-  // 1) Cr√©e l'utilisateur Auth
+  // 1) CrÈe l'utilisateur Auth
   const { data: userData, error: createErr } = await admin.auth.admin.createUser({
     email,
     password,
@@ -29,15 +29,15 @@ export default async function handler(req, res) {
   });
   if (createErr) {
     const msg = (createErr.message || "").toLowerCase().includes("registered")
-      ? "Un utilisateur avec cet email existe d√©j√†."
-      : createErr.message || "√âchec de cr√©ation de l'utilisateur.";
+      ? "Un utilisateur avec cet email existe dÈj‡."
+      : createErr.message || "…chec de crÈation de l'utilisateur.";
     return res.status(400).json({ error: msg });
   }
 
   const user = userData?.user;
-  if (!user) return res.status(500).json({ error: "Utilisateur cr√©√© mais non retourn√©." });
+  if (!user) return res.status(500).json({ error: "Utilisateur crÈÈ mais non retournÈ." });
 
-  // 2) ESSAIS SOUPLES (ne font JAMAIS √©chouer la r√©ponse)
+  // 2) ESSAIS SOUPLES (ne font JAMAIS Èchouer la rÈponse)
   const attempts = [
     { table: "profiles", key: "user_id", row: { user_id: user.id, full_name, role: "seller" } },
     { table: "profiles", key: "id",      row: { id:      user.id, full_name, role: "seller" } },
@@ -50,6 +50,6 @@ export default async function handler(req, res) {
     console.warn("[create-seller] upsert profil KO:", a.table, a.key, error?.code, error?.message);
   }
 
-  // 3) Toujours OK c√¥t√© API (le frontend verra "Vendeuse cr√©√©e !")
+  // 3) Toujours OK cÙtÈ API (le frontend verra "Vendeuse crÈÈe !")
   return res.status(200).json({ ok: true, user_id: user.id, email: user.email });
 }
