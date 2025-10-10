@@ -1,5 +1,4 @@
-// pages/admin/sellers.js
-import { useEffect, useMemo, useState, useCallback } from "react";
+﻿import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import { supabase } from "@/lib/supabaseClient";
@@ -25,10 +24,9 @@ export default function SellersPage() {
     setBusy(true);
     setMsg("");
     try {
-      // utilise la RPC déjà en place (list_sellers) — plus fiable côté RLS
+      // utilise la RPC déjà en place (list_sellers)
       const { data, error } = await supabase.rpc("list_sellers");
       if (error) throw error;
-      // on s’attend à: [{ user_id, full_name, active, role }]
       setRows(Array.isArray(data) ? data : []);
     } catch (e) {
       setMsg(e?.message || "Impossible de charger la liste.");
@@ -137,7 +135,7 @@ function SellerRow({ seller, onSaveName, onToggleActive }) {
           fontSize: 12, padding: "2px 8px", borderRadius: 999,
           color: "#fff", background: seller.active ? "#16a34a" : "#dc2626"
         }}>
-          {seller.active ? "Active" : "Inact ive"}
+          {seller.active ? "Active" : "Inactive"}
         </span>
 
         {!editing ? (
