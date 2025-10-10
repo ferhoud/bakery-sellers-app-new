@@ -1,13 +1,13 @@
 
-// touch: 2025-10-10 _app defensive loader + SW updater
+// touch: 2025-10-10 _app with AuthProvider + defensive loader + SW updater
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import { useAuth } from "@/lib/useAuth";
+import { AuthProvider, useAuth } from "@/lib/useAuth";
 import { supabase } from "@/lib/supabaseClient";
 import "../styles/globals.css";
 
-export default function MyApp({ Component, pageProps }) {
+function Shell({ Component, pageProps }) {
   const { session, loading } = useAuth();
   const r = useRouter();
   const [stuck, setStuck] = useState(false);
@@ -31,12 +31,9 @@ export default function MyApp({ Component, pageProps }) {
   // Proactively refresh session once if we're stuck
   useEffect(() => {
     if (!stuck) return;
-    let done = false;
     (async () => {
       try { await supabase.auth.getSession(); } catch {}
-      done = true;
     })();
-    return () => { done = true; };
   }, [stuck]);
 
   // Service Worker: auto-update & reload on new versions to avoid stale bundles
@@ -96,4 +93,12 @@ export default function MyApp({ Component, pageProps }) {
   }
 
   return <Component {...pageProps} />;
+}
+
+export default function MyApp(props) {
+  return (
+    <AuthProvider>
+      <Shell {...props} />
+    </AuthProvider>
+  );
 }
