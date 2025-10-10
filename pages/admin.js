@@ -1,4 +1,18 @@
 // touch: 2025-10-10 v-admin-stable-loaders + solid-logout + ui-resume-fix (patched)
+// tout en haut du fichier
+const BUILD_TAG = "ADMIN FIX - 10/10/2025 09:00";
+
+export default function AdminPage() {
+  console.log("BUILD_TAG:", BUILD_TAG);
+  return (
+    <>
+      <div style={{padding: '8px', background: '#111', color: '#fff', fontWeight: 700}}>
+        {BUILD_TAG}
+      </div>
+      {/* ...le reste de ta page */}
+    </>
+  );
+}
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
