@@ -1,8 +1,8 @@
 // pages/_app.js
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/router";
+import Head from "next/head";
 import "../styles/globals.css"; // garde si tu utilises Tailwind / styles globaux
-
 
 function InstallButton({ deferredPrompt, onInstalled }) {
   if (!deferredPrompt) return null;
@@ -10,12 +10,8 @@ function InstallButton({ deferredPrompt, onInstalled }) {
   const handleClick = async () => {
     try {
       deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      // outcome: "accepted" | "dismissed"
-      if (outcome === "accepted") {
-        // onInstalled sera aussi appelé via "appinstalled", mais on le met ici au cas où
-        onInstalled?.();
-      }
+      const { outcome } = await deferredPrompt.userChoice; // "accepted" | "dismissed"
+      if (outcome === "accepted") onInstalled?.();
     } catch (e) {
       console.error("Install prompt error:", e);
     }
@@ -25,12 +21,7 @@ function InstallButton({ deferredPrompt, onInstalled }) {
     <button
       className="btn"
       onClick={handleClick}
-      style={{
-        position: "fixed",
-        right: 16,
-        bottom: 16,
-        zIndex: 9999,
-      }}
+      style={{ position: "fixed", right: 16, bottom: 16, zIndex: 9999 }}
     >
       ⬇️ Installer l’app
     </button>
@@ -42,62 +33,56 @@ export default function MyApp({ Component, pageProps }) {
   const [deferredPrompt, setDeferredPrompt] = useState(null);
   const [installHidden, setInstallHidden] = useState(false);
 
-  // Afficher le bouton d'installation PWA
+  // Affichage du bouton d'installation PWA
   useEffect(() => {
-    const installedFlag = typeof window !== "undefined" && localStorage.getItem("pwaInstalled") === "1";
+    if (typeof window === "undefined") return;
+
+    const installedFlag = localStorage.getItem("pwaInstalled") === "1";
     setInstallHidden(installedFlag);
 
     const onBeforeInstall = (e) => {
-      // Empêche le prompt auto
-      e.preventDefault();
-      // Si déjà installée, on ne montre pas
+      e.preventDefault(); // bloque le prompt auto
       if (localStorage.getItem("pwaInstalled") === "1") return;
       setDeferredPrompt(e);
     };
 
     const onInstalled = () => {
-      try {
-        localStorage.setItem("pwaInstalled", "1");
-      } catch {}
+      try { localStorage.setItem("pwaInstalled", "1"); } catch {}
       setDeferredPrompt(null);
       setInstallHidden(true);
     };
 
     window.addEventListener("beforeinstallprompt", onBeforeInstall);
     window.addEventListener("appinstalled", onInstalled);
-
     return () => {
       window.removeEventListener("beforeinstallprompt", onBeforeInstall);
       window.removeEventListener("appinstalled", onInstalled);
     };
   }, []);
 
-  // Écoute SW → rafraîchir les données/pages quand un push arrive
+  // Refresh doux à la réception d'un push depuis le SW
   const reloadSoft = useCallback(() => {
-    // Recharger la page courante sans remonter l’historique
     router.replace(router.asPath);
   }, [router]);
 
   useEffect(() => {
-    if (!("serviceWorker" in navigator)) return;
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return;
 
     const handler = (e) => {
-      // convention : le SW envoie { type: 'push' } après réception
       if (e?.data?.type === "push") {
         reloadSoft();
-        // Nettoyer la pastille si supportée
-        if (navigator.clearAppBadge) {
-          navigator.clearAppBadge().catch(() => {});
-        }
+        if (navigator.clearAppBadge) navigator.clearAppBadge().catch(() => {});
       }
     };
     navigator.serviceWorker.addEventListener("message", handler);
     return () => navigator.serviceWorker.removeEventListener("message", handler);
   }, [reloadSoft]);
 
-  // Quand l’app revient en premier plan → petit refresh doux (utile si la page admin est ouverte)
+  // Quand l’app revient en premier plan → petit refresh doux
   useEffect(() => {
-    const onWake = () => reloadSoft();
+    const onWake = () => {
+      if (document.visibilityState === "visible") reloadSoft();
+    };
     window.addEventListener("focus", onWake);
     document.addEventListener("visibilitychange", onWake);
     return () => {
@@ -108,45 +93,54 @@ export default function MyApp({ Component, pageProps }) {
 
   return (
     <>
-      {/* Ton application */}
+      <Head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <title>Bakery Sellers</title>
+
+        {/* Police globale soignée */}
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+          rel="stylesheet"
+        />
+
+        {/* Icônes Material (si tu utilises <span className="material-symbols-outlined">home</span>) */}
+        <link
+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght@200..700&display=swap"
+          rel="stylesheet"
+        />
+        <style>{`
+          .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+          }
+        `}</style>
+      </Head>
+
+      {/* Application */}
       <Component {...pageProps} />
 
       {/* Bouton d'installation flottant (si pas encore installée) */}
-      {!installHidden && <InstallButton deferredPrompt={deferredPrompt} onInstalled={() => setInstallHidden(true)} />}
+      {!installHidden && (
+        <InstallButton
+          deferredPrompt={deferredPrompt}
+          onInstalled={() => setInstallHidden(true)}
+        />
+      )}
 
-      {/* Styles de secours si tes classes .btn/.card/etc. ne sont pas encore définies quelque part */}
+      {/* Styles de secours si tes classes .btn/.card/.hdr/.input ne sont pas définies dans globals.css */}
       <style jsx global>{`
         .btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 0.5rem;
-          padding: 0.55rem 0.9rem;
-          border: 1px solid #e5e7eb;
-          border-radius: 0.75rem;
-          background: #111827;
-          color: #fff;
-          font-weight: 600;
-          cursor: pointer;
+          display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+          padding: .55rem .9rem; border: 1px solid #e5e7eb; border-radius: .75rem;
+          background: #111827; color: #fff; font-weight: 600; cursor: pointer;
         }
-        .btn:hover { opacity: 0.9; }
-        .card {
-          border: 1px solid #e5e7eb;
-          border-radius: 1rem;
-          padding: 1rem;
-          background: #fff;
-        }
-        .hdr {
-          font-size: 1.125rem;
-          font-weight: 700;
-        }
-        .hdr .sub { font-weight: 400; color: #6b7280; font-size: 0.95rem; }
+        .btn:hover { opacity: .9; }
+        .card { border: 1px solid #e5e7eb; border-radius: 1rem; padding: 1rem; background: #fff; }
+        .hdr { font-size: 1.125rem; font-weight: 700; }
+        .hdr .sub { font-weight: 400; color: #6b7280; font-size: .95rem; }
         .select, .input {
-          width: 100%;
-          border: 1px solid #e5e7eb;
-          border-radius: 0.75rem;
-          padding: 0.5rem 0.75rem;
-          background: #fff;
+          width: 100%; border: 1px solid #e5e7eb; border-radius: .75rem; padding: .5rem .75rem; background: #fff;
         }
       `}</style>
     </>
