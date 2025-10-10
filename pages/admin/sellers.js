@@ -1,16 +1,12 @@
-﻿import { useEffect, useState } from "react";
+﻿// pages/admin/sellers.js
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import { useAuth } from "@/lib/useAuth";
-import { supabase } from "@/lib/supabaseClient";
+import { useAuth } from "../../lib/useAuth";
+import { supabase } from "../../lib/supabaseClient";
 
-// ⚠️ Si ton fichier API s'appelle create-sellers.js (pluriel), remplace par "/api/admin/create-sellers"
-const API_PATH = "/api/admin/create-seller";
+const API_PATH = "/api/admin/create-seller"; // doit correspondre à pages/api/admin/create-seller.js
 
-type Seller = { user_id: string; full_name: string; role?: string };
-
-async function createSellerAPI({ full_name, email, password }: {
-  full_name: string; email: string; password: string;
-}) {
+async function createSellerAPI({ full_name, email, password }) {
   const r = await fetch(API_PATH, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -29,10 +25,8 @@ export default function SellersAdminPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [sellers, setSellers] = useState<Seller[]>([]);
-
-  const buildMarker = "BUILD sellers.tsx v6";
+  const [msg, setMsg] = useState(null);
+  const [sellers, setSellers] = useState([]);
 
   useEffect(() => {
     if (loading) return;
@@ -40,17 +34,17 @@ export default function SellersAdminPage() {
     if (profile && profile.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
-  const loadSellers = async () => {
-    const { data } = await supabase
-      .from("profiles")
-      .select("user_id, full_name, role")
-      .order("full_name", { ascending: true });
-    setSellers(data || []);
-  };
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase
+        .from("profiles")
+        .select("user_id, full_name, role")
+        .order("full_name", { ascending: true });
+      setSellers(data || []);
+    })();
+  }, []);
 
-  useEffect(() => { loadSellers(); }, []);
-
-  const onSubmit = async (e: React.FormEvent) => {
+  const onSubmit = async (e) => {
     e.preventDefault();
     setMsg(null);
     setBusy(true);
@@ -58,8 +52,12 @@ export default function SellersAdminPage() {
       await createSellerAPI({ full_name, email, password });
       setMsg("Vendeuse créée !");
       setFullName(""); setEmail(""); setPassword("");
-      await loadSellers();
-    } catch (err: any) {
+      const { data } = await supabase
+        .from("profiles")
+        .select("user_id, full_name, role")
+        .order("full_name", { ascending: true });
+      setSellers(data || []);
+    } catch (err) {
       setMsg(err?.message ?? "Erreur");
     } finally {
       setBusy(false);
@@ -69,7 +67,7 @@ export default function SellersAdminPage() {
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-6">
       <div className="hdr">Gérer les vendeuses</div>
-      <div style={{fontSize:12,opacity:.6}}>{buildMarker}</div>
+      <div style={{fontSize:12,opacity:.6}}>BUILD sellers.js (clean)</div>
 
       <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
         <div>

@@ -1,16 +1,16 @@
-// touch: 2025-10-09 v-admin-weekly-pastdays-db + cancel-future-leave + annual-leave-days
+﻿// touch: 2025-10-09 v-admin-weekly-pastdays-db + cancel-future-leave + annual-leave-days
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { supabase } from "@/lib/supabaseClient";
-import { useAuth } from "@/lib/useAuth";
-import WeekNav from "@/components/WeekNav";
-import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
+import { supabase } from "../lib/supabaseClient";
+import { useAuth } from "../lib/useAuth";
+import WeekNav from "../components/WeekNav";
+import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "../lib/date";
 
-/* Heures par créneau (inclut le dimanche spécial) */
+/* Heures par crÃ©neau (inclut le dimanche spÃ©cial) */
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
-const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h–13h30" };
+const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9hâ€“13h30" };
 
 /* Couleurs fixes par vendeuse */
 const SELLER_COLORS = {
@@ -21,7 +21,7 @@ const SELLER_COLORS = {
 };
 const colorForName = (name) => SELLER_COLORS[name] || "#9e9e9e";
 
-/* Utils date / libellés */
+/* Utils date / libellÃ©s */
 function firstDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function lastDayOfMonth(d)  { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
 function monthInputValue(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
@@ -34,7 +34,7 @@ const frDate = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateS
 const isSameISO = (d, iso) => fmtISODate(d) === iso;
 
 function Chip({ name }) {
-  if (!name || name === "—") return <span className="text-sm text-gray-500">—</span>;
+  if (!name || name === "â€”") return <span className="text-sm text-gray-500">â€”</span>;
   const bg = colorForName(name);
   return <span style={{ backgroundColor: bg, color: "#fff", borderRadius: 9999, padding: "2px 10px", fontSize: "0.8rem" }}>{name}</span>;
 }
@@ -43,44 +43,44 @@ export default function Admin() {
   const { session, profile, loading } = useAuth();
   const r = useRouter();
 
-  // Semaine affichée
+  // Semaine affichÃ©e
   const [monday, setMonday] = useState(startOfWeek(new Date()));
   const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)), [monday]);
 
-  // Mois pour les totaux (sélecteur en bas)
+  // Mois pour les totaux (sÃ©lecteur en bas)
   const [selectedMonth, setSelectedMonth] = useState(firstDayOfMonth(new Date()));
   const monthFrom = fmtISODate(firstDayOfMonth(selectedMonth));
   const monthTo   = fmtISODate(lastDayOfMonth(selectedMonth));
 
-  // Données UI
+  // DonnÃ©es UI
   const [sellers, setSellers] = useState([]);               // [{user_id, full_name}]
   const [assign, setAssign] = useState({});                 // "YYYY-MM-DD|SHIFT" -> seller_id
-  const [absencesToday, setAbsencesToday] = useState([]);   // d’aujourd’hui (pending/approved)
-  const [pendingAbs, setPendingAbs] = useState([]);         // absences à venir (pending)
-  const [replList, setReplList] = useState([]);             // volontaires (pending) sur absences approuvées
+  const [absencesToday, setAbsencesToday] = useState([]);   // dâ€™aujourdâ€™hui (pending/approved)
+  const [pendingAbs, setPendingAbs] = useState([]);         // absences Ã  venir (pending)
+  const [replList, setReplList] = useState([]);             // volontaires (pending) sur absences approuvÃ©es
   const [selectedShift, setSelectedShift] = useState({});   // {replacement_interest_id: "MIDDAY"}
-  const [latestRepl, setLatestRepl] = useState(null);       // bannière: dernier volontariat reçu
+  const [latestRepl, setLatestRepl] = useState(null);       // banniÃ¨re: dernier volontariat reÃ§u
 
-  // Congés
-  const [pendingLeaves, setPendingLeaves] = useState([]);   // congés en attente (à venir ou en cours)
-  const [latestLeave, setLatestLeave] = useState(null);     // bannière congé la plus récente (pending)
-  const [approvedLeaves, setApprovedLeaves] = useState([]); // congés approuvés (end_date >= today)
+  // CongÃ©s
+  const [pendingLeaves, setPendingLeaves] = useState([]);   // congÃ©s en attente (Ã  venir ou en cours)
+  const [latestLeave, setLatestLeave] = useState(null);     // banniÃ¨re congÃ© la plus rÃ©cente (pending)
+  const [approvedLeaves, setApprovedLeaves] = useState([]); // congÃ©s approuvÃ©s (end_date >= today)
 
-  // Absences approuvées du mois sélectionné
-  const [monthAbsences, setMonthAbsences] = useState([]);           // passées/aujourd’hui (items avec id)
-  const [monthUpcomingAbsences, setMonthUpcomingAbsences] = useState([]); // à venir (items avec id)
+  // Absences approuvÃ©es du mois sÃ©lectionnÃ©
+  const [monthAbsences, setMonthAbsences] = useState([]);           // passÃ©es/aujourdâ€™hui (items avec id)
+  const [monthUpcomingAbsences, setMonthUpcomingAbsences] = useState([]); // Ã  venir (items avec id)
 
-  // Remplacements acceptés du mois (absence_id -> { volunteer_id, volunteer_name, shift })
+  // Remplacements acceptÃ©s du mois (absence_id -> { volunteer_id, volunteer_name, shift })
   const [monthAcceptedRepl, setMonthAcceptedRepl] = useState({});
 
-  // Bannière éphémère quand une vendeuse annule son absence (DELETE)
+  // BanniÃ¨re Ã©phÃ©mÃ¨re quand une vendeuse annule son absence (DELETE)
   const [latestCancel, setLatestCancel] = useState(null);   // { name, date }
 
   const [refreshKey, setRefreshKey] = useState(0);          // recalcul totaux mois
   const today = new Date();
   const todayIso = fmtISODate(today);
 
-  /* Sécurité */
+  /* SÃ©curitÃ© */
   useEffect(() => {
     if (loading) return;
     if (!session) r.replace("/login");
@@ -94,7 +94,7 @@ export default function Admin() {
       setSellers(data || []);
     })();
   }, []);
-  const nameFromId = (id) => sellers.find((s) => s.user_id === id)?.full_name || "—";
+  const nameFromId = (id) => sellers.find((s) => s.user_id === id)?.full_name || "â€”";
 
   /* Planning semaine */
   useEffect(() => {
@@ -113,7 +113,7 @@ export default function Admin() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monday]);
 
-  /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
+  /* Absences d'aujourd'hui (avec remplacement acceptÃ© si existe) */
   const loadAbsencesToday = async () => {
     const { data: abs } = await supabase
       .from("absences")
@@ -142,7 +142,7 @@ export default function Admin() {
       (repl || []).forEach(r => {
         mapRepl[r.absence_id] = {
           volunteer_id: r.volunteer_id,
-          volunteer_name: names[r.volunteer_id] || "—",
+          volunteer_name: names[r.volunteer_id] || "â€”",
         };
       });
     }
@@ -152,7 +152,7 @@ export default function Admin() {
   };
   useEffect(() => { loadAbsencesToday(); }, [todayIso]);
 
-  /* Absences en attente (toutes à venir) */
+  /* Absences en attente (toutes Ã  venir) */
   const loadPendingAbs = async () => {
     const { data } = await supabase
       .from("absences")
@@ -164,7 +164,7 @@ export default function Admin() {
   };
   useEffect(() => { loadPendingAbs(); }, [todayIso]);
 
-  /* Volontaires (absences approuvées) */
+  /* Volontaires (absences approuvÃ©es) */
   const loadReplacements = async () => {
     const { data: rows } = await supabase
       .from("replacement_interest")
@@ -182,21 +182,21 @@ export default function Admin() {
       (profs || []).forEach((p) => (names[p.user_id] = p.full_name));
     }
     const list = (rows || []).map((r) => ({
-      id: r.id, volunteer_id: r.volunteer_id, volunteer_name: names[r.volunteer_id] || "—",
+      id: r.id, volunteer_id: r.volunteer_id, volunteer_name: names[r.volunteer_id] || "â€”",
       absence_id: r.absence_id, date: r.absences?.date, absent_id: r.absences?.seller_id,
-      absent_name: names[r.absences?.seller_id] || "—", status: r.status,
+      absent_name: names[r.absences?.seller_id] || "â€”", status: r.status,
     }));
     setReplList(list);
   };
   useEffect(() => { loadReplacements(); }, [todayIso]);
 
-  /* ======= CONGÉS ======= */
+  /* ======= CONGÃ‰S ======= */
   const loadPendingLeaves = async () => {
     const { data } = await supabase
       .from("leaves")
       .select("id, seller_id, start_date, end_date, reason, status, created_at")
       .eq("status", "pending")
-      .gte("end_date", todayIso)      // uniquement non passés
+      .gte("end_date", todayIso)      // uniquement non passÃ©s
       .order("created_at", { ascending: false });
     setPendingLeaves(data || []);
   };
@@ -211,7 +211,7 @@ export default function Admin() {
     if (!data || data.length === 0) { setLatestLeave(null); return; }
     const leave = data[0];
     const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", leave.seller_id).single();
-    setLatestLeave({ ...leave, seller_name: prof?.full_name || "—" });
+    setLatestLeave({ ...leave, seller_name: prof?.full_name || "â€”" });
   };
   const loadApprovedLeaves = async () => {
     const { data } = await supabase
@@ -223,7 +223,7 @@ export default function Admin() {
     setApprovedLeaves(data || []);
   };
 
-  // Actions congés
+  // Actions congÃ©s
   const approveLeave = async (id) => {
     const { error } = await supabase.from("leaves").update({ status: "approved" }).eq("id", id);
     if (error) { alert("Impossible d'approuver (RLS ?)"); return; }
@@ -235,22 +235,22 @@ export default function Admin() {
     await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
   };
   const cancelFutureLeave = async (id) => {
-    // admin-only action (on est déjà sur /admin avec role admin)
-    // Vérifie que le congé est à venir, puis supprime l'entrée
+    // admin-only action (on est dÃ©jÃ  sur /admin avec role admin)
+    // VÃ©rifie que le congÃ© est Ã  venir, puis supprime l'entrÃ©e
     const { data: leave } = await supabase.from("leaves").select("start_date,status").eq("id", id).single();
-    if (!leave) { alert("Congé introuvable."); return; }
-    if (!(leave.status === "approved" || leave.status === "pending")) { alert("Seuls les congés approuvés/en attente peuvent être annulés."); return; }
+    if (!leave) { alert("CongÃ© introuvable."); return; }
+    if (!(leave.status === "approved" || leave.status === "pending")) { alert("Seuls les congÃ©s approuvÃ©s/en attente peuvent Ãªtre annulÃ©s."); return; }
     const tIso = fmtISODate(new Date());
-    if (!(leave.start_date > tIso)) { alert("On ne peut annuler que les congés à venir."); return; }
+    if (!(leave.start_date > tIso)) { alert("On ne peut annuler que les congÃ©s Ã  venir."); return; }
 
     const { error } = await supabase.from("leaves").delete().eq("id", id);
-    if (error) { console.error(error); alert("Échec de l’annulation du congé."); return; }
+    if (error) { console.error(error); alert("Ã‰chec de lâ€™annulation du congÃ©."); return; }
 
     await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
-    alert("Congé à venir annulé. La vendeuse peut refaire une demande.");
+    alert("CongÃ© Ã  venir annulÃ©. La vendeuse peut refaire une demande.");
   };
 
-  /* ======= ABSENCES DU MOIS (APPROUVÉES) ======= */
+  /* ======= ABSENCES DU MOIS (APPROUVÃ‰ES) ======= */
   const loadMonthAbsences = async () => {
     const tIso = fmtISODate(new Date());
     const { data } = await supabase
@@ -259,7 +259,7 @@ export default function Admin() {
       .eq("status", "approved")
       .gte("date", monthFrom)
       .lte("date", monthTo)
-      .lte("date", tIso); // passées/aujourd’hui
+      .lte("date", tIso); // passÃ©es/aujourdâ€™hui
 
     const seen = new Set();
     const uniq = [];
@@ -289,7 +289,7 @@ export default function Admin() {
     setMonthUpcomingAbsences(uniq);
   };
 
-  // Remplacements acceptés pour les absences du mois (passées/à venir)
+  // Remplacements acceptÃ©s pour les absences du mois (passÃ©es/Ã  venir)
   const loadMonthAcceptedRepl = async () => {
     const ids = [
       ...(monthAbsences || []).map(a => a.id),
@@ -320,7 +320,7 @@ export default function Admin() {
     rows.forEach(r => {
       map[r.absence_id] = {
         volunteer_id: r.volunteer_id,
-        volunteer_name: names[r.volunteer_id] || "—",
+        volunteer_name: names[r.volunteer_id] || "â€”",
         shift: r.accepted_shift_code || null,
       };
     });
@@ -354,9 +354,9 @@ export default function Admin() {
             supabase.from("profiles").select("full_name").eq("user_id", abs?.seller_id).single(),
           ]);
           setLatestRepl({
-            id: r.id, volunteer_id: r.volunteer_id, volunteer_name: vol.data?.full_name || "—",
+            id: r.id, volunteer_id: r.volunteer_id, volunteer_name: vol.data?.full_name || "â€”",
             absence_id: r.absence_id, date: abs?.date, absent_id: abs?.seller_id,
-            absent_name: absName.data?.full_name || "—", status: r.status,
+            absent_name: absName.data?.full_name || "â€”", status: r.status,
           });
         }
         loadReplacements(); loadMonthAcceptedRepl();
@@ -369,7 +369,7 @@ export default function Admin() {
         await loadApprovedLeaves();
       }).subscribe();
 
-    // Nouveau : bannière quand une absence est supprimée par une vendeuse
+    // Nouveau : banniÃ¨re quand une absence est supprimÃ©e par une vendeuse
     const chCancel = supabase
       .channel("absences_delete_banner")
       .on(
@@ -383,7 +383,7 @@ export default function Admin() {
             .select("full_name")
             .eq("user_id", old.seller_id)
             .single();
-          setLatestCancel({ name: prof?.full_name || "—", date: old.date });
+          setLatestCancel({ name: prof?.full_name || "â€”", date: old.date });
           setTimeout(() => setLatestCancel(null), 5000);
         }
       )
@@ -405,13 +405,13 @@ export default function Admin() {
       .from("shifts")
       .upsert({ date: iso, shift_code: code, seller_id: seller_id || null }, { onConflict: "date,shift_code" })
       .select("date");
-    if (error) { console.error("UPSERT shifts error:", error); alert("Échec de sauvegarde du planning (RLS ?)"); return; }
+    if (error) { console.error("UPSERT shifts error:", error); alert("Ã‰chec de sauvegarde du planning (RLS ?)"); return; }
     setRefreshKey((k) => k + 1);
   };
 
   /* Copier la semaine -> semaine suivante */
   const copyWeekToNext = async () => {
-    if (!window.confirm("Copier le planning de la semaine affichée vers la semaine prochaine ? Cela remplacera les affectations déjà présentes la semaine suivante.")) return;
+    if (!window.confirm("Copier le planning de la semaine affichÃ©e vers la semaine prochaine ? Cela remplacera les affectations dÃ©jÃ  prÃ©sentes la semaine suivante.")) return;
     const shiftCodes = ["MORNING", "MIDDAY", "EVENING", "SUNDAY_EXTRA"];
     const rows = [];
     days.forEach((d) => {
@@ -422,12 +422,12 @@ export default function Admin() {
         if (sellerId) rows.push({ date: nextIso, shift_code: code, seller_id: sellerId });
       });
     });
-    if (rows.length === 0) { alert("Aucune affectation à copier cette semaine."); return; }
+    if (rows.length === 0) { alert("Aucune affectation Ã  copier cette semaine."); return; }
     const { error } = await supabase.from("shifts").upsert(rows, { onConflict: "date,shift_code" }).select("date");
-    if (error) { console.error(error); alert("La copie a échoué."); return; }
+    if (error) { console.error(error); alert("La copie a Ã©chouÃ©."); return; }
     setMonday(addDays(monday, 7));
     setRefreshKey((k) => k + 1);
-    alert("Planning copié vers la semaine prochaine.");
+    alert("Planning copiÃ© vers la semaine prochaine.");
   };
 
   /* Actions absence */
@@ -445,16 +445,16 @@ export default function Admin() {
   /* Attribuer / Refuser volontaire */
   const assignVolunteer = async (repl) => {
     const shift = selectedShift[repl.id];
-    if (!shift) { alert("Choisis d’abord un créneau."); return; }
+    if (!shift) { alert("Choisis dâ€™abord un crÃ©neau."); return; }
 
     // 1) Mettre la volontaire dans le planning
     const { error: errUpsert } = await supabase
       .from("shifts")
       .upsert({ date: repl.date, shift_code: shift, seller_id: repl.volunteer_id }, { onConflict: "date,shift_code" })
       .select("date");
-    if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
+    if (errUpsert) { console.error(errUpsert); alert("Ã‰chec dâ€™attribution (RLS ?)"); return; }
 
-    // 2) Marquer cette proposition comme acceptée + stocker le créneau accepté
+    // 2) Marquer cette proposition comme acceptÃ©e + stocker le crÃ©neau acceptÃ©
     await supabase
       .from("replacement_interest")
       .update({ status: "accepted", accepted_shift_code: shift })
@@ -467,7 +467,7 @@ export default function Admin() {
       .eq("absence_id", repl.absence_id)
       .neq("id", repl.id);
 
-    // 4) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
+    // 4) IMPORTANT : si lâ€™absence est encore 'pending', lâ€™approuver automatiquement
     const { data: absRow } = await supabase
       .from("absences")
       .select("status")
@@ -479,10 +479,10 @@ export default function Admin() {
 
     if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
 
-    // 5) Rafraîchir tous les blocs
+    // 5) RafraÃ®chir tous les blocs
     setRefreshKey((k) => k + 1);
     await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences(), loadMonthAcceptedRepl()]);
-    alert("Volontaire attribuée et absence approuvée.");
+    alert("Volontaire attribuÃ©e et absence approuvÃ©e.");
   };
 
   const declineVolunteer = async (replId) => {
@@ -492,9 +492,9 @@ export default function Admin() {
     await loadReplacements(); await loadMonthAcceptedRepl();
   };
 
-  /* ---------- 🔔 BADGE + REFRESH AUTO ---------- */
+  /* ---------- ðŸ”” BADGE + REFRESH AUTO ---------- */
 
-  // Pastille selon éléments en attente (plus de demandes d’annulation ici)
+  // Pastille selon Ã©lÃ©ments en attente (plus de demandes dâ€™annulation ici)
   useEffect(() => {
     const count =
       (pendingAbs?.length || 0) +
@@ -511,7 +511,7 @@ export default function Admin() {
     }
   }, [pendingAbs?.length, pendingLeaves?.length, replList?.length]);
 
-  // Regroupe les rechargements + efface la pastille à l’ouverture
+  // Regroupe les rechargements + efface la pastille Ã  lâ€™ouverture
   const reloadAll = useCallback(async () => {
     await Promise.all([
       loadPendingAbs?.(),
@@ -537,7 +537,7 @@ export default function Admin() {
     loadMonthUpcomingAbsences,
   ]);
 
-  // Recharge quand l’app revient au premier plan
+  // Recharge quand lâ€™app revient au premier plan
   useEffect(() => {
     const onWake = () => reloadAll();
     window.addEventListener('focus', onWake);
@@ -548,7 +548,7 @@ export default function Admin() {
     };
   }, [reloadAll]);
 
-  // Écoute les messages du Service Worker (reçu à chaque push) → recharge
+  // Ã‰coute les messages du Service Worker (reÃ§u Ã  chaque push) â†’ recharge
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const handler = (e) => {
@@ -562,31 +562,31 @@ export default function Admin() {
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-        <div className="hdr">Compte: {profile?.full_name || "—"} <span className="sub">(admin)</span></div>
+        <div className="hdr">Compte: {profile?.full_name || "â€”"} <span className="sub">(admin)</span></div>
         <div className="flex items-center gap-2">
-          <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
-          <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
-          <button type="button" className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
+          <Link href="/admin/sellers" legacyBehavior><a className="btn">ðŸ‘¥ Gerer les vendeuses</a></Link>
+          <Link href="/push-setup" legacyBehavior><a className="btn">ðŸ”” Activer les notifications</a></Link>
+          <button type="button" className="btn" onClick={() => supabase.auth.signOut()}>Se dÃ©connecter</button>
         </div>
       </div>
 
-      {/* BANNIÈRE : Annulation effectuée par une vendeuse (DELETE) */}
+      {/* BANNIÃˆRE : Annulation effectuÃ©e par une vendeuse (DELETE) */}
       {latestCancel && (
         <div className="border rounded-2xl p-3 flex items-start justify-between gap-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
           <div className="text-sm">
-            <span className="font-medium">{latestCancel.name}</span> a annulé son absence du <span className="font-medium">{latestCancel.date}</span>.
+            <span className="font-medium">{latestCancel.name}</span> a annulÃ© son absence du <span className="font-medium">{latestCancel.date}</span>.
           </div>
         </div>
       )}
 
-      {/* BANNIÈRE : Demande de congé (la plus récente) */}
+      {/* BANNIÃˆRE : Demande de congÃ© (la plus rÃ©cente) */}
       {latestLeave && (
         <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
              style={{ backgroundColor: "#fef3c7", borderColor: "#fcd34d" }}>
           <div className="text-sm">
-            <span className="font-medium">{latestLeave.seller_name}</span> demande un congé du{" "}
+            <span className="font-medium">{latestLeave.seller_name}</span> demande un congÃ© du{" "}
             <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
-            {latestLeave.reason ? <> — <span>{latestLeave.reason}</span></> : null}.
+            {latestLeave.reason ? <> â€” <span>{latestLeave.reason}</span></> : null}.
           </div>
           <div className="flex gap-2">
             <ApproveBtn onClick={() => approveLeave(latestLeave.id)} />
@@ -595,7 +595,7 @@ export default function Admin() {
         </div>
       )}
 
-      {/* BANNIÈRE : Volontariat de remplacement */}
+      {/* BANNIÃˆRE : Volontariat de remplacement */}
       {latestRepl && (
         <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
              style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
@@ -610,19 +610,19 @@ export default function Admin() {
         </div>
       )}
 
-      {/* Absences aujourd’hui — disparaît après le jour J */}
+      {/* Absences aujourdâ€™hui â€” disparaÃ®t aprÃ¨s le jour J */}
       <div className="card">
-        <div className="hdr mb-2">Absences aujourd’hui</div>
-        {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourd’hui</div> : (
+        <div className="hdr mb-2">Absences aujourdâ€™hui</div>
+        {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourdâ€™hui</div> : (
           <ul className="list-disc pl-6 space-y-1">
             {absencesToday.map((a) => (
               <li key={a.id}>
-                <Chip name={nameFromId(a.seller_id)} /> — {a.status}
-                {a.reason ? ` · ${a.reason}` : ""}
+                <Chip name={nameFromId(a.seller_id)} /> â€” {a.status}
+                {a.reason ? ` Â· ${a.reason}` : ""}
                 {a.replacement ? (
                   <>
-                    {" · "}
-                    <span>Remplacement accepté : </span>
+                    {" Â· "}
+                    <span>Remplacement acceptÃ© : </span>
                     <Chip name={a.replacement.volunteer_name} />
                   </>
                 ) : null}
@@ -632,16 +632,16 @@ export default function Admin() {
         )}
       </div>
 
-      {/* Demandes d’absence — en attente */}
+      {/* Demandes dâ€™absence â€” en attente */}
       <div className="card">
-        <div className="hdr mb-2">Demandes d’absence — en attente (à venir)</div>
+        <div className="hdr mb-2">Demandes dâ€™absence â€” en attente (Ã  venir)</div>
         {pendingAbs.length === 0 ? <div className="text-sm text-gray-600">Aucune demande en attente.</div> : (
           <div className="space-y-2">
             {pendingAbs.map((a) => {
               const name = nameFromId(a.seller_id);
               return (
                 <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                  <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date} {a.reason ? `· ${a.reason}` : ""}</div></div>
+                  <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date} {a.reason ? `Â· ${a.reason}` : ""}</div></div>
                   <div className="flex gap-2"><ApproveBtn onClick={() => approveAbs(a.id)} /><RejectBtn onClick={() => rejectAbs(a.id)} /></div>
                 </div>
               );
@@ -650,10 +650,10 @@ export default function Admin() {
         )}
       </div>
 
-      {/* Demandes de congé — en attente */}
+      {/* Demandes de congÃ© â€” en attente */}
       <div className="card">
-        <div className="hdr mb-2">Demandes de congé — en attente</div>
-        {pendingLeaves.length === 0 ? <div className="text-sm text-gray-600">Aucune demande de congé en attente.</div> : (
+        <div className="hdr mb-2">Demandes de congÃ© â€” en attente</div>
+        {pendingLeaves.length === 0 ? <div className="text-sm text-gray-600">Aucune demande de congÃ© en attente.</div> : (
           <div className="space-y-2">
             {pendingLeaves.map((l) => {
               const name = nameFromId(l.seller_id);
@@ -661,7 +661,7 @@ export default function Admin() {
                 <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                   <div>
                     <div className="font-medium">{name}</div>
-                    <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}{l.reason ? ` · ${l.reason}` : ""}</div>
+                    <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}{l.reason ? ` Â· ${l.reason}` : ""}</div>
                   </div>
                   <div className="flex gap-2">
                     <ApproveBtn onClick={() => approveLeave(l.id)} />
@@ -674,17 +674,17 @@ export default function Admin() {
         )}
       </div>
 
-      {/* Congés approuvés — en cours ou à venir */}
+      {/* CongÃ©s approuvÃ©s â€” en cours ou Ã  venir */}
       <div className="card">
-        <div className="hdr mb-2">Congés approuvés — en cours ou à venir</div>
+        <div className="hdr mb-2">CongÃ©s approuvÃ©s â€” en cours ou Ã  venir</div>
         {approvedLeaves.length === 0 ? (
-          <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
+          <div className="text-sm text-gray-600">Aucun congÃ© approuvÃ© Ã  venir.</div>
         ) : (
           <div className="space-y-2">
             {approvedLeaves.map((l) => {
               const name = nameFromId(l.seller_id);
               const isOngoing = betweenIso(todayIso, l.start_date, l.end_date);
-              const tag = isOngoing ? "En cours" : "À venir";
+              const tag = isOngoing ? "En cours" : "Ã€ venir";
               const tagBg = isOngoing ? "#16a34a" : "#2563eb";
               return (
                 <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
@@ -694,11 +694,11 @@ export default function Admin() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>{tag}</span>
-                    {/* Bouton admin pour ANNULER un congé à venir */}
+                    {/* Bouton admin pour ANNULER un congÃ© Ã  venir */}
                     {!isOngoing && l.start_date > todayIso ? (
                       <button type="button" className="btn" onClick={() => cancelFutureLeave(l.id)}
                         style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
-                        Annuler le congé
+                        Annuler le congÃ©
                       </button>
                     ) : null}
                   </div>
@@ -712,7 +712,7 @@ export default function Admin() {
       {/* Planning du jour */}
       <TodayColorBlocks today={today} todayIso={todayIso} assign={assign} nameFromId={nameFromId} />
 
-      {/* Planning de la semaine (édition) */}
+      {/* Planning de la semaine (Ã©dition) */}
       <div className="card">
         <div className="hdr mb-4">Planning de la semaine</div>
 
@@ -724,7 +724,7 @@ export default function Admin() {
             onToday={() => setMonday(startOfWeek(new Date()))}
             onNext={() => setMonday(addDays(monday, 7))}
           />
-          <button type="button" className="btn" onClick={copyWeekToNext}>Copier la semaine → la suivante</button>
+          <button type="button" className="btn" onClick={copyWeekToNext}>Copier la semaine â†’ la suivante</button>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
@@ -741,26 +741,26 @@ export default function Admin() {
                 <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
                 <div className="font-semibold">{iso}</div>
 
-                <ShiftRow label="Matin (6h30–13h30)" iso={iso} code="MORNING" value={assign[`${iso}|MORNING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MORNING`])} />
+                <ShiftRow label="Matin (6h30â€“13h30)" iso={iso} code="MORNING" value={assign[`${iso}|MORNING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MORNING`])} />
 
                 {!sunday ? (
-                  <ShiftRow label="Midi (7h–13h)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
+                  <ShiftRow label="Midi (7hâ€“13h)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
                 ) : (
                   <div className="space-y-1">
-                    <div className="text-sm">Midi — deux postes</div>
+                    <div className="text-sm">Midi â€” deux postes</div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <div className="text-xs mb-1">7h–13h</div>
+                        <div className="text-xs mb-1">7hâ€“13h</div>
                         <select className="select" value={assign[`${iso}|MIDDAY`] || ""} onChange={(e) => save(iso, "MIDDAY", e.target.value || null)}>
-                          <option value="">— Choisir vendeuse —</option>
+                          <option value="">â€” Choisir vendeuse â€”</option>
                           {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
                         </select>
                         <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|MIDDAY`])} /></div>
                       </div>
                       <div>
-                        <div className="text-xs mb-1">9h–13h30</div>
+                        <div className="text-xs mb-1">9hâ€“13h30</div>
                         <select className="select" value={assign[`${iso}|SUNDAY_EXTRA`] || ""} onChange={(e) => save(iso, "SUNDAY_EXTRA", e.target.value || null)}>
-                          <option value="">— Choisir vendeuse —</option>
+                          <option value="">â€” Choisir vendeuse â€”</option>
                           {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
                         </select>
                         <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|SUNDAY_EXTRA`])} /></div>
@@ -769,16 +769,16 @@ export default function Admin() {
                   </div>
                 )}
 
-                <ShiftRow label="Soir (13h30–20h30)" iso={iso} code="EVENING" value={assign[`${iso}|EVENING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|EVENING`])} />
+                <ShiftRow label="Soir (13h30â€“20h30)" iso={iso} code="EVENING" value={assign[`${iso}|EVENING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|EVENING`])} />
               </div>
             );
           })}
         </div>
       </div>
 
-      {/* Sélecteur de MOIS */}
+      {/* SÃ©lecteur de MOIS */}
       <div className="card">
-        <div className="hdr mb-2">Choisir le mois pour “Total heures (mois)”</div>
+        <div className="hdr mb-2">Choisir le mois pour â€œTotal heures (mois)â€</div>
         <div className="grid sm:grid-cols-3 gap-3 items-center">
           <div className="sm:col-span-2">
             <div className="text-sm mb-1">Mois</div>
@@ -793,7 +793,7 @@ export default function Admin() {
             />
           </div>
           <div className="text-sm text-gray-600">
-            Mois sélectionné : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>
+            Mois sÃ©lectionnÃ© : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>
           </div>
         </div>
       </div>
@@ -809,12 +809,12 @@ export default function Admin() {
         monthUpcomingAbsences={monthUpcomingAbsences}
       />
 
-      {/* Absences approuvées — MOIS (passées / aujourd’hui) */}
+      {/* Absences approuvÃ©es â€” MOIS (passÃ©es / aujourdâ€™hui) */}
       <div className="card">
-        <div className="hdr mb-2">Absences approuvées — mois : {labelMonthFR(selectedMonth)}</div>
+        <div className="hdr mb-2">Absences approuvÃ©es â€” mois : {labelMonthFR(selectedMonth)}</div>
         {(() => {
           if (!monthAbsences || monthAbsences.length === 0) {
-            return <div className="text-sm text-gray-600">Aucune absence (passée/aujourd’hui) sur ce mois.</div>;
+            return <div className="text-sm text-gray-600">Aucune absence (passÃ©e/aujourdâ€™hui) sur ce mois.</div>;
           }
           // Grouper par vendeuse
           const bySeller = {};
@@ -838,7 +838,7 @@ export default function Admin() {
                           <li key={a.id}>
                             <span className="font-medium">{frDate(a.date)}</span>
                             {repl ? (
-                              <> — <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
+                              <> â€” <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
                             ) : null}
                           </li>
                         );
@@ -852,12 +852,12 @@ export default function Admin() {
         })()}
       </div>
 
-      {/* Absences approuvées à venir — MOIS (dates futures) */}
+      {/* Absences approuvÃ©es Ã  venir â€” MOIS (dates futures) */}
       <div className="card">
-        <div className="hdr mb-2">Absences approuvées à venir — mois : {labelMonthFR(selectedMonth)}</div>
+        <div className="hdr mb-2">Absences approuvÃ©es Ã  venir â€” mois : {labelMonthFR(selectedMonth)}</div>
         {(() => {
           if (!monthUpcomingAbsences || monthUpcomingAbsences.length === 0) {
-            return <div className="text-sm text-gray-600">Aucune absence à venir sur ce mois.</div>;
+            return <div className="text-sm text-gray-600">Aucune absence Ã  venir sur ce mois.</div>;
           }
           // Grouper par vendeuse
           const bySeller = {};
@@ -881,9 +881,9 @@ export default function Admin() {
                           <li key={a.id}>
                             <span className="font-medium">{frDate(a.date)}</span>
                             {repl ? (
-                              <> — <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
+                              <> â€” <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
                             ) : (
-                              <> — <span className="text-gray-500">pas de volontaire accepté</span></>
+                              <> â€” <span className="text-gray-500">pas de volontaire acceptÃ©</span></>
                             )}
                           </li>
                         );
@@ -901,19 +901,19 @@ export default function Admin() {
 }
 
 /* ---------- Composants ---------- */
-function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "—"; }
+function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "â€”"; }
 
 function ShiftSelect({ dateStr, value, onChange }) {
   const sunday = isSunday(new Date(dateStr));
   const options = [
-    { code: "MORNING", label: "Matin (6h30–13h30)" },
-    { code: "MIDDAY", label: "Midi (7h–13h)" },
-    ...(sunday ? [{ code: "SUNDAY_EXTRA", label: "9h–13h30" }] : []),
-    { code: "EVENING", label: "Soir (13h30–20h30)" },
+    { code: "MORNING", label: "Matin (6h30â€“13h30)" },
+    { code: "MIDDAY", label: "Midi (7hâ€“13h)" },
+    ...(sunday ? [{ code: "SUNDAY_EXTRA", label: "9hâ€“13h30" }] : []),
+    { code: "EVENING", label: "Soir (13h30â€“20h30)" },
   ];
   return (
     <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">— Choisir un créneau —</option>
+      <option value="">â€” Choisir un crÃ©neau â€”</option>
       {options.map((op) => (
         <option key={op.code} value={op.code}>
           {op.label}
@@ -940,7 +940,7 @@ function TodayColorBlocks({ today, todayIso, assign, nameFromId }) {
           return (
             <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
               <div className="font-medium">{label}</div>
-              <div className="text-sm mt-1">{assigned ? name : "—"}</div>
+              <div className="text-sm mt-1">{assigned ? name : "â€”"}</div>
             </div>
           );
         })}
@@ -954,7 +954,7 @@ function ShiftRow({ label, iso, code, value, onChange, sellers, chipName }) {
     <div className="space-y-1">
       <div className="text-sm">{label}</div>
       <select className="select" value={value} onChange={(e) => onChange(iso, code, e.target.value || null)}>
-        <option value="">— Choisir vendeuse —</option>
+        <option value="">â€” Choisir vendeuse â€”</option>
         {sellers.map((s) => (
           <option key={s.user_id} value={s.user_id}>
             {s.full_name}
@@ -979,7 +979,7 @@ function TotalsGrid({
   const [annualLeaveDays, setAnnualLeaveDays] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // Heures semaine — depuis la DB, **semaine en cours** et **uniquement les jours passés** (date < aujourd’hui)
+  // Heures semaine â€” depuis la DB, **semaine en cours** et **uniquement les jours passÃ©s** (date < aujourdâ€™hui)
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -991,7 +991,7 @@ function TotalsGrid({
           .from("shifts")
           .select("date, shift_code, seller_id")
           .gte("date", weekStart)
-          .lt("date", todayIso); // exclut aujourd’hui et futurs
+          .lt("date", todayIso); // exclut aujourdâ€™hui et futurs
 
         const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
         (data || []).forEach((r) => {
@@ -1008,7 +1008,7 @@ function TotalsGrid({
     return () => { cancelled = true; };
   }, [sellers, refreshKey]);
 
-  // Heures mois (dédupliqué + sans jours futurs si mois courant)
+  // Heures mois (dÃ©dupliquÃ© + sans jours futurs si mois courant)
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -1047,7 +1047,7 @@ function TotalsGrid({
     return () => { cancelled = true; };
   }, [sellers, monthFrom, monthTo, refreshKey]);
 
-  // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd’hui inclus)
+  // Jours de congÃ© pris sur l'annÃ©e en cours (approved, jusquâ€™Ã  aujourdâ€™hui inclus)
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -1081,7 +1081,7 @@ function TotalsGrid({
     return () => { cancelled = true; };
   }, [sellers, refreshKey]);
 
-  // Compteur d'absences du mois (approved, passées + à venir)
+  // Compteur d'absences du mois (approved, passÃ©es + Ã  venir)
   const absencesCount = useMemo(() => {
     const all = [...(monthAbsences || []), ...(monthUpcomingAbsences || [])];
     const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
@@ -1095,14 +1095,14 @@ function TotalsGrid({
     return (
       <div className="card">
         <div className="hdr mb-2">Total heures vendeuses</div>
-        <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
+        <div className="text-sm text-gray-600">Aucune vendeuse enregistrÃ©e.</div>
       </div>
     );
 
   return (
     <div className="card">
-      <div className="hdr mb-1">Total heures — semaine en cours (jusqu’à hier) & mois : {monthLabel}</div>
-      {loading && <div className="text-sm text-gray-500 mb-3">Calcul en cours…</div>}
+      <div className="hdr mb-1">Total heures â€” semaine en cours (jusquâ€™Ã  hier) & mois : {monthLabel}</div>
+      {loading && <div className="text-sm text-gray-500 mb-3">Calcul en coursâ€¦</div>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {sellers.map((s) => {
           const week = weekTotals[s.user_id] || 0;
@@ -1114,13 +1114,13 @@ function TotalsGrid({
               <div className="flex items-center justify-between">
                 <Chip name={s.full_name} />
               </div>
-              <div className="text-sm text-gray-600">Semaine (jusqu’à hier)</div>
+              <div className="text-sm text-gray-600">Semaine (jusquâ€™Ã  hier)</div>
               <div className="text-2xl font-semibold">{week}</div>
               <div className="text-sm text-gray-600 mt-2">Mois ({monthLabel})</div>
               <div className="text-2xl font-semibold">{month}</div>
               <div className="text-sm text-gray-600 mt-2">Absences (mois)</div>
               <div className="text-2xl font-semibold">{absCount}</div>
-              <div className="text-sm text-gray-600 mt-2">Congés pris (année)</div>
+              <div className="text-sm text-gray-600 mt-2">CongÃ©s pris (annÃ©e)</div>
               <div className="text-2xl font-semibold">{leaveDays}</div>
             </div>
           );
@@ -1130,7 +1130,7 @@ function TotalsGrid({
   );
 }
 
-/* Boutons colorés */
+/* Boutons colorÃ©s */
 const ApproveBtn = ({ onClick, children = "Approuver" }) => (
   <button type="button" className="btn" onClick={onClick}
     style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>

@@ -1,8 +1,9 @@
+
 // pages/_app.js
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/router";
 import "../styles/globals.css"; // garde si tu utilises Tailwind / styles globaux
-import { supabase } from "@/lib/supabaseClient";
+
 
 function InstallButton({ deferredPrompt, onInstalled }) {
   if (!deferredPrompt) return null;

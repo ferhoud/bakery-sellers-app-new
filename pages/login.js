@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
+﻿import { useState } from "react";
+import { supabase } from "../lib/supabaseClient";
 
 export default function Login(){
   const [email, setEmail] = useState("");
@@ -19,7 +19,7 @@ export default function Login(){
         setLoading(false);
         return;
       }
-      // Redirection immédiate : l’index décidera /admin ou /app
+      // Redirection immÃ©diate : lâ€™index dÃ©cidera /admin ou /app
       window.location.assign("/");
     } catch (err) {
       setError(err?.message || "Erreur inconnue");
@@ -31,7 +31,7 @@ export default function Login(){
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="card w-full max-w-md">
         <h1 className="hdr mb-2">Connexion</h1>
-        <p className="sub mb-6">Identifiant et mot de passe fournis par l’administrateur.</p>
+        <p className="sub mb-6">Identifiant et mot de passe fournis par lâ€™administrateur.</p>
         <form onSubmit={onSubmit} className="space-y-3">
           <input
             className="input"
@@ -50,7 +50,7 @@ export default function Login(){
           />
           {error && <div className="text-red-600 text-sm">{error}</div>}
           <button className="btn w-full" disabled={loading}>
-            {loading ? "Connexion…" : "Se connecter"}
+            {loading ? "Connexionâ€¦" : "Se connecter"}
           </button>
         </form>
       </div>
