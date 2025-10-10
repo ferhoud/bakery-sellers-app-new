@@ -16,6 +16,24 @@ async function createSellerAPI({ full_name, email, password }) {
   if (!r.ok) throw new Error(j.error || "Création échouée");
   return j;
 }
+const PencilIcon = (props) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" {...props}>
+    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z" stroke="currentColor" strokeWidth="1.5" fill="currentColor"/>
+    <path d="M20.71 7.04a1.003 1.003 0 0 0 0-1.42l-2.34-2.34a1.003 1.003 0 0 0-1.42 0l-1.83 1.83 3.75 3.75 1.84-1.82z" fill="currentColor"/>
+  </svg>
+);
+
+const TrashIcon = (props) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" {...props}>
+    <path d="M6 7h12M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M8 7v12a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V7" stroke="currentColor" strokeWidth="1.5"/>
+  </svg>
+);
+
+const ArrowLeftIcon = (props) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" {...props}>
+    <path d="M19 12H5m0 0l6-6m-6 6l6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>
+);
 
 export default function SellersAdminPage() {
   const { session, profile, loading } = useAuth();
