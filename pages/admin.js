@@ -1,7 +1,6 @@
-﻿
-// touch: 2025-10-10 v-admin-stable-loaders + solid-logout + ui-resume-fix
+// touch: 2025-10-10 v-admin-stable-loaders + solid-logout + ui-resume-fix (patched)
 
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
@@ -29,7 +28,7 @@ function monthInputValue(d) { return `${d.getFullYear()}-${String(d.getMonth() +
 function labelMonthFR(d)    { return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" }); }
 const isSunday   = (d) => d.getDay() === 0;
 const weekdayFR  = (d) => d.toLocaleDateString("fr-FR", { weekday: "long" });
-const capFirst   = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+const capFirst   = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const betweenIso = (iso, start, end) => iso >= start && iso <= end;
 const frDate = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString("fr-FR"); } catch { return iso; } };
 const isSameISO = (d, iso) => fmtISODate(d) === iso;
@@ -87,7 +86,7 @@ export default function Admin() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      if (navigator?.clearAppBadge) { try { await navigator.clearAppBadge(); } catch {} }
+      if (typeof navigator !== "undefined" && navigator?.clearAppBadge) { try { await navigator.clearAppBadge(); } catch {} }
       await supabase.auth.signOut();
     } finally {
       setSigningOut(false);
@@ -617,7 +616,7 @@ export default function Admin() {
           <div className="text-sm">
             <span className="font-medium">{latestLeave.seller_name}</span> demande un congé du{" "}
             <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
-            {latestLeave.reason ? <> - <span>{latestLeave.reason}</span></> : null}.
+            {latestLeave.reason ? <><span> - </span><span>{latestLeave.reason}</span></> : null}.
           </div>
           <div className="flex gap-2">
             <ApproveBtn onClick={() => approveLeave(latestLeave.id)} />
@@ -649,7 +648,7 @@ export default function Admin() {
             {absencesToday.map((a) => (
               <li key={a.id}>
                 <Chip name={nameFromId(a.seller_id)} /> - {a.status}
-                {a.reason ? ` · ${a.reason}` : ""}
+                {a.reason ? <><span> · </span>{a.reason}</> : ""}
                 {a.replacement ? (
                   <>
                     {" · "}
@@ -672,7 +671,7 @@ export default function Admin() {
               const name = nameFromId(a.seller_id);
               return (
                 <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                  <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date} {a.reason ? `· ${a.reason}` : ""}</div></div>
+                  <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date}{a.reason ? <><span> · </span>{a.reason}</> : ""}</div></div>
                   <div className="flex gap-2"><ApproveBtn onClick={() => approveAbs(a.id)} /><RejectBtn onClick={() => rejectAbs(a.id)} /></div>
                 </div>
               );
@@ -692,7 +691,7 @@ export default function Admin() {
                 <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                   <div>
                     <div className="font-medium">{name}</div>
-                    <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}{l.reason ? ` · ${l.reason}` : ""}</div>
+                    <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}{l.reason ? <><span> · </span>{l.reason}</> : ""}</div>
                   </div>
                   <div className="flex gap-2">
                     <ApproveBtn onClick={() => approveLeave(l.id)} />
@@ -869,7 +868,11 @@ export default function Admin() {
                           <li key={a.id}>
                             <span className="font-medium">{frDate(a.date)}</span>
                             {repl ? (
-                              <> - <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
+                              <>
+                                {" - "}
+                                <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />
+                                {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
+                              </>
                             ) : null}
                           </li>
                         );
@@ -912,7 +915,11 @@ export default function Admin() {
                           <li key={a.id}>
                             <span className="font-medium">{frDate(a.date)}</span>
                             {repl ? (
-                              <> - <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />{repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}</>
+                              <>
+                                {" - "}
+                                <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />
+                                {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
+                              </>
                             ) : (
                               <> - <span className="text-gray-500">pas de volontaire accepté</span></>
                             )}
@@ -1174,6 +1181,3 @@ const RejectBtn  = ({ onClick, children = "Rejeter" }) => (
     {children}
   </button>
 );
-
-
-
