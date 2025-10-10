@@ -3,7 +3,9 @@
 export default function Document() {
   return (
     <Html lang="fr">
-      <Head />
+      <Head>
+        <meta charSet="utf-8" />
+      </Head>
       <body>
         <Main />
         <NextScript />
