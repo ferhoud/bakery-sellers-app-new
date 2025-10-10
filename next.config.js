@@ -1,7 +1,12 @@
-﻿/** @type {import("next").NextConfig} */
-const nextConfig = {
+module.exports = {
   reactStrictMode: true,
-  swcMinify: true,
-  pageExtensions: ["ts", "tsx", "js", "jsx"],
+  async redirects() {
+    return [
+      {
+        source: '/',
+        destination: '/admin',
+        permanent: false,
+      },
+    ];
+  },
 };
-module.exports = nextConfig;
