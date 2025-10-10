@@ -1,59 +1,63 @@
 ﻿import { useState } from "react";
-import { supabase } from "../lib/supabaseClient";
+import { useRouter } from "next/router";
+import { supabase } from "@/lib/supabaseClient";
 
-export default function Login(){
+export default function Login() {
+  const r = useRouter();
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [password, setPass] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function routeByRole(userId) {
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("user_id", userId)
+        .single();
+      if (error) throw error;
+      if (data?.role === "admin") r.replace("/admin");
+      else r.replace("/app");
+    } catch {
+      r.replace("/app");
+    }
+  }
 
   const onSubmit = async (e) => {
     e.preventDefault();
-    setLoading(true);
-    setError(null);
-
+    setError(""); setBusy(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
-        setError(error.message);
-        setLoading(false);
-        return;
-      }
-      // Redirection immÃ©diate : lâ€™index dÃ©cidera /admin ou /app
-      window.location.assign("/");
-    } catch (err) {
-      setError(err?.message || "Erreur inconnue");
-      setLoading(false);
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      const userId = data?.user?.id;
+      if (!userId) throw new Error("Utilisateur introuvable");
+      await routeByRole(userId);
+    } catch (e) {
+      setError(e?.message || "Échec de connexion");
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4">
-      <div className="card w-full max-w-md">
-        <h1 className="hdr mb-2">Connexion</h1>
-        <p className="sub mb-6">Identifiant et mot de passe fournis par lâ€™administrateur.</p>
-        <form onSubmit={onSubmit} className="space-y-3">
-          <input
-            className="input"
-            placeholder="Email"
-            value={email}
-            onChange={(e)=> setEmail(e.target.value)}
-            autoComplete="username"
-          />
-          <input
-            type="password"
-            className="input"
-            placeholder="Mot de passe"
-            value={password}
-            onChange={(e)=> setPassword(e.target.value)}
-            autoComplete="current-password"
-          />
-          {error && <div className="text-red-600 text-sm">{error}</div>}
-          <button className="btn w-full" disabled={loading}>
-            {loading ? "Connexionâ€¦" : "Se connecter"}
+    <div style={{ padding: 24, fontFamily: "system-ui" }}>
+      <h1 style={{ fontSize: 20, fontWeight: 700 }}>Connexion</h1>
+      <form onSubmit={onSubmit} style={{ marginTop: 12, maxWidth: 360 }}>
+        <div style={{ display: "grid", gap: 8 }}>
+          <input type="email" placeholder="Email" value={email}
+            onChange={(e) => setEmail(e.target.value)} required
+            style={{ padding: 10, borderRadius: 8, border: "1px solid #e5e7eb" }} />
+          <input type="password" placeholder="Mot de passe" value={password}
+            onChange={(e) => setPass(e.target.value)} required
+            style={{ padding: 10, borderRadius: 8, border: "1px solid #e5e7eb" }} />
+          <button type="submit" disabled={busy}
+            style={{ padding: "10px 12px", borderRadius: 8, background: "#2563eb", color: "#fff" }}>
+            {busy ? "Connexion…" : "Se connecter"}
           </button>
-        </form>
-      </div>
+          {error ? <div style={{ color: "#b91c1c" }}>{error}</div> : null}
+        </div>
+      </form>
     </div>
   );
 }
