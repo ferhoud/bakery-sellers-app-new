@@ -1,155 +1,104 @@
 
-// pages/_app.js
-import { useEffect, useState, useCallback } from "react";
+// touch: 2025-10-10 _app with AuthProvider + defensive loader + SW updater
+
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
-import "../styles/globals.css"; // garde si tu utilises Tailwind / styles globaux
+import { AuthProvider, useAuth } from "@/lib/useAuth";
+import { supabase } from "@/lib/supabaseClient";
+import "../styles/globals.css";
 
+function Shell({ Component, pageProps }) {
+  const { session, loading } = useAuth();
+  const r = useRouter();
+  const [stuck, setStuck] = useState(false);
+  const [envOK, setEnvOK] = useState(true);
 
-function InstallButton({ deferredPrompt, onInstalled }) {
-  if (!deferredPrompt) return null;
-
-  const handleClick = async () => {
-    try {
-      deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      // outcome: "accepted" | "dismissed"
-      if (outcome === "accepted") {
-        // onInstalled sera aussi appelé via "appinstalled", mais on le met ici au cas où
-        onInstalled?.();
-      }
-    } catch (e) {
-      console.error("Install prompt error:", e);
-    }
-  };
-
-  return (
-    <button
-      className="btn"
-      onClick={handleClick}
-      style={{
-        position: "fixed",
-        right: 16,
-        bottom: 16,
-        zIndex: 9999,
-      }}
-    >
-      ⬇️ Installer l’app
-    </button>
-  );
-}
-
-export default function MyApp({ Component, pageProps }) {
-  const router = useRouter();
-  const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [installHidden, setInstallHidden] = useState(false);
-
-  // Afficher le bouton d'installation PWA
+  // Simple env sanity check
   useEffect(() => {
-    const installedFlag = typeof window !== "undefined" && localStorage.getItem("pwaInstalled") === "1";
-    setInstallHidden(installedFlag);
-
-    const onBeforeInstall = (e) => {
-      // Empêche le prompt auto
-      e.preventDefault();
-      // Si déjà installée, on ne montre pas
-      if (localStorage.getItem("pwaInstalled") === "1") return;
-      setDeferredPrompt(e);
-    };
-
-    const onInstalled = () => {
-      try {
-        localStorage.setItem("pwaInstalled", "1");
-      } catch {}
-      setDeferredPrompt(null);
-      setInstallHidden(true);
-    };
-
-    window.addEventListener("beforeinstallprompt", onBeforeInstall);
-    window.addEventListener("appinstalled", onInstalled);
-
-    return () => {
-      window.removeEventListener("beforeinstallprompt", onBeforeInstall);
-      window.removeEventListener("appinstalled", onInstalled);
-    };
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!url || !key) setEnvOK(false);
   }, []);
 
-  // Écoute SW → rafraîchir les données/pages quand un push arrive
-  const reloadSoft = useCallback(() => {
-    // Recharger la page courante sans remonter l’historique
-    router.replace(router.asPath);
-  }, [router]);
+  // Detect long "loading" states (e.g., bad session, SW cache) and surface exit
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (loading) setStuck(true);
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [loading]);
 
+  // Proactively refresh session once if we're stuck
+  useEffect(() => {
+    if (!stuck) return;
+    (async () => {
+      try { await supabase.auth.getSession(); } catch {}
+    })();
+  }, [stuck]);
+
+  // Service Worker: auto-update & reload on new versions to avoid stale bundles
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.getRegistrations().then(regs => {
+      regs.forEach(reg => {
+        reg.update().catch(() => {});
+        if (reg.waiting) reg.waiting.postMessage({ type: "SKIP_WAITING" });
+        reg.addEventListener("updatefound", () => {
+          const sw = reg.installing;
+          if (!sw) return;
+          sw.addEventListener("statechange", () => {
+            if (sw.state === "installed" && navigator.serviceWorker.controller) {
+              sw.postMessage({ type: "SKIP_WAITING" });
+              setTimeout(() => window.location.reload(), 150);
+            }
+          });
+        });
+      });
+    }).catch(() => {});
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      setTimeout(() => window.location.reload(), 150);
+    });
+  }, []);
 
-    const handler = (e) => {
-      // convention : le SW envoie { type: 'push' } après réception
-      if (e?.data?.type === "push") {
-        reloadSoft();
-        // Nettoyer la pastille si supportée
-        if (navigator.clearAppBadge) {
-          navigator.clearAppBadge().catch(() => {});
-        }
-      }
-    };
-    navigator.serviceWorker.addEventListener("message", handler);
-    return () => navigator.serviceWorker.removeEventListener("message", handler);
-  }, [reloadSoft]);
+  if (!envOK) {
+    return (
+      <div style={{ padding: 24 }}>
+        <h1>Configuration manquante</h1>
+        <p>Variables d'environnement Supabase absentes sur ce déploiement.</p>
+        <ul>
+          <li><code>NEXT_PUBLIC_SUPABASE_URL</code></li>
+          <li><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code></li>
+        </ul>
+        <p>Ajoute-les dans Vercel → Project Settings → Environment Variables, puis redeploie.</p>
+      </div>
+    );
+  }
 
-  // Quand l’app revient en premier plan → petit refresh doux (utile si la page admin est ouverte)
-  useEffect(() => {
-    const onWake = () => reloadSoft();
-    window.addEventListener("focus", onWake);
-    document.addEventListener("visibilitychange", onWake);
-    return () => {
-      window.removeEventListener("focus", onWake);
-      document.removeEventListener("visibilitychange", onWake);
-    };
-  }, [reloadSoft]);
+  if (loading) {
+    return (
+      <div style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
+        <div style={{ fontSize: 18, fontWeight: 600 }}>Chargement…</div>
+        {!session && stuck && (
+          <div style={{ marginTop: 10 }}>
+            <p>Ça semble bloqué. Essaie :</p>
+            <ol>
+              <li>Rafraîchir (Ctrl+F5) ou ouvrir en navigation privée</li>
+              <li>Si PWA installée, ré-ouvrir l'app (le Service Worker va se mettre à jour)</li>
+              <li><a href="/login" style={{ color: "#2563eb", textDecoration: "underline" }}>Aller au login</a></li>
+            </ol>
+          </div>
+        )}
+      </div>
+    );
+  }
 
+  return <Component {...pageProps} />;
+}
+
+export default function MyApp(props) {
   return (
-    <>
-      {/* Ton application */}
-      <Component {...pageProps} />
-
-      {/* Bouton d'installation flottant (si pas encore installée) */}
-      {!installHidden && <InstallButton deferredPrompt={deferredPrompt} onInstalled={() => setInstallHidden(true)} />}
-
-      {/* Styles de secours si tes classes .btn/.card/etc. ne sont pas encore définies quelque part */}
-      <style jsx global>{`
-        .btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 0.5rem;
-          padding: 0.55rem 0.9rem;
-          border: 1px solid #e5e7eb;
-          border-radius: 0.75rem;
-          background: #111827;
-          color: #fff;
-          font-weight: 600;
-          cursor: pointer;
-        }
-        .btn:hover { opacity: 0.9; }
-        .card {
-          border: 1px solid #e5e7eb;
-          border-radius: 1rem;
-          padding: 1rem;
-          background: #fff;
-        }
-        .hdr {
-          font-size: 1.125rem;
-          font-weight: 700;
-        }
-        .hdr .sub { font-weight: 400; color: #6b7280; font-size: 0.95rem; }
-        .select, .input {
-          width: 100%;
-          border: 1px solid #e5e7eb;
-          border-radius: 0.75rem;
-          padding: 0.5rem 0.75rem;
-          background: #fff;
-        }
-      `}</style>
-    </>
+    <AuthProvider>
+      <Shell {...props} />
+    </AuthProvider>
   );
 }
