@@ -28,11 +28,6 @@ export default async function handler(req, res) {
   const user = userData.user;
   if (!user) return res.status(500).json({ error: "Utilisateur créé mais non retourné." });
 
-  const { error: upsertErr } = await supabaseAdmin
-    .from("profiles")
-    .upsert({ user_id: user.id, full_name, role: "seller" }, { onConflict: "user_id" });
-  if (upsertErr) {
-    return res.status(500).json({ error: "Utilisateur créé mais échec lors de l'upsert du profil.", user_id: user.id });
-  }
+  
   return res.status(200).json({ ok: true, user_id: user.id, email: user.email });
 }
