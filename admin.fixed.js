@@ -1,4 +1,5 @@
-import Head from "next/head";
+// touch: 2025-10-10 v-admin-stable-loaders + solid-logout + ui-resume-fix (patched)
+
 import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
@@ -6,9 +7,6 @@ import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
 import WeekNav from "../components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "../lib/date";
-
-/* ---------- Build tag ---------- */
-const BUILD_TAG = "ADMIN FIX — 10/10/2025 19:15 (full merge + absents inline + fallback)";
 
 /* Heures par créneau (inclut le dimanche spécial) */
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
@@ -35,26 +33,12 @@ const betweenIso = (iso, start, end) => iso >= start && iso <= end;
 const frDate = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString("fr-FR"); } catch { return iso; } };
 const isSameISO = (d, iso) => fmtISODate(d) === iso;
 
-/* ---------- UI helpers ---------- */
 function Chip({ name }) {
   if (!name || name === "-") return <span className="text-sm text-gray-500">-</span>;
   const bg = colorForName(name);
-  return (
-    <span
-      style={{
-        backgroundColor: bg,
-        color: "#fff",
-        borderRadius: 9999,
-        padding: "2px 10px",
-        fontSize: "0.8rem",
-      }}
-    >
-      {name}
-    </span>
-  );
+  return <span style={{ backgroundColor: bg, color: "#fff", borderRadius: 9999, padding: "2px 10px", fontSize: "0.8rem" }}>{name}</span>;
 }
 
-/* ---------- Main page ---------- */
 export default function Admin() {
   const { session, profile, loading } = useAuth();
   const r = useRouter();
@@ -71,7 +55,6 @@ export default function Admin() {
   // Données UI
   const [sellers, setSellers] = useState([]);               // [{user_id, full_name}]
   const [assign, setAssign] = useState({});                 // "YYYY-MM-DD|SHIFT" -> seller_id
-  const [absencesByDate, setAbsencesByDate] = useState({}); // { "YYYY-MM-DD": [seller_id,...] }
   const [absencesToday, setAbsencesToday] = useState([]);   // d’aujourd’hui (pending/approved)
   const [pendingAbs, setPendingAbs] = useState([]);         // absences à venir (pending)
   const [replList, setReplList] = useState([]);             // volontaires (pending) sur absences approuvées
@@ -103,9 +86,7 @@ export default function Admin() {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      if (typeof navigator !== "undefined" && navigator?.clearAppBadge) {
-        try { await navigator.clearAppBadge(); } catch {}
-      }
+      if (typeof navigator !== "undefined" && navigator?.clearAppBadge) { try { await navigator.clearAppBadge(); } catch {} }
       await supabase.auth.signOut();
     } finally {
       setSigningOut(false);
@@ -120,50 +101,23 @@ export default function Admin() {
     if (profile && profile.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
-  /* Vendeuses (robuste : RPC list_sellers -> profiles fallback) */
-const loadSellers = useCallback(async () => {
-  // 1) Essai via RPC (ta fonction SQL)
-  let rows = [];
-  try {
+  /* Vendeuses */
+  const loadSellers = useCallback(async () => {
     const { data, error } = await supabase.rpc("list_sellers");
-    if (error) console.warn("list_sellers RPC error:", error);
-    if (Array.isArray(data) && data.length) rows = data;
-  } catch (e) {
-    console.warn("list_sellers RPC threw:", e);
-  }
+    if (error) console.error("list_sellers error:", error);
+    setSellers(data || []);
+  }, []);
+  useEffect(() => { loadSellers(); }, [loadSellers]);
+  const nameFromId = useCallback((id) => sellers.find((s) => s.user_id === id)?.full_name || "-", [sellers]);
 
-  // 2) Fallback : lire directement la table 'profiles'
-  if (rows.length === 0) {
-    try {
-      // Adapte les colonnes/flags selon ton schéma: role/active/enabled…
-      const { data: profs, error: e2 } = await supabase
-        .from("profiles")
-        .select("user_id, full_name, role, active")
-        .eq("role", "seller"); // .eq("active", true) si tu as ce champ
-      if (e2) console.warn("profiles fallback error:", e2);
-      if (Array.isArray(profs) && profs.length) {
-        rows = profs.map(({ user_id, full_name }) => ({ user_id, full_name }));
-      }
-    } catch (e) {
-      console.warn("profiles fallback threw:", e);
-    }
-  }
-
-  setSellers(rows || []);
-}, []);
-
-  /* Planning semaine (avec fallback direct sur table shifts) */
+  /* Planning semaine */
   const loadWeekAssignments = useCallback(async (fromIso, toIso) => {
-    let data = null, error = null;
-    try {
-      const res = await supabase.from("view_week_assignments").select("*").gte("date", fromIso).lte("date", toIso);
-      data = res.data; error = res.error;
-    } catch (e) { error = e; }
-    if (error) console.warn("view_week_assignments error, fallback to shifts:", error);
-    if (!data || data.length === 0) {
-      const res2 = await supabase.from("shifts").select("date, shift_code, seller_id").gte("date", fromIso).lte("date", toIso);
-      data = res2.data || [];
-    }
+    const { data, error } = await supabase
+      .from("view_week_assignments")
+      .select("*")
+      .gte("date", fromIso)
+      .lte("date", toIso);
+    if (error) console.error("view_week_assignments error:", error);
     const next = {};
     (data || []).forEach((row) => { next[`${row.date}|${row.shift_code}`] = row.seller_id; });
     setAssign(next);
@@ -408,6 +362,7 @@ const loadSellers = useCallback(async () => {
       .on("postgres_changes", { event: "*", schema: "public", table: "absences" }, () => {
         loadPendingAbs();
         loadAbsencesToday();
+        loadReplacements();
         loadMonthAbsences();
         loadMonthUpcomingAbsences();
       }).subscribe();
@@ -464,7 +419,7 @@ const loadSellers = useCallback(async () => {
       supabase.removeChannel(chLeaves);
       supabase.removeChannel(chCancel);
     };
-  }, [todayIso, loadPendingAbs, loadAbsencesToday, loadPendingLeaves, loadApprovedLeaves, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl, loadReplacements]);
+  }, [todayIso, loadPendingAbs, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences, loadPendingLeaves, loadApprovedLeaves, loadMonthAcceptedRepl]);
 
   /* Sauvegarde d'une affectation */
   const save = useCallback(async (iso, code, seller_id) => {
@@ -562,64 +517,28 @@ const loadSellers = useCallback(async () => {
     await loadReplacements(); await loadMonthAcceptedRepl();
   }, [latestRepl, loadReplacements, loadMonthAcceptedRepl]);
 
-  /* ---------- Inline ABSENCES (admin) pour chaque jour de la semaine ---------- */
-  const loadWeekAbsences = useCallback(async () => {
-    const from = fmtISODate(days[0]);
-    const to = fmtISODate(days[6]);
-    const { data, error } = await supabase
-      .from("absences")
-      .select("date, seller_id, status")
-      .gte("date", from)
-      .lte("date", to)
-      .in("status", ["approved", "pending"]);
-    if (error) { console.error("loadWeekAbsences error:", error); return; }
-    const grouped = {};
-    (data || []).forEach((r) => {
-      if (!grouped[r.date]) grouped[r.date] = [];
-      if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
-    });
-    setAbsencesByDate(grouped);
-  }, [days]);
-
-  const setSellerAbsent = useCallback(async (isoDate, sellerId) => {
-    if (!sellerId) return;
-    const { error } = await supabase
-      .from("absences")
-      .upsert({ date: isoDate, seller_id: sellerId, status: "approved", reason: "Absence non déclarée (admin)" }, { onConflict: "date,seller_id" });
-    if (error) { console.error("upsert absence error:", error); alert("Impossible d'enregistrer l'absence."); return; }
-    setAbsencesByDate((prev) => {
-      const arr = new Set([...(prev[isoDate] || []), sellerId]);
-      return { ...prev, [isoDate]: Array.from(arr) };
-    });
-  }, []);
-
-  const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
-    const { error } = await supabase.from("absences").delete().match({ date: isoDate, seller_id: sellerId });
-    if (error) { console.error("delete absence error:", error); alert("Impossible de supprimer l'absence."); return; }
-    setAbsencesByDate((prev) => {
-      const arr = new Set(prev[isoDate] || []);
-      arr.delete(sellerId);
-      return { ...prev, [isoDate]: Array.from(arr) };
-    });
-  }, []);
-
   /* ---------- 🔔 BADGE + REFRESH AUTO ---------- */
 
+  // Pastille selon éléments en attente (plus de demandes d’annulation ici)
   useEffect(() => {
     const count =
       (pendingAbs?.length || 0) +
       (pendingLeaves?.length || 0) +
       (replList?.length || 0);
+
     const nav = typeof navigator !== 'undefined' ? navigator : null;
     if (!nav) return;
-    if (count > 0 && nav.setAppBadge) nav.setAppBadge(count).catch(() => {});
-    else if (nav?.clearAppBadge) nav.clearAppBadge().catch(() => {});
+
+    if (count > 0 && nav.setAppBadge) {
+      nav.setAppBadge(count).catch(() => {});
+    } else if (nav?.clearAppBadge) {
+      nav.clearAppBadge().catch(() => {});
+    }
   }, [pendingAbs?.length, pendingLeaves?.length, replList?.length]);
 
+  // Regroupe les rechargements + efface la pastille à l’ouverture
   const reloadAll = useCallback(async () => {
     await Promise.all([
-      loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
-      loadWeekAbsences(),
       loadPendingAbs?.(),
       loadAbsencesToday?.(),
       loadReplacements?.(),
@@ -629,13 +548,11 @@ const loadSellers = useCallback(async () => {
       loadMonthUpcomingAbsences?.(),
     ]);
     setRefreshKey((k) => k + 1);
+
     if (typeof navigator !== 'undefined' && navigator.clearAppBadge) {
       try { await navigator.clearAppBadge(); } catch {}
     }
   }, [
-    days,
-    loadWeekAssignments,
-    loadWeekAbsences,
     loadPendingAbs,
     loadAbsencesToday,
     loadReplacements,
@@ -645,12 +562,12 @@ const loadSellers = useCallback(async () => {
     loadMonthUpcomingAbsences,
   ]);
 
-  // Initial load
-  useEffect(() => { if (!loading && session) reloadAll(); }, [loading, session, reloadAll]);
-
-  // Recharge quand l’app revient au premier plan
+  // Recharge quand l’app revient au premier plan (et débloque d’éventuels clics fantômes)
   useEffect(() => {
-    const onWake = () => setTimeout(() => reloadAll(), 50);
+    const onWake = () => {
+      // Force un léger "tick" de rendu pour éviter toute couche bloquante après reprise
+      setTimeout(() => reloadAll(), 50);
+    };
     window.addEventListener('focus', onWake, { passive: true });
     document.addEventListener('visibilitychange', onWake, { passive: true });
     return () => {
@@ -659,401 +576,365 @@ const loadSellers = useCallback(async () => {
     };
   }, [reloadAll]);
 
-  // SW push → reload
+  // Écoute les messages du Service Worker (reçu à chaque push) → recharge
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
-    const handler = (e) => { if (e?.data?.type === 'push') reloadAll(); };
+    const handler = (e) => {
+      if (e?.data?.type === 'push') reloadAll();
+    };
     navigator.serviceWorker.addEventListener('message', handler);
     return () => navigator.serviceWorker.removeEventListener('message', handler);
   }, [reloadAll]);
 
-  /* ----------------- RENDER ----------------- */
+  /* ----------------- UI ----------------- */
   return (
-    <>
-      <Head>
-        <title>Admin • {BUILD_TAG}</title>
-      </Head>
-      <div style={{padding:'8px',background:'#111',color:'#fff',fontWeight:700}}>{BUILD_TAG}</div>
+    <div className="p-4 max-w-6xl mx-auto space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="hdr">Compte: {profile?.full_name || "-"} <span className="sub">(admin)</span></div>
+        <div className="flex items-center gap-2">
+          <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
+          <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
+          <button type="button" className="btn" onClick={handleSignOut} disabled={signingOut}>
+            {signingOut ? "Déconnexion…" : "Se déconnecter"}
+          </button>
+        </div>
+      </div>
 
-      <div className="p-4 max-w-6xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div className="hdr">Compte: {profile?.full_name || "-"} <span className="sub">(admin)</span></div>
-          <div className="flex items-center gap-2">
-            <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
-            <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
-            <button type="button" className="btn" onClick={handleSignOut} disabled={signingOut}>
-              {signingOut ? "Déconnexion…" : "Se déconnecter"}
-            </button>
+      {/* BANNIÈRE : Annulation effectuée par une vendeuse (DELETE) */}
+      {latestCancel && (
+        <div className="border rounded-2xl p-3 flex items-start justify-between gap-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
+          <div className="text-sm">
+            <span className="font-medium">{latestCancel.name}</span> a annulé son absence du <span className="font-medium">{latestCancel.date}</span>.
           </div>
         </div>
+      )}
 
-        {/* BANNIÈRE : Annulation effectuée par une vendeuse (DELETE) */}
-        {latestCancel && (
-          <div className="border rounded-2xl p-3 flex items-start justify-between gap-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
-            <div className="text-sm">
-              <span className="font-medium">{latestCancel.name}</span> a annulé son absence du <span className="font-medium">{latestCancel.date}</span>.
-            </div>
+      {/* BANNIÈRE : Demande de congé (la plus récente) */}
+      {latestLeave && (
+        <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
+             style={{ backgroundColor: "#fef3c7", borderColor: "#fcd34d" }}>
+          <div className="text-sm">
+            <span className="font-medium">{latestLeave.seller_name}</span> demande un congé du{" "}
+            <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
+            {latestLeave.reason ? <><span> - </span><span>{latestLeave.reason}</span></> : null}.
           </div>
+          <div className="flex gap-2">
+            <ApproveBtn onClick={() => approveLeave(latestLeave.id)} />
+            <RejectBtn onClick={() => rejectLeave(latestLeave.id)} />
+          </div>
+        </div>
+      )}
+
+      {/* BANNIÈRE : Volontariat de remplacement */}
+      {latestRepl && (
+        <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
+             style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
+          <div className="text-sm">
+            <span className="font-medium">{latestRepl.volunteer_name}</span> veut remplacer <Chip name={latestRepl.absent_name} /> le <span className="font-medium">{latestRepl.date}</span>.
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
+            <ShiftSelect dateStr={latestRepl.date} value={selectedShift[latestRepl.id] || ""} onChange={(val) => setSelectedShift(prev => ({ ...prev, [latestRepl.id]: val }))} />
+            <ApproveBtn onClick={() => assignVolunteer(latestRepl)}>Approuver</ApproveBtn>
+            <RejectBtn onClick={() => declineVolunteer(latestRepl.id)}>Refuser</RejectBtn>
+          </div>
+        </div>
+      )}
+
+      {/* Absences aujourd’hui - disparaît après le jour J */}
+      <div className="card">
+        <div className="hdr mb-2">Absences aujourd’hui</div>
+        {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourd’hui</div> : (
+          <ul className="list-disc pl-6 space-y-1">
+            {absencesToday.map((a) => (
+              <li key={a.id}>
+                <Chip name={nameFromId(a.seller_id)} /> - {a.status}
+                {a.reason ? <><span> · </span>{a.reason}</> : ""}
+                {a.replacement ? (
+                  <>
+                    {" · "}
+                    <span>Remplacement accepté : </span>
+                    <Chip name={a.replacement.volunteer_name} />
+                  </>
+                ) : null}
+              </li>
+            ))}
+          </ul>
         )}
+      </div>
 
-        {/* BANNIÈRE : Demande de congé (la plus récente) */}
-        {latestLeave && (
-          <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
-              style={{ backgroundColor: "#fef3c7", borderColor: "#fcd34d" }}>
-            <div className="text-sm">
-              <span className="font-medium">{latestLeave.seller_name}</span> demande un congé du{" "}
-              <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
-              {latestLeave.reason ? <><span> - </span><span>{latestLeave.reason}</span></> : null}.
-            </div>
-            <div className="flex gap-2">
-              <ApproveBtn onClick={() => approveLeave(latestLeave.id)} />
-              <RejectBtn onClick={() => rejectLeave(latestLeave.id)} />
-            </div>
-          </div>
-        )}
-
-        {/* BANNIÈRE : Volontariat de remplacement */}
-        {latestRepl && (
-          <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
-              style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
-            <div className="text-sm">
-              <span className="font-medium">{latestRepl.volunteer_name}</span> veut remplacer <Chip name={latestRepl.absent_name} /> le <span className="font-medium">{latestRepl.date}</span>.
-            </div>
-            <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
-              <ShiftSelect dateStr={latestRepl.date} value={selectedShift[latestRepl.id] || ""} onChange={(val) => setSelectedShift(prev => ({ ...prev, [latestRepl.id]: val }))} />
-              <ApproveBtn onClick={() => assignVolunteer(latestRepl)}>Approuver</ApproveBtn>
-              <RejectBtn onClick={() => declineVolunteer(latestRepl.id)}>Refuser</RejectBtn>
-            </div>
-          </div>
-        )}
-
-        {/* Absences aujourd’hui - disparaît après le jour J */}
-        <div className="card">
-          <div className="hdr mb-2">Absences aujourd’hui</div>
-          {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourd’hui</div> : (
-            <ul className="list-disc pl-6 space-y-1">
-              {absencesToday.map((a) => (
-                <li key={a.id}>
-                  <Chip name={nameFromId(a.seller_id)} /> - {a.status}
-                  {a.reason ? <><span> · </span>{a.reason}</> : ""}
-                  {a.replacement ? (
-                    <>
-                      {" · "}
-                      <span>Remplacement accepté : </span>
-                      <Chip name={a.replacement.volunteer_name} />
-                    </>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Demandes d’absence - en attente */}
-        <div className="card">
-          <div className="hdr mb-2">Demandes d’absence - en attente (à venir)</div>
-          {pendingAbs.length === 0 ? <div className="text-sm text-gray-600">Aucune demande en attente.</div> : (
-            <div className="space-y-2">
-              {pendingAbs.map((a) => {
-                const name = nameFromId(a.seller_id);
-                return (
-                  <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                    <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date}{a.reason ? <><span> · </span>{a.reason}</> : ""}</div></div>
-                    <div className="flex gap-2"><ApproveBtn onClick={() => approveAbs(a.id)} /><RejectBtn onClick={() => rejectAbs(a.id)} /></div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Demandes de congé - en attente */}
-        <div className="card">
-          <div className="hdr mb-2">Demandes de congé - en attente</div>
-          {pendingLeaves.length === 0 ? <div className="text-sm text-gray-600">Aucune demande de congé en attente.</div> : (
-            <div className="space-y-2">
-              {pendingLeaves.map((l) => {
-                const name = nameFromId(l.seller_id);
-                return (
-                  <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                    <div>
-                      <div className="font-medium">{name}</div>
-                      <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}{l.reason ? <><span> · </span>{l.reason}</> : ""}</div>
-                    </div>
-                    <div className="flex gap-2">
-                      <ApproveBtn onClick={() => approveLeave(l.id)} />
-                      <RejectBtn onClick={() => rejectLeave(l.id)} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Congés approuvés - en cours ou à venir */}
-        <div className="card">
-          <div className="hdr mb-2">Congés approuvés - en cours ou à venir</div>
-          {approvedLeaves.length === 0 ? (
-            <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
-          ) : (
-            <div className="space-y-2">
-              {approvedLeaves.map((l) => {
-                const name = nameFromId(l.seller_id);
-                const isOngoing = betweenIso(todayIso, l.start_date, l.end_date);
-                const tag = isOngoing ? "En cours" : "À venir";
-                const tagBg = isOngoing ? "#16a34a" : "#2563eb";
-                return (
-                  <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                    <div>
-                      <div className="font-medium">{name}</div>
-                      <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>{tag}</span>
-                      {!isOngoing && l.start_date > todayIso ? (
-                        <button type="button" className="btn" onClick={() => cancelFutureLeave(l.id)}
-                          style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
-                          Annuler le congé
-                        </button>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Planning du jour */}
-        <TodayColorBlocks today={today} todayIso={todayIso} assign={assign} nameFromId={nameFromId} />
-
-        {/* Planning de la semaine (édition + absents inline) */}
-        <div className="card">
-          <div className="hdr mb-4">Planning de la semaine</div>
-
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-3">
-            <WeekNav
-              monday={monday}
-              onPrev={() => setMonday(addDays(monday, -7))}
-              onToday={() => setMonday(startOfWeek(new Date()))}
-              onNext={() => setMonday(addDays(monday, 7))}
-            />
-            <button type="button" className="btn" onClick={copyWeekToNext}>Copier la semaine → la suivante</button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
-            {days.map((d) => {
-              const iso = fmtISODate(d);
-              const sunday = isSunday(d);
-              const highlight = isSameISO(d, todayIso);
-              const currentAbs = absencesByDate[iso] || [];
+      {/* Demandes d’absence - en attente */}
+      <div className="card">
+        <div className="hdr mb-2">Demandes d’absence - en attente (à venir)</div>
+        {pendingAbs.length === 0 ? <div className="text-sm text-gray-600">Aucune demande en attente.</div> : (
+          <div className="space-y-2">
+            {pendingAbs.map((a) => {
+              const name = nameFromId(a.seller_id);
               return (
-                <div
-                  key={iso}
-                  className="border rounded-2xl p-3 space-y-3"
-                  style={highlight ? { boxShadow: "inset 0 0 0 2px rgba(37,99,235,0.5)" } : {}}
-                >
-                  <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
-                  <div className="font-semibold">{iso}</div>
-
-                  {/* Bloc Absents (inline admin) */}
-                  <div className="space-y-1">
-                    <div className="text-sm font-medium">Absents</div>
-                    <div className="flex flex-wrap gap-2">
-                      {currentAbs.length === 0 ? <span className="text-sm text-gray-500">—</span> : null}
-                      {currentAbs.map((sid) => {
-                        const name = nameFromId(sid);
-                        return (
-                          <span key={sid} className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs" style={{ background:"#f5f5f5", border:"1px solid #e0e0e0" }}>
-                            <span className="inline-block w-2 h-2 rounded-full" style={{ background: colorForName(name) }} />
-                            {name}
-                            <button className="ml-1 text-[11px] opacity-70 hover:opacity-100" onClick={() => removeSellerAbsent(iso, sid)} title="Supprimer">✕</button>
-                          </span>
-                        );
-                      })}
-                    </div>
-                    <select
-  className="select w-full"
-  defaultValue=""
-  onChange={(e) => { const v = e.target.value; if (!v) return; setSellerAbsent(iso, v); e.target.value = ""; }}
->
-  <option value="" disabled>Marquer "Absent"</option>
-  {sellers.length === 0 && (
-    <option value="" disabled>(Aucune vendeuse — vérifier droits/RPC)</option>
-  )}
-  {sellers.filter((s) => !currentAbs.includes(s.user_id)).map((s) => (
-    <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
-  ))}
-</select>
-
-                  </div>
-
-                  <ShiftRow label="Matin (6h30-13h30)" iso={iso} code="MORNING" value={assign[`${iso}|MORNING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MORNING`])} />
-
-                  {!sunday ? (
-                    <ShiftRow label="Midi (7h-13h)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
-                  ) : (
-                    <div className="space-y-1">
-                      <div className="text-sm">Midi - deux postes</div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <div className="text-xs mb-1">7h-13h</div>
-                          <select className="select" value={assign[`${iso}|MIDDAY`] || ""} onChange={(e) => save(iso, "MIDDAY", e.target.value || null)}>
-                            <option value="">- Choisir vendeuse -</option>
-                            {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
-                          </select>
-                          <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|MIDDAY`])} /></div>
-                        </div>
-                        <div>
-                          <div className="text-xs mb-1">9h-13h30</div>
-                          <select className="select" value={assign[`${iso}|SUNDAY_EXTRA`] || ""} onChange={(e) => save(iso, "SUNDAY_EXTRA", e.target.value || null)}>
-                            <option value="">- Choisir vendeuse -</option>
-                            {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
-                          </select>
-                          <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|SUNDAY_EXTRA`])} /></div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <ShiftRow label="Soir (13h30-20h30)" iso={iso} code="EVENING" value={assign[`${iso}|EVENING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|EVENING`])} />
+                <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                  <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date}{a.reason ? <><span> · </span>{a.reason}</> : ""}</div></div>
+                  <div className="flex gap-2"><ApproveBtn onClick={() => approveAbs(a.id)} /><RejectBtn onClick={() => rejectAbs(a.id)} /></div>
                 </div>
               );
             })}
           </div>
-        </div>
+        )}
+      </div>
 
-        {/* Sélecteur de MOIS */}
-        <div className="card">
-          <div className="hdr mb-2">Choisir le mois pour “Total heures (mois)”</div>
-          <div className="grid sm:grid-cols-3 gap-3 items-center">
-            <div className="sm:col-span-2">
-              <div className="text-sm mb-1">Mois</div>
-              <input
-                type="month"
-                className="input"
-                value={monthInputValue(selectedMonth)}
-                onChange={(e) => {
-                  const [y, m] = e.target.value.split("-").map(Number);
-                  setSelectedMonth(new Date(y, m - 1, 1));
-                }}
-              />
-            </div>
-            <div className="text-sm text-gray-600">
-              Mois sélectionné : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>
-            </div>
+      {/* Demandes de congé - en attente */}
+      <div className="card">
+        <div className="hdr mb-2">Demandes de congé - en attente</div>
+        {pendingLeaves.length === 0 ? <div className="text-sm text-gray-600">Aucune demande de congé en attente.</div> : (
+          <div className="space-y-2">
+            {pendingLeaves.map((l) => {
+              const name = nameFromId(l.seller_id);
+              return (
+                <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                  <div>
+                    <div className="font-medium">{name}</div>
+                    <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}{l.reason ? <><span> · </span>{l.reason}</> : ""}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <ApproveBtn onClick={() => approveLeave(l.id)} />
+                    <RejectBtn onClick={() => rejectLeave(l.id)} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
+        )}
+      </div>
+
+      {/* Congés approuvés - en cours ou à venir */}
+      <div className="card">
+        <div className="hdr mb-2">Congés approuvés - en cours ou à venir</div>
+        {approvedLeaves.length === 0 ? (
+          <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
+        ) : (
+          <div className="space-y-2">
+            {approvedLeaves.map((l) => {
+              const name = nameFromId(l.seller_id);
+              const isOngoing = betweenIso(todayIso, l.start_date, l.end_date);
+              const tag = isOngoing ? "En cours" : "À venir";
+              const tagBg = isOngoing ? "#16a34a" : "#2563eb";
+              return (
+                <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                  <div>
+                    <div className="font-medium">{name}</div>
+                    <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}</div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>{tag}</span>
+                    {/* Bouton admin pour ANNULER un congé à venir */}
+                    {!isOngoing && l.start_date > todayIso ? (
+                      <button type="button" className="btn" onClick={() => cancelFutureLeave(l.id)}
+                        style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
+                        Annuler le congé
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Planning du jour */}
+      <TodayColorBlocks today={today} todayIso={todayIso} assign={assign} nameFromId={nameFromId} />
+
+      {/* Planning de la semaine (édition) */}
+      <div className="card">
+        <div className="hdr mb-4">Planning de la semaine</div>
+
+        {/* Nav + bouton copier */}
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-3">
+          <WeekNav
+            monday={monday}
+            onPrev={() => setMonday(addDays(monday, -7))}
+            onToday={() => setMonday(startOfWeek(new Date()))}
+            onNext={() => setMonday(addDays(monday, 7))}
+          />
+          <button type="button" className="btn" onClick={copyWeekToNext}>Copier la semaine → la suivante</button>
         </div>
 
-        {/* Totaux */}
-        <TotalsGrid
-          sellers={sellers}
-          monthFrom={monthFrom}
-          monthTo={monthTo}
-          monthLabel={labelMonthFR(selectedMonth)}
-          refreshKey={refreshKey}
-          monthAbsences={monthAbsences}
-          monthUpcomingAbsences={monthUpcomingAbsences}
-        />
-
-        {/* Absences approuvées - MOIS (passées / aujourd’hui) */}
-        <div className="card">
-          <div className="hdr mb-2">Absences approuvées - mois : {labelMonthFR(selectedMonth)}</div>
-          {(() => {
-            if (!monthAbsences || monthAbsences.length === 0) {
-              return <div className="text-sm text-gray-600">Aucune absence (passée/aujourd’hui) sur ce mois.</div>;
-            }
-            // Grouper par vendeuse
-            const bySeller = {};
-            monthAbsences.forEach((a) => {
-              if (!bySeller[a.seller_id]) bySeller[a.seller_id] = [];
-              bySeller[a.seller_id].push(a);
-            });
-            const entries = Object.entries(bySeller);
+        <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
+          {days.map((d) => {
+            const iso = fmtISODate(d);
+            const sunday = isSunday(d);
+            const highlight = isSameISO(d, todayIso);
             return (
-              <div className="space-y-3">
-                {entries.map(([sid, arr]) => {
-                  arr.sort((a, b) => a.date.localeCompare(b.date));
-                  const name = nameFromId(sid);
-                  return (
-                    <div key={sid} className="border rounded-2xl p-3">
-                      <div className="font-medium mb-1">{name}</div>
-                      <ul className="text-sm space-y-1">
-                        {arr.map((a) => {
-                          const repl = monthAcceptedRepl[a.id];
-                          return (
-                            <li key={a.id}>
-                              <span className="font-medium">{frDate(a.date)}</span>
-                              {repl ? (
-                                <>
-                                  {" - "}
-                                  <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />
-                                  {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
-                                </>
-                              ) : null}
-                            </li>
-                          );
-                        })}
-                      </ul>
+              <div
+                key={iso}
+                className="border rounded-2xl p-3 space-y-3"
+                style={highlight ? { boxShadow: "inset 0 0 0 2px rgba(37,99,235,0.5)" } : {}}
+              >
+                <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
+                <div className="font-semibold">{iso}</div>
+
+                <ShiftRow label="Matin (6h30-13h30)" iso={iso} code="MORNING" value={assign[`${iso}|MORNING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MORNING`])} />
+
+                {!sunday ? (
+                  <ShiftRow label="Midi (7h-13h)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
+                ) : (
+                  <div className="space-y-1">
+                    <div className="text-sm">Midi - deux postes</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <div className="text-xs mb-1">7h-13h</div>
+                        <select className="select" value={assign[`${iso}|MIDDAY`] || ""} onChange={(e) => save(iso, "MIDDAY", e.target.value || null)}>
+                          <option value="">- Choisir vendeuse -</option>
+                          {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
+                        </select>
+                        <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|MIDDAY`])} /></div>
+                      </div>
+                      <div>
+                        <div className="text-xs mb-1">9h-13h30</div>
+                        <select className="select" value={assign[`${iso}|SUNDAY_EXTRA`] || ""} onChange={(e) => save(iso, "SUNDAY_EXTRA", e.target.value || null)}>
+                          <option value="">- Choisir vendeuse -</option>
+                          {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
+                        </select>
+                        <div className="mt-1"><Chip name={nameFromId(assign[`${iso}|SUNDAY_EXTRA`])} /></div>
+                      </div>
                     </div>
-                  );
-                })}
+                  </div>
+                )}
+
+                <ShiftRow label="Soir (13h30-20h30)" iso={iso} code="EVENING" value={assign[`${iso}|EVENING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|EVENING`])} />
               </div>
             );
-          })()}
-        </div>
-
-        {/* Absences approuvées à venir - MOIS (dates futures) */}
-        <div className="card">
-          <div className="hdr mb-2">Absences approuvées à venir - mois : {labelMonthFR(selectedMonth)}</div>
-          {(() => {
-            if (!monthUpcomingAbsences || monthUpcomingAbsences.length === 0) {
-              return <div className="text-sm text-gray-600">Aucune absence à venir sur ce mois.</div>;
-            }
-            // Grouper par vendeuse
-            const bySeller = {};
-            monthUpcomingAbsences.forEach((a) => {
-              if (!bySeller[a.seller_id]) bySeller[a.seller_id] = [];
-              bySeller[a.seller_id].push(a);
-            });
-            const entries = Object.entries(bySeller);
-            return (
-              <div className="space-y-3">
-                {entries.map(([sid, arr]) => {
-                  arr.sort((a, b) => a.date.localeCompare(b.date));
-                  const name = nameFromId(sid);
-                  return (
-                    <div key={sid} className="border rounded-2xl p-3">
-                      <div className="font-medium mb-1">{name}</div>
-                      <ul className="text-sm space-y-1">
-                        {arr.map((a) => {
-                          const repl = monthAcceptedRepl[a.id];
-                          return (
-                            <li key={a.id}>
-                              <span className="font-medium">{frDate(a.date)}</span>
-                              {repl ? (
-                                <>
-                                  {" - "}
-                                  <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />
-                                  {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
-                                </>
-                              ) : (
-                                <> - <span className="text-gray-500">pas de volontaire accepté</span></>
-                              )}
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </div>
-                  );
-                })}
-              </div>
-            );
-          })()}
+          })}
         </div>
       </div>
-    </>
+
+      {/* Sélecteur de MOIS */}
+      <div className="card">
+        <div className="hdr mb-2">Choisir le mois pour “Total heures (mois)”</div>
+        <div className="grid sm:grid-cols-3 gap-3 items-center">
+          <div className="sm:col-span-2">
+            <div className="text-sm mb-1">Mois</div>
+            <input
+              type="month"
+              className="input"
+              value={monthInputValue(selectedMonth)}
+              onChange={(e) => {
+                const [y, m] = e.target.value.split("-").map(Number);
+                setSelectedMonth(new Date(y, m - 1, 1));
+              }}
+            />
+          </div>
+          <div className="text-sm text-gray-600">
+            Mois sélectionné : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Totaux */}
+      <TotalsGrid
+        sellers={sellers}
+        monthFrom={monthFrom}
+        monthTo={monthTo}
+        monthLabel={labelMonthFR(selectedMonth)}
+        refreshKey={refreshKey}
+        monthAbsences={monthAbsences}
+        monthUpcomingAbsences={monthUpcomingAbsences}
+      />
+
+      {/* Absences approuvées - MOIS (passées / aujourd’hui) */}
+      <div className="card">
+        <div className="hdr mb-2">Absences approuvées - mois : {labelMonthFR(selectedMonth)}</div>
+        {(() => {
+          if (!monthAbsences || monthAbsences.length === 0) {
+            return <div className="text-sm text-gray-600">Aucune absence (passée/aujourd’hui) sur ce mois.</div>;
+          }
+          // Grouper par vendeuse
+          const bySeller = {};
+          monthAbsences.forEach((a) => {
+            if (!bySeller[a.seller_id]) bySeller[a.seller_id] = [];
+            bySeller[a.seller_id].push(a);
+          });
+          const entries = Object.entries(bySeller);
+          return (
+            <div className="space-y-3">
+              {entries.map(([sid, arr]) => {
+                arr.sort((a, b) => a.date.localeCompare(b.date));
+                const name = nameFromId(sid);
+                return (
+                  <div key={sid} className="border rounded-2xl p-3">
+                    <div className="font-medium mb-1">{name}</div>
+                    <ul className="text-sm space-y-1">
+                      {arr.map((a) => {
+                        const repl = monthAcceptedRepl[a.id];
+                        return (
+                          <li key={a.id}>
+                            <span className="font-medium">{frDate(a.date)}</span>
+                            {repl ? (
+                              <>
+                                {" - "}
+                                <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />
+                                {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
+                              </>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Absences approuvées à venir - MOIS (dates futures) */}
+      <div className="card">
+        <div className="hdr mb-2">Absences approuvées à venir - mois : {labelMonthFR(selectedMonth)}</div>
+        {(() => {
+          if (!monthUpcomingAbsences || monthUpcomingAbsences.length === 0) {
+            return <div className="text-sm text-gray-600">Aucune absence à venir sur ce mois.</div>;
+          }
+          // Grouper par vendeuse
+          const bySeller = {};
+          monthUpcomingAbsences.forEach((a) => {
+            if (!bySeller[a.seller_id]) bySeller[a.seller_id] = [];
+            bySeller[a.seller_id].push(a);
+          });
+          const entries = Object.entries(bySeller);
+          return (
+            <div className="space-y-3">
+              {entries.map(([sid, arr]) => {
+                arr.sort((a, b) => a.date.localeCompare(b.date));
+                const name = nameFromId(sid);
+                return (
+                  <div key={sid} className="border rounded-2xl p-3">
+                    <div className="font-medium mb-1">{name}</div>
+                    <ul className="text-sm space-y-1">
+                      {arr.map((a) => {
+                        const repl = monthAcceptedRepl[a.id];
+                        return (
+                          <li key={a.id}>
+                            <span className="font-medium">{frDate(a.date)}</span>
+                            {repl ? (
+                              <>
+                                {" - "}
+                                <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />
+                                {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
+                              </>
+                            ) : (
+                              <> - <span className="text-gray-500">pas de volontaire accepté</span></>
+                            )}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+      </div>
+    </div>
   );
 }
 
@@ -1111,15 +992,13 @@ function ShiftRow({ label, iso, code, value, onChange, sellers, chipName }) {
     <div className="space-y-1">
       <div className="text-sm">{label}</div>
       <select className="select" value={value} onChange={(e) => onChange(iso, code, e.target.value || null)}>
-  <option value="">- Choisir vendeuse -</option>
-  {sellers.length === 0 && (
-    <option value="" disabled>(Aucune vendeuse — vérifier droits/RPC)</option>
-  )}
-  {sellers.map((s) => (
-    <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
-  ))}
-</select>
-
+        <option value="">- Choisir vendeuse -</option>
+        {sellers.map((s) => (
+          <option key={s.user_id} value={s.user_id}>
+            {s.full_name}
+          </option>
+        ))}
+      </select>
       <div>
         <Chip name={chipName} />
       </div>
@@ -1225,6 +1104,7 @@ function TotalsGrid({
 
       const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
       (data || []).forEach(l => {
+        // chevauchement avec [yearStart, min(today, yearEnd)]
         const start = l.start_date > yearStart ? l.start_date : yearStart;
         const endLimit = todayIso < yearEnd ? todayIso : yearEnd;
         const end = l.end_date < endLimit ? l.end_date : endLimit;
