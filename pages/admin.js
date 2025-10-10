@@ -8,7 +8,7 @@ import WeekNav from "../components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "../lib/date";
 
 /* ---------- Build tag ---------- */
-const BUILD_TAG = "ADMIN FIX — 10/10/2025 18:42 (merge+init-load)";
+const BUILD_TAG = "ADMIN FIX — 10/10/2025 19:15 (full merge + absents inline + fallback)";
 
 /* Heures par créneau (inclut le dimanche spécial) */
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
@@ -71,6 +71,7 @@ export default function Admin() {
   // Données UI
   const [sellers, setSellers] = useState([]);               // [{user_id, full_name}]
   const [assign, setAssign] = useState({});                 // "YYYY-MM-DD|SHIFT" -> seller_id
+  const [absencesByDate, setAbsencesByDate] = useState({}); // { "YYYY-MM-DD": [seller_id,...] }
   const [absencesToday, setAbsencesToday] = useState([]);   // d’aujourd’hui (pending/approved)
   const [pendingAbs, setPendingAbs] = useState([]);         // absences à venir (pending)
   const [replList, setReplList] = useState([]);             // volontaires (pending) sur absences approuvées
@@ -128,14 +129,18 @@ export default function Admin() {
   useEffect(() => { loadSellers(); }, [loadSellers]);
   const nameFromId = useCallback((id) => sellers.find((s) => s.user_id === id)?.full_name || "-", [sellers]);
 
-  /* Planning semaine */
+  /* Planning semaine (avec fallback direct sur table shifts) */
   const loadWeekAssignments = useCallback(async (fromIso, toIso) => {
-    const { data, error } = await supabase
-      .from("view_week_assignments")
-      .select("*")
-      .gte("date", fromIso)
-      .lte("date", toIso);
-    if (error) console.error("view_week_assignments error:", error);
+    let data = null, error = null;
+    try {
+      const res = await supabase.from("view_week_assignments").select("*").gte("date", fromIso).lte("date", toIso);
+      data = res.data; error = res.error;
+    } catch (e) { error = e; }
+    if (error) console.warn("view_week_assignments error, fallback to shifts:", error);
+    if (!data || data.length === 0) {
+      const res2 = await supabase.from("shifts").select("date, shift_code, seller_id").gte("date", fromIso).lte("date", toIso);
+      data = res2.data || [];
+    }
     const next = {};
     (data || []).forEach((row) => { next[`${row.date}|${row.shift_code}`] = row.seller_id; });
     setAssign(next);
@@ -380,7 +385,6 @@ export default function Admin() {
       .on("postgres_changes", { event: "*", schema: "public", table: "absences" }, () => {
         loadPendingAbs();
         loadAbsencesToday();
-        loadReplacements();
         loadMonthAbsences();
         loadMonthUpcomingAbsences();
       }).subscribe();
@@ -437,7 +441,7 @@ export default function Admin() {
       supabase.removeChannel(chLeaves);
       supabase.removeChannel(chCancel);
     };
-  }, [todayIso, loadPendingAbs, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences, loadPendingLeaves, loadApprovedLeaves, loadMonthAcceptedRepl]);
+  }, [todayIso, loadPendingAbs, loadAbsencesToday, loadPendingLeaves, loadApprovedLeaves, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl, loadReplacements]);
 
   /* Sauvegarde d'une affectation */
   const save = useCallback(async (iso, code, seller_id) => {
@@ -535,28 +539,64 @@ export default function Admin() {
     await loadReplacements(); await loadMonthAcceptedRepl();
   }, [latestRepl, loadReplacements, loadMonthAcceptedRepl]);
 
+  /* ---------- Inline ABSENCES (admin) pour chaque jour de la semaine ---------- */
+  const loadWeekAbsences = useCallback(async () => {
+    const from = fmtISODate(days[0]);
+    const to = fmtISODate(days[6]);
+    const { data, error } = await supabase
+      .from("absences")
+      .select("date, seller_id, status")
+      .gte("date", from)
+      .lte("date", to)
+      .in("status", ["approved", "pending"]);
+    if (error) { console.error("loadWeekAbsences error:", error); return; }
+    const grouped = {};
+    (data || []).forEach((r) => {
+      if (!grouped[r.date]) grouped[r.date] = [];
+      if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
+    });
+    setAbsencesByDate(grouped);
+  }, [days]);
+
+  const setSellerAbsent = useCallback(async (isoDate, sellerId) => {
+    if (!sellerId) return;
+    const { error } = await supabase
+      .from("absences")
+      .upsert({ date: isoDate, seller_id: sellerId, status: "approved", reason: "Absence non déclarée (admin)" }, { onConflict: "date,seller_id" });
+    if (error) { console.error("upsert absence error:", error); alert("Impossible d'enregistrer l'absence."); return; }
+    setAbsencesByDate((prev) => {
+      const arr = new Set([...(prev[isoDate] || []), sellerId]);
+      return { ...prev, [isoDate]: Array.from(arr) };
+    });
+  }, []);
+
+  const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
+    const { error } = await supabase.from("absences").delete().match({ date: isoDate, seller_id: sellerId });
+    if (error) { console.error("delete absence error:", error); alert("Impossible de supprimer l'absence."); return; }
+    setAbsencesByDate((prev) => {
+      const arr = new Set(prev[isoDate] || []);
+      arr.delete(sellerId);
+      return { ...prev, [isoDate]: Array.from(arr) };
+    });
+  }, []);
+
   /* ---------- 🔔 BADGE + REFRESH AUTO ---------- */
 
-  // Pastille selon éléments en attente (plus de demandes d’annulation ici)
   useEffect(() => {
     const count =
       (pendingAbs?.length || 0) +
       (pendingLeaves?.length || 0) +
       (replList?.length || 0);
-
     const nav = typeof navigator !== 'undefined' ? navigator : null;
     if (!nav) return;
-
-    if (count > 0 && nav.setAppBadge) {
-      nav.setAppBadge(count).catch(() => {});
-    } else if (nav?.clearAppBadge) {
-      nav.clearAppBadge().catch(() => {});
-    }
+    if (count > 0 && nav.setAppBadge) nav.setAppBadge(count).catch(() => {});
+    else if (nav?.clearAppBadge) nav.clearAppBadge().catch(() => {});
   }, [pendingAbs?.length, pendingLeaves?.length, replList?.length]);
 
-  // Regroupe les rechargements + efface la pastille à l’ouverture
   const reloadAll = useCallback(async () => {
     await Promise.all([
+      loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
+      loadWeekAbsences(),
       loadPendingAbs?.(),
       loadAbsencesToday?.(),
       loadReplacements?.(),
@@ -566,11 +606,13 @@ export default function Admin() {
       loadMonthUpcomingAbsences?.(),
     ]);
     setRefreshKey((k) => k + 1);
-
     if (typeof navigator !== 'undefined' && navigator.clearAppBadge) {
       try { await navigator.clearAppBadge(); } catch {}
     }
   }, [
+    days,
+    loadWeekAssignments,
+    loadWeekAbsences,
     loadPendingAbs,
     loadAbsencesToday,
     loadReplacements,
@@ -580,20 +622,12 @@ export default function Admin() {
     loadMonthUpcomingAbsences,
   ]);
 
-  // ⚠️ Initial load une fois connecté (corrige "page ne bouge pas" au 1er affichage)
-  useEffect(() => {
-    if (loading) return;
-    if (!session) return;
-    reloadAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, session]);
+  // Initial load
+  useEffect(() => { if (!loading && session) reloadAll(); }, [loading, session, reloadAll]);
 
-  // Recharge quand l’app revient au premier plan (et débloque d’éventuels clics fantômes)
+  // Recharge quand l’app revient au premier plan
   useEffect(() => {
-    const onWake = () => {
-      // Force un léger "tick" de rendu pour éviter toute couche bloquante après reprise
-      setTimeout(() => reloadAll(), 50);
-    };
+    const onWake = () => setTimeout(() => reloadAll(), 50);
     window.addEventListener('focus', onWake, { passive: true });
     document.addEventListener('visibilitychange', onWake, { passive: true });
     return () => {
@@ -602,12 +636,10 @@ export default function Admin() {
     };
   }, [reloadAll]);
 
-  // Écoute les messages du Service Worker (reçu à chaque push) → recharge
+  // SW push → reload
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
-    const handler = (e) => {
-      if (e?.data?.type === 'push') reloadAll();
-    };
+    const handler = (e) => { if (e?.data?.type === 'push') reloadAll(); };
     navigator.serviceWorker.addEventListener('message', handler);
     return () => navigator.serviceWorker.removeEventListener('message', handler);
   }, [reloadAll]);
@@ -618,10 +650,7 @@ export default function Admin() {
       <Head>
         <title>Admin • {BUILD_TAG}</title>
       </Head>
-
-      <div style={{padding:'8px',background:'#111',color:'#fff',fontWeight:700}}>
-        {BUILD_TAG}
-      </div>
+      <div style={{padding:'8px',background:'#111',color:'#fff',fontWeight:700}}>{BUILD_TAG}</div>
 
       <div className="p-4 max-w-6xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
@@ -759,7 +788,6 @@ export default function Admin() {
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>{tag}</span>
-                      {/* Bouton admin pour ANNULER un congé à venir */}
                       {!isOngoing && l.start_date > todayIso ? (
                         <button type="button" className="btn" onClick={() => cancelFutureLeave(l.id)}
                           style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
@@ -777,11 +805,10 @@ export default function Admin() {
         {/* Planning du jour */}
         <TodayColorBlocks today={today} todayIso={todayIso} assign={assign} nameFromId={nameFromId} />
 
-        {/* Planning de la semaine (édition) */}
+        {/* Planning de la semaine (édition + absents inline) */}
         <div className="card">
           <div className="hdr mb-4">Planning de la semaine</div>
 
-          {/* Nav + bouton copier */}
           <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-3">
             <WeekNav
               monday={monday}
@@ -797,6 +824,7 @@ export default function Admin() {
               const iso = fmtISODate(d);
               const sunday = isSunday(d);
               const highlight = isSameISO(d, todayIso);
+              const currentAbs = absencesByDate[iso] || [];
               return (
                 <div
                   key={iso}
@@ -805,6 +833,30 @@ export default function Admin() {
                 >
                   <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
                   <div className="font-semibold">{iso}</div>
+
+                  {/* Bloc Absents (inline admin) */}
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium">Absents</div>
+                    <div className="flex flex-wrap gap-2">
+                      {currentAbs.length === 0 ? <span className="text-sm text-gray-500">—</span> : null}
+                      {currentAbs.map((sid) => {
+                        const name = nameFromId(sid);
+                        return (
+                          <span key={sid} className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs" style={{ background:"#f5f5f5", border:"1px solid #e0e0e0" }}>
+                            <span className="inline-block w-2 h-2 rounded-full" style={{ background: colorForName(name) }} />
+                            {name}
+                            <button className="ml-1 text-[11px] opacity-70 hover:opacity-100" onClick={() => removeSellerAbsent(iso, sid)} title="Supprimer">✕</button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <select className="select w-full" defaultValue="" onChange={(e) => { const v = e.target.value; if (!v) return; setSellerAbsent(iso, v); e.target.value=""; }}>
+                      <option value="" disabled>Marquer "Absent"</option>
+                      {sellers.filter((s) => !currentAbs.includes(s.user_id)).map((s) => (
+                        <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
+                      ))}
+                    </select>
+                  </div>
 
                   <ShiftRow label="Matin (6h30-13h30)" iso={iso} code="MORNING" value={assign[`${iso}|MORNING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MORNING`])} />
 
@@ -1099,7 +1151,7 @@ function TotalsGrid({
           .gte("date", monthFrom)
           .lte("date", upper);
 
-        const rows = mq.data || []
+        const rows = mq.data || [];
         const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
         const seen = new Set();
 
@@ -1140,7 +1192,6 @@ function TotalsGrid({
 
       const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
       (data || []).forEach(l => {
-        // chevauchement avec [yearStart, min(today, yearEnd)]
         const start = l.start_date > yearStart ? l.start_date : yearStart;
         const endLimit = todayIso < yearEnd ? todayIso : yearEnd;
         const end = l.end_date < endLimit ? l.end_date : endLimit;
