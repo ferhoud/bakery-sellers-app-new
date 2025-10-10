@@ -1,6 +1,6 @@
 // pages/logout.js
 import { useEffect } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { supabase } from "../lib/supabaseClient";
 
 export default function Logout() {
   useEffect(() => {
@@ -9,10 +9,5 @@ export default function Logout() {
       window.location.replace("/login");
     })();
   }, []);
-
-  return (
-    <div style={{padding:24, textAlign:"center"}}>
-      Déconnexion…
-    </div>
-  );
+  return <div style={{padding:24, textAlign:"center"}}>Déconnexion…</div>;
 }
