@@ -1,24 +1,18 @@
 // pages/admin/sellers.js
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "../../lib/useAuth";
-<ArrowLeftIcon style={{marginRight:8}} />
-<PencilIcon style={{marginRight:8}} />
-<TrashIcon style={{marginRight:8}} />
 
 const API_CREATE = "/api/admin/create-seller";   // doit correspondre à pages/api/admin/create-seller.js
-const API_LIST   = "/api/admin/list-sellers";    // NOUVEAU : liste côté serveur (service role)
+const API_LIST   = "/api/admin/list-sellers";    // liste côté serveur (service role)
 
-async function createSellerAPI({ full_name, email, password }) {
-  const r = await fetch(API_CREATE, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ full_name, email, password }),
-  });
-  const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "Création échouée");
-  return j;
-}
+// --- Icônes SVG stables (pas de fonts externes) ---
+const ArrowLeftIcon = (props) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" {...props}>
+    <path d="M19 12H5m0 0l6-6m-6 6l6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>
+);
+
 const PencilIcon = (props) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" {...props}>
     <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z" stroke="currentColor" strokeWidth="1.5" fill="currentColor"/>
@@ -32,15 +26,21 @@ const TrashIcon = (props) => (
   </svg>
 );
 
-const ArrowLeftIcon = (props) => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" {...props}>
-    <path d="M19 12H5m0 0l6-6m-6 6l6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-  </svg>
-);
+// --- API helper ---
+async function createSellerAPI({ full_name, email, password }) {
+  const r = await fetch(API_CREATE, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ full_name, email, password }),
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Création échouée");
+  return j;
+}
 
 export default function SellersAdminPage() {
   const { session, profile, loading } = useAuth();
-  const r = useRouter();
+  const router = useRouter();
 
   const [full_name, setFullName] = useState("");
   const [email, setEmail]       = useState("");
@@ -48,19 +48,19 @@ export default function SellersAdminPage() {
   const [busy, setBusy]         = useState(false);
   const [msg, setMsg]           = useState(null);
 
-  const [sellers, setSellers]   = useState([]);
+  const [sellers, setSellers]         = useState([]);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError]     = useState(null);
 
   // Garde d'authentification
   useEffect(() => {
     if (loading) return;
-    if (!session) r.replace("/login");
-    if (profile && profile.role !== "admin") r.replace("/app");
-  }, [session, profile, loading, r]);
+    if (!session) router.replace("/login");
+    if (profile && profile.role !== "admin") router.replace("/app");
+  }, [session, profile, loading, router]);
 
-  // Charge la liste via l'API route (service role côté serveur)
-  const loadSellers = async () => {
+  // Charger la liste via l'API serveur (service role)
+  const loadSellers = useCallback(async () => {
     setListLoading(true);
     setListError(null);
     try {
@@ -75,11 +75,11 @@ export default function SellersAdminPage() {
     } finally {
       setListLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadSellers();
-  }, []);
+  }, [loadSellers]);
 
   // Création d'une vendeuse + refresh liste
   const onSubmit = async (e) => {
@@ -98,41 +98,50 @@ export default function SellersAdminPage() {
     }
   };
 
-  return (
-    <div className="p-4 max-w-3xl mx-auto space-y-6">
-      <div className="hdr">Gérer les vendeuses</div>
-      <div style={{ fontSize: 12, opacity: .6 }}>BUILD sellers.js (server-list)</div>
+  // Placeholders d'actions (tu pourras brancher tes vraies routes ensuite)
+  const onRename = (seller) => {
+    console.log("Renommer", seller);
+    // TODO: ouvrir un prompt et appeler ton API de rename, puis loadSellers()
+  };
+  const onDeactivate = (seller) => {
+    console.log("Désactiver", seller);
+    // TODO: appeler ton API de désactivation, puis loadSellers()
+  };
+  const onHardDelete = (seller) => {
+    console.log("Supprimer hard", seller);
+    // TODO: appeler ton API de suppression définitive, puis loadSellers()
+  };
 
-      <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
+  return (
+    <div className="p-4 max-w-4xl mx-auto space-y-6">
+      {/* Header actions */}
+      <div className="flex items-center justify-between">
+        <button className="btn" onClick={() => router.push("/admin")}>
+          <ArrowLeftIcon style={{ marginRight: 8 }} /> Retour admin
+        </button>
+        <a className="btn" href="/logout">Se déconnecter</a>
+      </div>
+
+      <div className="hdr">Gérer les vendeuses</div>
+      <div style={{ fontSize: 12, opacity: .6 }}>BUILD sellers.js (server-list + svg-icons)</div>
+
+      {/* Formulaire création */}
+      <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4 bg-white">
         <div>
           <label className="block text-sm mb-1">Nom complet</label>
-          <input
-            className="input w-full"
-            value={full_name}
-            onChange={(e) => setFullName(e.target.value)}
-            required
-          />
+          <input className="input w-full" value={full_name}
+                 onChange={(e) => setFullName(e.target.value)} required />
         </div>
         <div>
           <label className="block text-sm mb-1">Email</label>
-          <input
-            className="input w-full"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            placeholder="vendeuse@vendeuses.local"
-          />
+          <input className="input w-full" type="email" value={email}
+                 onChange={(e) => setEmail(e.target.value)} required
+                 placeholder="vendeuse@vendeuses.local" />
         </div>
         <div>
           <label className="block text-sm mb-1">Mot de passe</label>
-          <input
-            className="input w-full"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+          <input className="input w-full" type="password" value={password}
+                 onChange={(e) => setPassword(e.target.value)} required />
         </div>
         <button type="submit" className="btn" disabled={busy}>
           {busy ? "Création..." : "Créer la vendeuse"}
@@ -140,31 +149,37 @@ export default function SellersAdminPage() {
         {msg && <div className="text-sm mt-2">{msg}</div>}
       </form>
 
+      {/* Liste */}
       <div className="card">
         <div className="hdr mb-2">Vendeuses existantes</div>
 
         {listLoading ? (
           <div className="text-sm text-gray-600">Chargement…</div>
         ) : listError ? (
-          <div className="text-sm text-red-600">
-            Erreur lors du chargement : {listError}
-          </div>
+          <div className="text-sm text-red-600">Erreur lors du chargement : {listError}</div>
         ) : sellers.length === 0 ? (
           <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
         ) : (
           <ul className="space-y-2">
             {sellers.map((s) => (
-              <li key={s.user_id || s.id} className="border rounded-2xl p-3 flex items-center justify-between">
+              <li key={s.user_id || s.id} className="border rounded-2xl p-3 bg-white flex items-center justify-between">
                 <div>
                   <div className="font-medium">{s.full_name || "—"}</div>
                   <div className="text-sm text-gray-600">{s.user_id || s.id}</div>
                 </div>
-                <span
-                  className="text-xs px-2 py-1 rounded-full"
-                  style={{ backgroundColor: "#f3f4f6" }}
-                >
-                  {s.role || "seller"}
-                </span>
+
+                {/* Actions (icônes SVG = fini les caractères bizarres) */}
+                <div className="flex items-center gap-2">
+                  <button className="btn" onClick={() => onRename(s)}>
+                    <PencilIcon style={{ marginRight: 8 }} /> Renommer
+                  </button>
+                  <button className="btn" style={{ background: "#dc2626" }} onClick={() => onDeactivate(s)}>
+                    Désactiver
+                  </button>
+                  <button className="btn" style={{ background: "#78350f" }} onClick={() => onHardDelete(s)}>
+                    <TrashIcon style={{ marginRight: 8 }} /> Supprimer (hard)
+                  </button>
+                </div>
               </li>
             ))}
           </ul>
