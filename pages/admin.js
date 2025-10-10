@@ -6,84 +6,9 @@ import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
 import WeekNav from "../components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "../lib/date";
-// --- DEBUG PANEL (coller après tes imports) ---
-import { useEffect, useState } from "react";
 
-function DebugPanel({ supabase, buildTag }) {
-  const [info, setInfo] = useState({
-    user: null,
-    swControlled: false,
-    swRegs: 0,
-    localKeys: [],
-    online: true,
-  });
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function run() {
-      const { data: { user } = {} } = await supabase.auth.getUser().catch(() => ({ data: { user: null } }));
-      const regs = (await navigator.serviceWorker?.getRegistrations?.()) || [];
-      const localKeys = [];
-      try {
-        for (let i = 0; i < localStorage.length; i++) localKeys.push(localStorage.key(i));
-      } catch (_) {}
-
-      if (isMounted) {
-        setInfo({
-          user,
-          swControlled: !!navigator.serviceWorker?.controller,
-          swRegs: regs.length,
-          localKeys,
-          online: navigator.onLine,
-        });
-      }
-    }
-
-    run();
-    const unsub = supabase.auth.onAuthStateChange(() => run()).data?.subscription;
-    return () => { isMounted = false; unsub?.unsubscribe?.(); };
-  }, [supabase]);
-
-  const styleWrap = {
-    position: "fixed", bottom: 12, right: 12, zIndex: 9999,
-    background: "#111", color: "#fff", padding: "12px 14px",
-    borderRadius: 12, fontSize: 12, maxWidth: 360, boxShadow: "0 8px 24px rgba(0,0,0,.35)"
-  };
-
-  return (
-    <div style={styleWrap}>
-      <div style={{fontWeight:700, marginBottom:6}}>🛠 Debug • {buildTag}</div>
-      <div>Online: {String(info.online)}</div>
-      <div>SW controlled: {String(info.swControlled)} (regs: {info.swRegs})</div>
-      <div>User: {info.user?.email || "—"}</div>
-      <div>LocalStorage keys: {info.localKeys.join(", ") || "—"}</div>
-      <div style={{marginTop:8, display:"flex", gap:8, flexWrap:"wrap"}}>
-        <button onClick={()=>location.reload(true)} style={{padding:"6px 8px", borderRadius:8, cursor:"pointer"}}>🔄 Hard reload</button>
-        <button onClick={async()=>{
-          const regs = await navigator.serviceWorker?.getRegistrations?.();
-          await Promise.all((regs||[]).map(r=>r.unregister()));
-          caches && await caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))).catch(()=>{});
-          alert("Service workers & caches nettoyés. Recharge la page.");
-        }} style={{padding:"6px 8px", borderRadius:8, cursor:"pointer"}}>🧹 Purge SW & caches</button>
-      </div>
-    </div>
-  );
-}
-// --- FIN DEBUG PANEL ---
-
-
-<<<<<<< Updated upstream
-const BUILD_TAG = "ADMIN PROBE — 10/10/2025 11:25";
-{/* Affiche ce panel SEULEMENT quand l’URL contient ?debug=1 */}
-{typeof window !== "undefined" && new URLSearchParams(window.location.search).has("debug") && (
-  <DebugPanel supabase={supabase} buildTag={BUILD_TAG} />
-)}
-
-=======
 /* ---------- Build tag ---------- */
 const BUILD_TAG = "ADMIN FIX — 10/10/2025 18:42 (merge+init-load)";
->>>>>>> Stashed changes
 
 /* Heures par créneau (inclut le dimanche spécial) */
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
@@ -173,24 +98,6 @@ export default function Admin() {
 
   // Déconnexion robuste
   const [signingOut, setSigningOut] = useState(false);
-<<<<<<< Updated upstream
-
-async function handleSignOut() {
-  if (signingOut) return;
-  setSigningOut(true);
-  try {
-    await supabase.auth.signOut();
-    // Petit délai pour laisser SW/SPA se stabiliser
-    setTimeout(()=>{ window.location.href = "/login"; }, 50);
-  } catch (e) {
-    console.error(e);
-    alert("Erreur de déconnexion: " + (e?.message || e));
-  } finally {
-    setSigningOut(false);
-  }
-}
-
-=======
   const handleSignOut = useCallback(async () => {
     if (signingOut) return;
     setSigningOut(true);
@@ -204,7 +111,6 @@ async function handleSignOut() {
       r.replace("/login");
     }
   }, [r, signingOut]);
->>>>>>> Stashed changes
 
   /* Sécurité */
   useEffect(() => {
@@ -708,19 +614,6 @@ async function handleSignOut() {
 
   /* ----------------- RENDER ----------------- */
   return (
-<<<<<<< Updated upstream
-    <div className="p-4 max-w-6xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="hdr">Compte: {profile?.full_name || "-"} <span className="sub">(admin)</span></div>
-        <div className="flex items-center gap-2">
-          <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
-          <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
-          <button onClick={handleSignOut} disabled={signingOut} style={{opacity: signingOut ? .6 : 1}}>
-  🚪 {signingOut ? "Déconnexion..." : "Se déconnecter"}
-</button>
-
-        </div>
-=======
     <>
       <Head>
         <title>Admin • {BUILD_TAG}</title>
@@ -728,7 +621,6 @@ async function handleSignOut() {
 
       <div style={{padding:'8px',background:'#111',color:'#fff',fontWeight:700}}>
         {BUILD_TAG}
->>>>>>> Stashed changes
       </div>
 
       <div className="p-4 max-w-6xl mx-auto space-y-6">
