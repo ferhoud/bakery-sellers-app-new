@@ -6,12 +6,7 @@ import { useAuth } from "../../lib/useAuth";
 const API_CREATE = "/api/admin/create-seller";
 const API_LIST   = "/api/admin/list-sellers";
 
-// Icônes SVG stables
-const ArrowLeftIcon = (props) => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" {...props}>
-    <path d="M19 12H5m0 0l6-6m-6 6l6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-  </svg>
-);
+// Icônes SVG
 const PencilIcon = (props) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" {...props}>
     <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25z" stroke="currentColor" strokeWidth="1.5" fill="currentColor"/>
@@ -40,24 +35,24 @@ export default function SellersAdminPage() {
   const { session, profile, loading } = useAuth();
   const router = useRouter();
 
+  const [sellers, setSellers] = useState([]);
+  const [listLoading, setListLoading] = useState(true);
+  const [listError, setListError] = useState(null);
+
   const [full_name, setFullName] = useState("");
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy]         = useState(false);
   const [msg, setMsg]           = useState(null);
 
-  const [sellers, setSellers]         = useState([]);
-  const [listLoading, setListLoading] = useState(true);
-  const [listError, setListError]     = useState(null);
-
-  // Guard
+  // Auth guard
   useEffect(() => {
     if (loading) return;
     if (!session) router.replace("/login");
     if (profile && profile.role !== "admin") router.replace("/app");
   }, [session, profile, loading, router]);
 
-  // Liste via API (service-role côté serveur)
+  // Liste côté serveur
   const loadSellers = useCallback(async () => {
     setListLoading(true);
     setListError(null);
@@ -67,7 +62,6 @@ export default function SellersAdminPage() {
       if (!res.ok) throw new Error(json.error || "Échec chargement vendeuses");
       setSellers(json.sellers || []);
     } catch (e) {
-      console.error("Load sellers failed:", e);
       setListError(e.message || "Erreur");
       setSellers([]);
     } finally {
@@ -77,6 +71,7 @@ export default function SellersAdminPage() {
 
   useEffect(() => { loadSellers(); }, [loadSellers]);
 
+  // Création + refresh liste
   const onSubmit = async (e) => {
     e.preventDefault();
     setMsg(null);
@@ -93,52 +88,27 @@ export default function SellersAdminPage() {
     }
   };
 
-  // Placeholders d'actions
-  const onRename = (seller) => console.log("Renommer", seller);
-  const onDeactivate = (seller) => console.log("Désactiver", seller);
-  const onHardDelete = (seller) => console.log("Supprimer hard", seller);
+  const onRename = (s) => console.log("Renommer", s);
+  const onDeactivate = (s) => console.log("Désactiver", s);
+  const onHardDelete = (s) => console.log("Supprimer hard", s);
 
   return (
     <div className="p-4 max-w-4xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
-        <button className="btn" onClick={() => router.push("/admin")}>
-          <ArrowLeftIcon style={{ marginRight: 8 }} /> Retour admin
-        </button>
+      {/* Topbar */}
+      <div className="flex items-center justify-between mb-4">
+        <button className="btn" onClick={() => router.push("/admin")}>Retour admin</button>
         <a className="btn" href="/logout">Se déconnecter</a>
       </div>
 
       <div className="hdr">Gérer les vendeuses</div>
-      <div style={{ fontSize: 12, opacity: .6 }}>BUILD sellers.js (server-list + svg-icons)</div>
 
-      <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4 bg-white">
-        <div>
-          <label className="block text-sm mb-1">Nom complet</label>
-        <input className="input w-full" value={full_name} onChange={(e) => setFullName(e.target.value)} required />
-        </div>
-        <div>
-          <label className="block text-sm mb-1">Email</label>
-          <input className="input w-full" type="email" value={email}
-                 onChange={(e) => setEmail(e.target.value)} required
-                 placeholder="vendeuse@vendeuses.local" />
-        </div>
-        <div>
-          <label className="block text-sm mb-1">Mot de passe</label>
-          <input className="input w-full" type="password" value={password}
-                 onChange={(e) => setPassword(e.target.value)} required />
-        </div>
-        <button type="submit" className="btn" disabled={busy}>
-          {busy ? "Création..." : "Créer la vendeuse"}
-        </button>
-        {msg && <div className="text-sm mt-2">{msg}</div>}
-      </form>
-
+      {/* LISTE EN HAUT */}
       <div className="card">
         <div className="hdr mb-2">Vendeuses existantes</div>
-
         {listLoading ? (
           <div className="text-sm text-gray-600">Chargement…</div>
         ) : listError ? (
-          <div className="text-sm text-red-600">Erreur lors du chargement : {listError}</div>
+          <div className="text-sm text-red-600">Erreur : {listError}</div>
         ) : sellers.length === 0 ? (
           <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
         ) : (
@@ -151,13 +121,13 @@ export default function SellersAdminPage() {
                 </div>
                 <div className="flex items-center gap-2">
                   <button className="btn" onClick={() => onRename(s)}>
-                    <PencilIcon style={{ marginRight: 8 }} /> Renommer
+                    <PencilIcon style={{ marginRight: 8 }} /> Modifier
                   </button>
                   <button className="btn" style={{ background: "#dc2626" }} onClick={() => onDeactivate(s)}>
                     Désactiver
                   </button>
                   <button className="btn" style={{ background: "#78350f" }} onClick={() => onHardDelete(s)}>
-                    <TrashIcon style={{ marginRight: 8 }} /> Supprimer (hard)
+                    <TrashIcon style={{ marginRight: 8 }} /> Supprimer
                   </button>
                 </div>
               </li>
@@ -165,6 +135,27 @@ export default function SellersAdminPage() {
           </ul>
         )}
       </div>
+
+      {/* FORMULAIRE EN BAS */}
+      <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4 bg-white">
+        <div className="hdr mb-2">Ajouter une vendeuse</div>
+        <div>
+          <label className="block text-sm mb-1">Nom complet</label>
+          <input className="input w-full" value={full_name} onChange={(e) => setFullName(e.target.value)} required />
+        </div>
+        <div>
+          <label className="block text-sm mb-1">Email</label>
+          <input className="input w-full" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="vendeuse@vendeuses.local" />
+        </div>
+        <div>
+          <label className="block text-sm mb-1">Mot de passe</label>
+          <input className="input w-full" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+        </div>
+        <button type="submit" className="btn" disabled={busy}>
+          {busy ? "Création..." : "Créer la vendeuse"}
+        </button>
+        {msg && <div className="text-sm mt-2">{msg}</div>}
+      </form>
     </div>
   );
 }
