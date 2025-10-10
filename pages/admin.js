@@ -1,6 +1,7 @@
-// touch: 2025-10-09 v-admin-weekly-pastdays-db + cancel-future-leave + annual-leave-days
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+// touch: 2025-10-10 v-admin-stable-loaders + solid-logout + ui-resume-fix
+
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
@@ -80,46 +81,63 @@ export default function Admin() {
   const today = new Date();
   const todayIso = fmtISODate(today);
 
+  // Déconnexion robuste
+  const [signingOut, setSigningOut] = useState(false);
+  const handleSignOut = useCallback(async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      if (navigator?.clearAppBadge) { try { await navigator.clearAppBadge(); } catch {} }
+      await supabase.auth.signOut();
+    } finally {
+      setSigningOut(false);
+      r.replace("/login");
+    }
+  }, [r, signingOut]);
+
   /* Sécurité */
   useEffect(() => {
     if (loading) return;
-    if (!session) r.replace("/login");
+    if (!session) { r.replace("/login"); return; }
     if (profile && profile.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
   /* Vendeuses */
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.rpc("list_sellers");
-      setSellers(data || []);
-    })();
+  const loadSellers = useCallback(async () => {
+    const { data, error } = await supabase.rpc("list_sellers");
+    if (error) console.error("list_sellers error:", error);
+    setSellers(data || []);
   }, []);
-  const nameFromId = (id) => sellers.find((s) => s.user_id === id)?.full_name || "—";
+  useEffect(() => { loadSellers(); }, [loadSellers]);
+  const nameFromId = useCallback((id) => sellers.find((s) => s.user_id === id)?.full_name || "—", [sellers]);
 
   /* Planning semaine */
+  const loadWeekAssignments = useCallback(async (fromIso, toIso) => {
+    const { data, error } = await supabase
+      .from("view_week_assignments")
+      .select("*")
+      .gte("date", fromIso)
+      .lte("date", toIso);
+    if (error) console.error("view_week_assignments error:", error);
+    const next = {};
+    (data || []).forEach((row) => { next[`${row.date}|${row.shift_code}`] = row.seller_id; });
+    setAssign(next);
+  }, []);
   useEffect(() => {
-    (async () => {
-      const from = fmtISODate(days[0]);
-      const to = fmtISODate(days[6]);
-      const { data } = await supabase
-        .from("view_week_assignments")
-        .select("*")
-        .gte("date", from)
-        .lte("date", to);
-      const next = {};
-      (data || []).forEach((row) => { next[`${row.date}|${row.shift_code}`] = row.seller_id; });
-      setAssign(next);
-    })();
+    const from = fmtISODate(days[0]);
+    const to = fmtISODate(days[6]);
+    loadWeekAssignments(from, to);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monday]);
 
   /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
-  const loadAbsencesToday = async () => {
-    const { data: abs } = await supabase
+  const loadAbsencesToday = useCallback(async () => {
+    const { data: abs, error } = await supabase
       .from("absences")
       .select("id, seller_id, status, reason, date")
       .eq("date", todayIso)
       .in("status", ["pending", "approved"]);
+    if (error) console.error("absences today error:", error);
 
     const ids = (abs || []).map(a => a.id);
     let mapRepl = {};
@@ -149,30 +167,30 @@ export default function Admin() {
 
     const rows = (abs || []).map(a => ({ ...a, replacement: mapRepl[a.id] || null }));
     setAbsencesToday(rows);
-  };
-  useEffect(() => { loadAbsencesToday(); }, [todayIso]);
+  }, [todayIso]);
 
   /* Absences en attente (toutes à venir) */
-  const loadPendingAbs = async () => {
-    const { data } = await supabase
+  const loadPendingAbs = useCallback(async () => {
+    const { data, error } = await supabase
       .from("absences")
       .select("id, seller_id, date, reason, status")
       .gte("date", todayIso)
       .eq("status", "pending")
       .order("date", { ascending: true });
+    if (error) console.error("pending absences error:", error);
     setPendingAbs(data || []);
-  };
-  useEffect(() => { loadPendingAbs(); }, [todayIso]);
+  }, [todayIso]);
 
   /* Volontaires (absences approuvées) */
-  const loadReplacements = async () => {
-    const { data: rows } = await supabase
+  const loadReplacements = useCallback(async () => {
+    const { data: rows, error } = await supabase
       .from("replacement_interest")
       .select("id, status, volunteer_id, absence_id, absences(id, date, seller_id, status)")
       .eq("status", "pending")
       .eq("absences.status", "approved")
       .gte("absences.date", todayIso)
       .order("absences.date", { ascending: true });
+    if (error) console.error("replacement list error:", error);
 
     const ids = new Set();
     (rows || []).forEach((r) => { if (r.volunteer_id) ids.add(r.volunteer_id); if (r.absences?.seller_id) ids.add(r.absences.seller_id); });
@@ -187,56 +205,60 @@ export default function Admin() {
       absent_name: names[r.absences?.seller_id] || "—", status: r.status,
     }));
     setReplList(list);
-  };
-  useEffect(() => { loadReplacements(); }, [todayIso]);
+  }, [todayIso]);
 
   /* ======= CONGÉS ======= */
-  const loadPendingLeaves = async () => {
-    const { data } = await supabase
+  const loadPendingLeaves = useCallback(async () => {
+    const { data, error } = await supabase
       .from("leaves")
       .select("id, seller_id, start_date, end_date, reason, status, created_at")
       .eq("status", "pending")
-      .gte("end_date", todayIso)      // uniquement non passés
+      .gte("end_date", todayIso)
       .order("created_at", { ascending: false });
+    if (error) console.error("pending leaves error:", error);
     setPendingLeaves(data || []);
-  };
-  const loadLatestLeave = async () => {
-    const { data } = await supabase
+  }, [todayIso]);
+
+  const loadLatestLeave = useCallback(async () => {
+    const { data, error } = await supabase
       .from("leaves")
       .select("id, seller_id, start_date, end_date, reason, status, created_at")
       .eq("status", "pending")
       .gte("end_date", todayIso)
       .order("created_at", { ascending: false })
       .limit(1);
+    if (error) console.error("latest leave error:", error);
     if (!data || data.length === 0) { setLatestLeave(null); return; }
     const leave = data[0];
     const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", leave.seller_id).single();
     setLatestLeave({ ...leave, seller_name: prof?.full_name || "—" });
-  };
-  const loadApprovedLeaves = async () => {
-    const { data } = await supabase
+  }, [todayIso]);
+
+  const loadApprovedLeaves = useCallback(async () => {
+    const { data, error } = await supabase
       .from("leaves")
       .select("id, seller_id, start_date, end_date, reason, status")
       .eq("status", "approved")
-      .gte("end_date", todayIso)      // tant que pas fini
+      .gte("end_date", todayIso)
       .order("start_date", { ascending: true });
+    if (error) console.error("approved leaves error:", error);
     setApprovedLeaves(data || []);
-  };
+  }, [todayIso]);
 
   // Actions congés
-  const approveLeave = async (id) => {
+  const approveLeave = useCallback(async (id) => {
     const { error } = await supabase.from("leaves").update({ status: "approved" }).eq("id", id);
     if (error) { alert("Impossible d'approuver (RLS ?)"); return; }
     await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
-  };
-  const rejectLeave = async (id) => {
+  }, [loadPendingLeaves, loadApprovedLeaves, loadLatestLeave]);
+
+  const rejectLeave = useCallback(async (id) => {
     const { error } = await supabase.from("leaves").update({ status: "rejected" }).eq("id", id);
     if (error) { alert("Impossible de rejeter (RLS ?)"); return; }
     await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
-  };
-  const cancelFutureLeave = async (id) => {
-    // admin-only action (on est déjà sur /admin avec role admin)
-    // Vérifie que le congé est à venir, puis supprime l'entrée
+  }, [loadPendingLeaves, loadApprovedLeaves, loadLatestLeave]);
+
+  const cancelFutureLeave = useCallback(async (id) => {
     const { data: leave } = await supabase.from("leaves").select("start_date,status").eq("id", id).single();
     if (!leave) { alert("Congé introuvable."); return; }
     if (!(leave.status === "approved" || leave.status === "pending")) { alert("Seuls les congés approuvés/en attente peuvent être annulés."); return; }
@@ -248,18 +270,19 @@ export default function Admin() {
 
     await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
     alert("Congé à venir annulé. La vendeuse peut refaire une demande.");
-  };
+  }, [loadPendingLeaves, loadApprovedLeaves, loadLatestLeave]);
 
   /* ======= ABSENCES DU MOIS (APPROUVÉES) ======= */
-  const loadMonthAbsences = async () => {
+  const loadMonthAbsences = useCallback(async () => {
     const tIso = fmtISODate(new Date());
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("absences")
       .select("id, seller_id, date, status")
       .eq("status", "approved")
       .gte("date", monthFrom)
       .lte("date", monthTo)
       .lte("date", tIso); // passées/aujourd’hui
+    if (error) console.error("month absences error:", error);
 
     const seen = new Set();
     const uniq = [];
@@ -268,17 +291,18 @@ export default function Admin() {
       if (!seen.has(key)) { seen.add(key); uniq.push(r); }
     });
     setMonthAbsences(uniq);
-  };
+  }, [monthFrom, monthTo]);
 
-  const loadMonthUpcomingAbsences = async () => {
+  const loadMonthUpcomingAbsences = useCallback(async () => {
     const tIso = fmtISODate(new Date());
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("absences")
       .select("id, seller_id, date, status")
       .eq("status", "approved")
       .gte("date", monthFrom)
       .lte("date", monthTo)
       .gt("date", tIso); // futures
+    if (error) console.error("month upcoming absences error:", error);
 
     const seen = new Set();
     const uniq = [];
@@ -287,10 +311,10 @@ export default function Admin() {
       if (!seen.has(key)) { seen.add(key); uniq.push(r); }
     });
     setMonthUpcomingAbsences(uniq);
-  };
+  }, [monthFrom, monthTo]);
 
   // Remplacements acceptés pour les absences du mois (passées/à venir)
-  const loadMonthAcceptedRepl = async () => {
+  const loadMonthAcceptedRepl = useCallback(async () => {
     const ids = [
       ...(monthAbsences || []).map(a => a.id),
       ...(monthUpcomingAbsences || []).map(a => a.id),
@@ -298,11 +322,12 @@ export default function Admin() {
     const uniq = Array.from(new Set(ids)).filter(Boolean);
     if (uniq.length === 0) { setMonthAcceptedRepl({}); return; }
 
-    const { data: rows } = await supabase
+    const { data: rows, error } = await supabase
       .from("replacement_interest")
       .select("absence_id, volunteer_id, accepted_shift_code")
       .in("absence_id", uniq)
       .eq("status", "accepted");
+    if (error) console.error("month accepted repl error:", error);
 
     if (!rows || rows.length === 0) { setMonthAcceptedRepl({}); return; }
 
@@ -325,11 +350,11 @@ export default function Admin() {
       };
     });
     setMonthAcceptedRepl(map);
-  };
+  }, [monthAbsences, monthUpcomingAbsences]);
 
-  useEffect(() => { loadPendingLeaves(); loadLatestLeave(); loadApprovedLeaves(); }, [todayIso]);
-  useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, refreshKey]);
-  useEffect(() => { loadMonthAcceptedRepl(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [monthAbsences, monthUpcomingAbsences]);
+  useEffect(() => { loadPendingLeaves(); loadLatestLeave(); loadApprovedLeaves(); }, [todayIso, loadPendingLeaves, loadLatestLeave, loadApprovedLeaves]);
+  useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, loadMonthAbsences, loadMonthUpcomingAbsences]);
+  useEffect(() => { loadMonthAcceptedRepl(); }, [loadMonthAcceptedRepl]);
 
   /* Realtime : absences + replacement + leaves */
   useEffect(() => {
@@ -395,10 +420,10 @@ export default function Admin() {
       supabase.removeChannel(chLeaves);
       supabase.removeChannel(chCancel);
     };
-  }, [todayIso]);
+  }, [todayIso, loadPendingAbs, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences, loadPendingLeaves, loadApprovedLeaves, loadMonthAcceptedRepl]);
 
   /* Sauvegarde d'une affectation */
-  const save = async (iso, code, seller_id) => {
+  const save = useCallback(async (iso, code, seller_id) => {
     const key = `${iso}|${code}`;
     setAssign((prev) => ({ ...prev, [key]: seller_id || null }));
     const { error } = await supabase
@@ -407,10 +432,10 @@ export default function Admin() {
       .select("date");
     if (error) { console.error("UPSERT shifts error:", error); alert("Échec de sauvegarde du planning (RLS ?)"); return; }
     setRefreshKey((k) => k + 1);
-  };
+  }, []);
 
   /* Copier la semaine -> semaine suivante */
-  const copyWeekToNext = async () => {
+  const copyWeekToNext = useCallback(async () => {
     if (!window.confirm("Copier le planning de la semaine affichée vers la semaine prochaine ? Cela remplacera les affectations déjà présentes la semaine suivante.")) return;
     const shiftCodes = ["MORNING", "MIDDAY", "EVENING", "SUNDAY_EXTRA"];
     const rows = [];
@@ -428,22 +453,23 @@ export default function Admin() {
     setMonday(addDays(monday, 7));
     setRefreshKey((k) => k + 1);
     alert("Planning copié vers la semaine prochaine.");
-  };
+  }, [days, assign, monday]);
 
   /* Actions absence */
-  const approveAbs = async (id) => {
+  const approveAbs = useCallback(async (id) => {
     const { error } = await supabase.from("absences").update({ status: "approved" }).eq("id", id);
     if (error) { alert("Impossible d'approuver (RLS ?)"); return; }
     await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
-  };
-  const rejectAbs = async (id) => {
+  }, [loadPendingAbs, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl]);
+
+  const rejectAbs = useCallback(async (id) => {
     const { error } = await supabase.from("absences").update({ status: "rejected" }).eq("id", id);
     if (error) { alert("Impossible de rejeter (RLS ?)"); return; }
     await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
-  };
+  }, [loadPendingAbs, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl]);
 
   /* Attribuer / Refuser volontaire */
-  const assignVolunteer = async (repl) => {
+  const assignVolunteer = useCallback(async (repl) => {
     const shift = selectedShift[repl.id];
     if (!shift) { alert("Choisis d’abord un créneau."); return; }
 
@@ -483,14 +509,14 @@ export default function Admin() {
     setRefreshKey((k) => k + 1);
     await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences(), loadMonthAcceptedRepl()]);
     alert("Volontaire attribuée et absence approuvée.");
-  };
+  }, [selectedShift, latestRepl, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl]);
 
-  const declineVolunteer = async (replId) => {
+  const declineVolunteer = useCallback(async (replId) => {
     const { error } = await supabase.from("replacement_interest").update({ status: "declined" }).eq("id", replId);
     if (error) { console.error(error); alert("Impossible de refuser ce volontaire."); return; }
     if (latestRepl && latestRepl.id === replId) setLatestRepl(null);
     await loadReplacements(); await loadMonthAcceptedRepl();
-  };
+  }, [latestRepl, loadReplacements, loadMonthAcceptedRepl]);
 
   /* ---------- 🔔 BADGE + REFRESH AUTO ---------- */
 
@@ -537,11 +563,14 @@ export default function Admin() {
     loadMonthUpcomingAbsences,
   ]);
 
-  // Recharge quand l’app revient au premier plan
+  // Recharge quand l’app revient au premier plan (et débloque d’éventuels clics fantômes)
   useEffect(() => {
-    const onWake = () => reloadAll();
-    window.addEventListener('focus', onWake);
-    document.addEventListener('visibilitychange', onWake);
+    const onWake = () => {
+      // Force un léger "tick" de rendu pour éviter toute couche bloquante après reprise
+      setTimeout(() => reloadAll(), 50);
+    };
+    window.addEventListener('focus', onWake, { passive: true });
+    document.addEventListener('visibilitychange', onWake, { passive: true });
     return () => {
       window.removeEventListener('focus', onWake);
       document.removeEventListener('visibilitychange', onWake);
@@ -566,7 +595,9 @@ export default function Admin() {
         <div className="flex items-center gap-2">
           <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
           <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
-          <button type="button" className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
+          <button type="button" className="btn" onClick={handleSignOut} disabled={signingOut}>
+            {signingOut ? "Déconnexion…" : "Se déconnecter"}
+          </button>
         </div>
       </div>
 
