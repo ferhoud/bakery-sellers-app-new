@@ -2,6 +2,9 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "../../lib/useAuth";
+<ArrowLeftIcon style={{marginRight:8}} />
+<PencilIcon style={{marginRight:8}} />
+<TrashIcon style={{marginRight:8}} />
 
 const API_CREATE = "/api/admin/create-seller";   // doit correspondre à pages/api/admin/create-seller.js
 const API_LIST   = "/api/admin/list-sellers";    // NOUVEAU : liste côté serveur (service role)
