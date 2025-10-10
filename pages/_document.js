@@ -1,5 +1,9 @@
+<<<<<<< HEAD
 // pages/_document.js
 import { Html, Head, Main, NextScript } from "next/document";
+=======
+﻿import { Html, Head, Main, NextScript } from "next/document";
+>>>>>>> deploy-sellers
 
 export default function Document() {
   return (

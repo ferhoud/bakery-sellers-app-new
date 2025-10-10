@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 // pages/api/admin/create-seller.js
+=======
+>>>>>>> deploy-sellers
 import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -20,7 +23,11 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "full_name, email et password sont requis." });
   }
 
+<<<<<<< HEAD
   // 1) CrÃ©e l'utilisateur
+=======
+  // 1) Crée l'utilisateur Auth
+>>>>>>> deploy-sellers
   const { data: userData, error: createErr } = await admin.auth.admin.createUser({
     email,
     password,
@@ -30,6 +37,7 @@ export default async function handler(req, res) {
   });
   if (createErr) {
     const msg = (createErr.message || "").toLowerCase().includes("registered")
+<<<<<<< HEAD
       ? "Un utilisateur avec cet email existe dÃ©jÃ ."
       : createErr.message || "Ã‰chec de crÃ©ation de l'utilisateur.";
     return res.status(400).json({ error: msg });
@@ -84,4 +92,29 @@ export default async function handler(req, res) {
     error: "Upsert profil a Ã©chouÃ© (fallback Ã©puisÃ©)",
     ...lastErr,
   });
+=======
+      ? "Un utilisateur avec cet email existe déjà."
+      : createErr.message || "Échec de création de l'utilisateur.";
+    return res.status(400).json({ error: msg });
+  }
+
+  const user = userData?.user;
+  if (!user) return res.status(500).json({ error: "Utilisateur créé mais non retourné." });
+
+  // 2) ESSAIS SOUPLES (ne font JAMAIS échouer la réponse)
+  const attempts = [
+    { table: "profiles", key: "user_id", row: { user_id: user.id, full_name, role: "seller" } },
+    { table: "profiles", key: "id",      row: { id:      user.id, full_name, role: "seller" } },
+    { table: "profile",  key: "user_id", row: { user_id: user.id, full_name, role: "seller" } },
+    { table: "profile",  key: "id",      row: { id:      user.id, full_name, role: "seller" } },
+  ];
+  for (const a of attempts) {
+    const { error } = await admin.from(a.table).upsert(a.row, { onConflict: a.key });
+    if (!error) break;
+    console.warn("[create-seller] upsert profil KO:", a.table, a.key, error?.code, error?.message);
+  }
+
+  // 3) Toujours OK côté API (le frontend verra "Vendeuse créée !")
+  return res.status(200).json({ ok: true, user_id: user.id, email: user.email });
+>>>>>>> deploy-sellers
 }

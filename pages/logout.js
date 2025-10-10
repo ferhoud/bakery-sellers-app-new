@@ -1,5 +1,9 @@
+<<<<<<< HEAD
 // pages/logout.js
 import { useEffect } from "react";
+=======
+﻿import { useEffect } from "react";
+>>>>>>> deploy-sellers
 import { supabase } from "../lib/supabaseClient";
 
 export default function Logout() {
