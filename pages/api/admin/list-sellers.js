@@ -1,10 +1,10 @@
-﻿import { createClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 
 export default async function handler(req, res) {
   try {
     const supabase = createClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE_KEY // clé serveur (PAS NEXT_PUBLIC)
+      process.env.SUPABASE_SERVICE_ROLE_KEY // cl� serveur (PAS NEXT_PUBLIC)
     );
 
     // Lis bien depuis 'profiles' (ce que ta page attend)

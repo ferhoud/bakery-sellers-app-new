@@ -1,10 +1,10 @@
-ï»¿// pages/admin/sellers.js
+// pages/admin/sellers.js
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { useAuth } from "../../lib/useAuth";
 import { supabase } from "../../lib/supabaseClient";
 
-const API_PATH = "/api/admin/create-seller"; // doit correspondre Ã  pages/api/admin/create-seller.js
+const API_PATH = "/api/admin/create-seller"; // doit correspondre à pages/api/admin/create-seller.js
 
 async function createSellerAPI({ full_name, email, password }) {
   const r = await fetch(API_PATH, {
@@ -13,7 +13,7 @@ async function createSellerAPI({ full_name, email, password }) {
     body: JSON.stringify({ full_name, email, password }),
   });
   const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "CrÃ©ation Ã©chouÃ©e");
+  if (!r.ok) throw new Error(j.error || "Création échouée");
   return j;
 }
 
@@ -50,7 +50,7 @@ export default function SellersAdminPage() {
     setBusy(true);
     try {
       await createSellerAPI({ full_name, email, password });
-      setMsg("Vendeuse crÃ©Ã©e !");
+      setMsg("Vendeuse créée !");
       setFullName(""); setEmail(""); setPassword("");
       const { data } = await supabase
         .from("profiles")
@@ -66,7 +66,7 @@ export default function SellersAdminPage() {
 
   return (
     <div className="p-4 max-w-3xl mx-auto space-y-6">
-      <div className="hdr">GÃ©rer les vendeuses</div>
+      <div className="hdr">Gérer les vendeuses</div>
       <div style={{fontSize:12,opacity:.6}}>BUILD sellers.js (clean)</div>
 
       <form onSubmit={onSubmit} className="space-y-3 border rounded-2xl p-4">
@@ -87,7 +87,7 @@ export default function SellersAdminPage() {
                  onChange={(e) => setPassword(e.target.value)} required />
         </div>
         <button type="submit" className="btn" disabled={busy}>
-          {busy ? "CrÃ©ation..." : "CrÃ©er la vendeuse"}
+          {busy ? "Création..." : "Créer la vendeuse"}
         </button>
         {msg && <div className="text-sm mt-2">{msg}</div>}
       </form>
@@ -95,13 +95,13 @@ export default function SellersAdminPage() {
       <div className="card">
         <div className="hdr mb-2">Vendeuses existantes</div>
         {sellers.length === 0 ? (
-          <div className="text-sm text-gray-600">Aucune vendeuse enregistrÃ©e.</div>
+          <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
         ) : (
           <ul className="space-y-2">
             {sellers.map((s) => (
               <li key={s.user_id} className="border rounded-2xl p-3 flex items-center justify-between">
                 <div>
-                  <div className="font-medium">{s.full_name || "â€”"}</div>
+                  <div className="font-medium">{s.full_name || "—"}</div>
                   <div className="text-sm text-gray-600">{s.user_id}</div>
                 </div>
                 <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#f3f4f6" }}>
