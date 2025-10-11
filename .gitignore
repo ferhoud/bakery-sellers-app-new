@@ -2,6 +2,7 @@
 .next/
 .next/cache/
 out/
+*.local.backup.js
 
 # Node
 node_modules/
