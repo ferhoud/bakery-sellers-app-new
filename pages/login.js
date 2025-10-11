@@ -1,4 +1,4 @@
-// pages/login.js — écran de connexion robuste (Supabase Email/Password)
+// pages/login.js — version DIAGNOSTIC ++ (email/password + test OTP + logs détaillés)
 // Touch: 2025-10-11
 /* eslint-disable react/no-unescaped-entities */
 import { useState, useEffect } from "react";
@@ -14,8 +14,8 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
+  const [lastResp, setLastResp] = useState(null);
 
-  // Si déjà connecté -> route vendeuse (ou admin via redirection côté app)
   useEffect(() => {
     if (!loading && session) {
       const next = r.query.next ? String(r.query.next) : "/app";
@@ -27,28 +27,42 @@ export default function LoginPage() {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
+    setLastResp(null);
 
     try {
-      // ✅ connexion email/password standard
-      const { data, error: err } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      const { data, error: err } = await supabase.auth.signInWithPassword({ email, password });
       console.log("[login] signInWithPassword =>", { data, err });
+      setLastResp({ data, err: serializeErr(err) });
       if (err) throw err;
 
-      // Redirection réussie
       const next = r.query.next ? String(r.query.next) : "/app";
       r.replace(next);
     } catch (e) {
-      // Affiche le message exact retourné par Supabase (utile pour diagnostiquer)
       console.error("[login] error:", e);
-      setError(e?.message || "Échec de connexion");
+      setError(formatErr(e));
       setSubmitting(false);
     }
   };
 
-  // Aide debug: vérifier que les clés sont bien injectées
+  // Option de secours: tester l'OTP (lien magique) pour vérifier la config Auth rapidement
+  const onSendOtp = async () => {
+    setError(null);
+    setSubmitting(true);
+    setLastResp(null);
+    try {
+      const { data, error: err } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin + "/app" } });
+      console.log("[login] signInWithOtp =>", { data, err });
+      setLastResp({ data, err: serializeErr(err) });
+      if (err) throw err;
+      alert("Email envoyé (si le provider Email est activé). Ouvre le lien magique pour tester la session.");
+    } catch (e) {
+      console.error("[login][otp] error:", e);
+      setError(formatErr(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       console.log("[env] NEXT_PUBLIC_SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL ? "ok" : "manquant");
@@ -88,23 +102,44 @@ export default function LoginPage() {
           <button type="submit" className="btn w-full" disabled={submitting}>
             {submitting ? "Connexion…" : "Se connecter"}
           </button>
+          <button type="button" className="btn w-full" onClick={onSendOtp} disabled={submitting}>
+            Tester par lien magique (OTP)
+          </button>
+
           {error && (
-            <div className="text-sm" style={{ color: "#b91c1c" }}>
+            <div className="text-sm" style={{ color: "#b91c1c", whiteSpace: "pre-wrap" }}>
               {String(error)}
             </div>
           )}
         </form>
 
+        {lastResp && (
+          <details className="text-xs mt-2">
+            <summary>Debug (réponse brute)</summary>
+            <pre className="mt-1 p-2 bg-gray-100 rounded">{JSON.stringify(lastResp, null, 2)}</pre>
+          </details>
+        )}
+
         <div className="text-xs text-gray-600">
           Astuces debug:
           <ul className="list-disc pl-5 space-y-1 mt-1">
-            <li>Ouvre l’onglet <b>Réseau</b> (F12) et vérifie la requête <code>auth/v1/token?grant_type=password</code>.</li>
-            <li>Si 401/400: email ou mot de passe invalides, ou règles de sécurité (RLS/policies) mal réglées.</li>
-            <li>Vérifie que <code>NEXT_PUBLIC_SUPABASE_URL</code> et <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> sont bien définies.</li>
-            <li>Dans le dashboard Supabase: Auth &gt; Settings &gt; Vérifie si la confirmation d’email est exigée.</li>
+            <li>Onglet <b>Réseau</b> (F12) → requête <code>auth/v1/token?grant_type=password</code> (200 attendu).</li>
+            <li>Si 401/400: identifiants invalides, email non confirmé, provider Email/Password désactivé.</li>
+            <li>Vérifie <code>NEXT_PUBLIC_SUPABASE_URL</code> et <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> (console affiche ok/manquant).</li>
+            <li>Auth &gt; Settings: <b>Site URL</b> doit correspondre à ton domaine/localhost pour l’OTP.</li>
           </ul>
         </div>
       </div>
     </div>
   );
+}
+
+function serializeErr(err) {
+  if (!err) return null;
+  return { name: err.name, message: err.message, status: err.status };
+}
+function formatErr(e) {
+  const msg = e?.message || String(e);
+  const status = e?.status ? ` (status ${e.status})` : "";
+  return `${msg}${status}`;
 }
