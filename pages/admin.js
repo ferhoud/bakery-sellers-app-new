@@ -594,27 +594,43 @@ export default function AdminPage() {
     setAbsencesByDate(grouped);
   }, [days]);
 
-  const setSellerAbsent = useCallback(async (isoDate, sellerId) => {
-    if (!sellerId) return;
-    const { error } = await supabase
-      .from("absences")
-      .upsert({ date: isoDate, seller_id: sellerId, status: "approved", reason: "Absence non déclarée (admin)" }, { onConflict: "date,seller_id" });
-    if (error) { console.error("upsert absence error:", error); alert("Impossible d'enregistrer l'absence."); return; }
-    setAbsencesByDate((prev) => {
-      const arr = new Set([...(prev[isoDate] || []), sellerId]);
-      return { ...prev, [isoDate]: Array.from(arr) };
-    });
-  }, []);
+  // Était: upsert direct sur absences → remplace par l'RPC
+const setSellerAbsent = useCallback(async (isoDate, sellerId) => {
+  if (!sellerId) return;
+  const { error } = await supabase.rpc("admin_upsert_absence", {
+    p_date: isoDate,
+    p_seller: sellerId,
+    p_reason: "Absence non déclarée (admin)",
+  });
+  if (error) {
+    console.error("admin_upsert_absence error:", error);
+    alert("Impossible d'enregistrer l'absence.");
+    return;
+  }
+  setAbsencesByDate((prev) => {
+    const arr = new Set([...(prev[isoDate] || []), sellerId]);
+    return { ...prev, [isoDate]: Array.from(arr) };
+  });
+}, []);
 
-  const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
-    const { error } = await supabase.from("absences").delete().match({ date: isoDate, seller_id: sellerId });
-    if (error) { console.error("delete absence error:", error); alert("Impossible de supprimer l'absence."); return; }
-    setAbsencesByDate((prev) => {
-      const arr = new Set(prev[isoDate] || []);
-      arr.delete(sellerId);
-      return { ...prev, [isoDate]: Array.from(arr) };
-    });
-  }, []);
+// Était: delete() direct → remplace par l'RPC
+const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
+  const { error } = await supabase.rpc("admin_delete_absence", {
+    p_date: isoDate,
+    p_seller: sellerId,
+  });
+  if (error) {
+    console.error("admin_delete_absence error:", error);
+    alert("Impossible de supprimer l'absence.");
+    return;
+  }
+  setAbsencesByDate((prev) => {
+    const set = new Set(prev[isoDate] || []);
+    set.delete(sellerId);
+    return { ...prev, [isoDate]: Array.from(set) };
+  });
+}, []);
+
 
   /* 🔔 BADGE + REFRESH AUTO */
   useEffect(() => {
