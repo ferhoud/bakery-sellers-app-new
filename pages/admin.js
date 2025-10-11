@@ -1,8 +1,8 @@
-/* pages/admin.js - unified, fixed structure (2025-10-11 16:14)
-   - Single default export (AdminPage)
-   - All React hooks are inside the component (no hooks at top-level)
-   - Adds missing BUILD_TAG constant
-   - Keeps your logic (absences/leaves/replacements/totals) intact
+// pages/admin.js
+/* Admin page – stable (stop profiles recursion + show totals via RPC)
+   - Avoid any .from("profiles") calls in the client
+   - Compute names with nameFromId (built from sellers list)
+   - Totals use admin_hours_by_range RPC first, then fallback to direct shifts
 */
 
 import Head from "next/head";
@@ -18,7 +18,7 @@ import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from ".
 
 /* ---------- CONSTANTES / UTILS GLOBAUX (SANS HOOKS) ---------- */
 
-const BUILD_TAG = "ADMIN - 11/10/2025 08:00";
+const BUILD_TAG = "ADMIN - 12/10/2025 00:50";
 
 // Heures par créneau (inclut le dimanche spécial)
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
@@ -51,9 +51,7 @@ function Chip({ name }) {
   if (!name || name === "-") return <span className="text-sm text-gray-500">-</span>;
   const bg = colorForName(name);
   return (
-    <span
-      style={{ backgroundColor: bg, color: "#fff", borderRadius: 9999, padding: "2px 10px", fontSize: "0.8rem" }}
-    >
+    <span style={{ backgroundColor: bg, color: "#fff", borderRadius: 9999, padding: "2px 10px", fontSize: "0.8rem" }}>
       {name}
     </span>
   );
@@ -77,6 +75,17 @@ export default function AdminPage() {
   const r = useRouter();
   const { session, profile, loading } = useAuth();
 
+  // Kill-switch (utile si besoin de couper la page en prod)
+  const PANIC = process.env.NEXT_PUBLIC_ADMIN_PANIC === "1";
+  if (PANIC) {
+    return (
+      <>
+        <Head><title>Admin – maintenance</title></Head>
+        <div style={{ padding: 16 }}>Maintenance en cours… réessayez dans 1 minute.</div>
+      </>
+    );
+  }
+
   // Sécurité / redirections
   useEffect(() => {
     if (loading) return;
@@ -84,8 +93,6 @@ export default function AdminPage() {
     if (isAdminEmail(session.user?.email)) return;
     if (profile?.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
-
-  
 
   // Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
@@ -115,11 +122,11 @@ export default function AdminPage() {
   const [monthAbsences, setMonthAbsences] = useState([]);           // passées/aujourd’hui (items avec id)
   const [monthUpcomingAbsences, setMonthUpcomingAbsences] = useState([]); // à venir (items avec id)
 
-  // Remplacements acceptés du mois (absence_id -> { volunteer_id, volunteer_name, shift })
+  // Remplacements acceptés du mois (absence_id -> { volunteer_id, shift })
   const [monthAcceptedRepl, setMonthAcceptedRepl] = useState({});
 
   // Bannière éphémère quand une vendeuse annule son absence (DELETE)
-  const [latestCancel, setLatestCancel] = useState(null);   // { name, date }
+  const [latestCancel, setLatestCancel] = useState(null);   // { seller_id, date }
 
   const [refreshKey, setRefreshKey] = useState(0);          // recalcul totaux mois
   const today = new Date();
@@ -141,29 +148,24 @@ export default function AdminPage() {
     }
   }, [r, signingOut]);
 
-  /* Vendeuses (robuste : RPC list_sellers -> profiles fallback) */
+  /* Vendeuses (RPC list_sellers → fallback profiles SANS boucler) */
   const loadSellers = useCallback(async () => {
     let rows = [];
     try {
       const { data, error } = await supabase.rpc("list_sellers");
-      if (error) console.warn("list_sellers RPC error:", error);
-      if (Array.isArray(data) && data.length) rows = data;
-    } catch (e) {
-      console.warn("list_sellers RPC threw:", e);
-    }
+      if (!error && Array.isArray(data) && data.length) rows = data;
+    } catch {}
     if (rows.length === 0) {
+      // On tente profiles une seule fois, silencieusement
       try {
-        const { data: profs, error: e2 } = await supabase
+        const { data: profs } = await supabase
           .from("profiles")
           .select("user_id, full_name, role, active")
           .eq("role", "seller");
-        if (e2) console.warn("profiles fallback error:", e2);
         if (Array.isArray(profs) && profs.length) {
           rows = profs.map(({ user_id, full_name }) => ({ user_id, full_name }));
         }
-      } catch (e) {
-        console.warn("profiles fallback threw:", e);
-      }
+      } catch {}
     }
     setSellers(rows || []);
   }, []);
@@ -222,21 +224,8 @@ export default function AdminPage() {
         .select("absence_id, volunteer_id, status")
         .in("absence_id", ids)
         .eq("status", "accepted");
-
-      const volunteerIds = Array.from(new Set((repl || []).map(r => r.volunteer_id)));
-      let names = {};
-      if (volunteerIds.length) {
-        const { data: profs } = await supabase
-          .from("profiles")
-          .select("user_id, full_name")
-          .in("user_id", volunteerIds);
-        (profs || []).forEach(p => { names[p.user_id] = p.full_name; });
-      }
       (repl || []).forEach(r => {
-        mapRepl[r.absence_id] = {
-          volunteer_id: r.volunteer_id,
-          volunteer_name: names[r.volunteer_id] || "-",
-        };
+        mapRepl[r.absence_id] = { volunteer_id: r.volunteer_id };
       });
     }
 
@@ -256,42 +245,47 @@ export default function AdminPage() {
     setPendingAbs(data || []);
   }, [todayIso]);
 
-  /* Volontaires (absences approuvées) */
+  /* Volontaires (absences approuvées) – sans lecture de profiles */
   const loadReplacements = useCallback(async () => {
-    const { data: rows, error } = await supabase
-  .from("replacement_interest")
-  .select(`
-    id,
-    status,
-    volunteer_id,
-    absence_id,
-    absences:absences!replacement_interest_absence_id_fkey(
-      id,
-      date,
-      seller_id,
-      status
-    )
-  `)
-  .eq("status", "pending")
-  .eq("absences.status", "approved")
-  .gte("absences.date", todayIso)
-  .order("absences.date", { ascending: true });
+    try {
+      const { data: rows, error } = await supabase
+        .from("replacement_interest")
+        .select(`
+          id,
+          status,
+          volunteer_id,
+          absence_id,
+          absences:absences!replacement_interest_absence_id_fkey(
+            id,
+            date,
+            seller_id,
+            status
+          )
+        `)
+        .eq("status", "pending")
+        .eq("absences.status", "approved")
+        .gte("absences.date", todayIso);
+      if (error) { console.error("replacement list error:", error); setReplList([]); return; }
 
-    if (error) console.error("replacement list error:", error);
+      const sorted = (rows || []).slice().sort((a, b) => {
+        const da = a?.absences?.date || "";
+        const db = b?.absences?.date || "";
+        return da.localeCompare(db);
+      });
 
-    const ids = new Set();
-    (rows || []).forEach((r) => { if (r.volunteer_id) ids.add(r.volunteer_id); if (r.absences?.seller_id) ids.add(r.absences.seller_id); });
-    let names = {};
-    if (ids.size > 0) {
-      const { data: profs } = await supabase.from("profiles").select("user_id, full_name").in("user_id", Array.from(ids));
-      (profs || []).forEach((p) => (names[p.user_id] = p.full_name));
+      const list = sorted.map((r) => ({
+        id: r.id,
+        volunteer_id: r.volunteer_id,
+        absence_id: r.absence_id,
+        date: r.absences?.date,
+        absent_id: r.absences?.seller_id,
+        status: r.status,
+      }));
+      setReplList(list);
+    } catch (e) {
+      console.error("replacement list error (catch):", e);
+      setReplList([]);
     }
-    const list = (rows || []).map((r) => ({
-      id: r.id, volunteer_id: r.volunteer_id, volunteer_name: names[r.volunteer_id] || "-",
-      absence_id: r.absence_id, date: r.absences?.date, absent_id: r.absences?.seller_id,
-      absent_name: names[r.absences?.seller_id] || "-", status: r.status,
-    }));
-    setReplList(list);
   }, [todayIso]);
 
   /* ======= CONGÉS ======= */
@@ -315,10 +309,7 @@ export default function AdminPage() {
       .order("created_at", { ascending: false })
       .limit(1);
     if (error) console.error("latest leave error:", error);
-    if (!data || data.length === 0) { setLatestLeave(null); return; }
-    const leave = data[0];
-    const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", leave.seller_id).single();
-    setLatestLeave({ ...leave, seller_name: prof?.full_name || "-" });
+    setLatestLeave(data && data.length ? data[0] : null); // plus de fetch profile
   }, [todayIso]);
 
   const loadApprovedLeaves = useCallback(async () => {
@@ -361,90 +352,84 @@ export default function AdminPage() {
 
   /* ======= ABSENCES DU MOIS (APPROUVÉES) ======= */
   const loadMonthAbsences = useCallback(async () => {
-  const tIso = fmtISODate(new Date());
-  // 1) RPC admin — récupère TOUTE la plage du mois, on filtre côté client
-  try {
-    const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: monthFrom, p_to: monthTo });
-    if (!error && Array.isArray(data)) {
-      const seen = new Set();
-      const pastOrToday = [];
-      (data || [])
-        .filter(r => r.status === "approved" && r.date <= tIso)
-        .forEach(r => {
-          const key = `${r.seller_id}|${r.date}`;
-          if (!seen.has(key)) { seen.add(key); pastOrToday.push(r); }
-        });
-      setMonthAbsences(pastOrToday);
-      return;
+    const tIso = fmtISODate(new Date());
+    try {
+      const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: monthFrom, p_to: monthTo });
+      if (!error && Array.isArray(data)) {
+        const seen = new Set();
+        const pastOrToday = [];
+        (data || [])
+          .filter(r => r.status === "approved" && r.date <= tIso)
+          .forEach(r => {
+            const key = `${r.seller_id}|${r.date}`;
+            if (!seen.has(key)) { seen.add(key); pastOrToday.push(r); }
+          });
+        setMonthAbsences(pastOrToday);
+        return;
+      }
+      console.warn("admin_absences_by_range (month) KO -> fallback", error);
+    } catch (e) {
+      console.warn("admin_absences_by_range (month) threw -> fallback", e);
     }
-    console.warn("admin_absences_by_range (month) KO -> fallback", error);
-  } catch (e) {
-    console.warn("admin_absences_by_range (month) threw -> fallback", e);
-  }
 
-  // 2) Fallback direct
-  const { data, error } = await supabase
-    .from("absences")
-    .select("id, seller_id, date, status")
-    .eq("status", "approved")
-    .gte("date", monthFrom)
-    .lte("date", monthTo)
-    .lte("date", tIso);
-  if (error) console.error("month absences error:", error);
+    const { data, error } = await supabase
+      .from("absences")
+      .select("id, seller_id, date, status")
+      .eq("status", "approved")
+      .gte("date", monthFrom)
+      .lte("date", monthTo)
+      .lte("date", tIso);
+    if (error) console.error("month absences error:", error);
 
-  const seen = new Set();
-  const uniq = [];
-  (data || []).forEach(r => {
-    const key = `${r.seller_id}|${r.date}`;
-    if (!seen.has(key)) { seen.add(key); uniq.push(r); }
-  });
-  setMonthAbsences(uniq);
-}, [monthFrom, monthTo]);
-
+    const seen = new Set();
+    const uniq = [];
+    (data || []).forEach(r => {
+      const key = `${r.seller_id}|${r.date}`;
+      if (!seen.has(key)) { seen.add(key); uniq.push(r); }
+    });
+    setMonthAbsences(uniq);
+  }, [monthFrom, monthTo]);
 
   const loadMonthUpcomingAbsences = useCallback(async () => {
-  const tIso = fmtISODate(new Date());
-  // 1) RPC admin
-  try {
-    const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: monthFrom, p_to: monthTo });
-    if (!error && Array.isArray(data)) {
-      const seen = new Set();
-      const future = [];
-      (data || [])
-        .filter(r => r.status === "approved" && r.date > tIso)
-        .forEach(r => {
-          const key = `${r.seller_id}|${r.date}`;
-          if (!seen.has(key)) { seen.add(key); future.push(r); }
-        });
-      setMonthUpcomingAbsences(future);
-      return;
+    const tIso = fmtISODate(new Date());
+    try {
+      const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: monthFrom, p_to: monthTo });
+      if (!error && Array.isArray(data)) {
+        const seen = new Set();
+        const future = [];
+        (data || [])
+          .filter(r => r.status === "approved" && r.date > tIso)
+          .forEach(r => {
+            const key = `${r.seller_id}|${r.date}`;
+            if (!seen.has(key)) { seen.add(key); future.push(r); }
+          });
+        setMonthUpcomingAbsences(future);
+        return;
+      }
+      console.warn("admin_absences_by_range (upcoming) KO -> fallback", error);
+    } catch (e) {
+      console.warn("admin_absences_by_range (upcoming) threw -> fallback", e);
     }
-    console.warn("admin_absences_by_range (upcoming) KO -> fallback", error);
-  } catch (e) {
-    console.warn("admin_absences_by_range (upcoming) threw -> fallback", e);
-  }
 
-  // 2) Fallback direct
-  const { data, error } = await supabase
-    .from("absences")
-    .select("id, seller_id, date, status")
-    .eq("status", "approved")
-    .gte("date", monthFrom)
-    .lte("date", monthTo)
-    .gt("date", tIso);
-  if (error) console.error("month upcoming absences error:", error);
+    const { data, error } = await supabase
+      .from("absences")
+      .select("id, seller_id, date, status")
+      .eq("status", "approved")
+      .gte("date", monthFrom)
+      .lte("date", monthTo)
+      .gt("date", tIso);
+    if (error) console.error("month upcoming absences error:", error);
 
-  const seen = new Set();
-  const uniq = [];
-  (data || []).forEach(r => {
-    const key = `${r.seller_id}|${r.date}`;
-    if (!seen.has(key)) { seen.add(key); uniq.push(r); }
-  });
-  setMonthUpcomingAbsences(uniq);
-}, [monthFrom, monthTo]);
+    const seen = new Set();
+    const uniq = [];
+    (data || []).forEach(r => {
+      const key = `${r.seller_id}|${r.date}`;
+      if (!seen.has(key)) { seen.add(key); uniq.push(r); }
+    });
+    setMonthUpcomingAbsences(uniq);
+  }, [monthFrom, monthTo]);
 
-
-  // Remplacements acceptés pour les absences du mois (passées/à venir)
+  // Remplacements acceptés du mois (pas de fetch profiles)
   const loadMonthAcceptedRepl = useCallback(async () => {
     const ids = [
       ...(monthAbsences || []).map(a => a.id),
@@ -460,23 +445,10 @@ export default function AdminPage() {
       .eq("status", "accepted");
     if (error) console.error("month accepted repl error:", error);
 
-    if (!rows || rows.length === 0) { setMonthAcceptedRepl({}); return; }
-
-    const vIds = Array.from(new Set(rows.map(r => r.volunteer_id).filter(Boolean)));
-    let names = {};
-    if (vIds.length) {
-      const { data: profs } = await supabase
-        .from("profiles")
-        .select("user_id, full_name")
-        .in("user_id", vIds);
-      (profs || []).forEach(p => { names[p.user_id] = p.full_name; });
-    }
-
     const map = {};
-    rows.forEach(r => {
+    (rows || []).forEach(r => {
       map[r.absence_id] = {
         volunteer_id: r.volunteer_id,
-        volunteer_name: names[r.volunteer_id] || "-",
         shift: r.accepted_shift_code || null,
       };
     });
@@ -488,7 +460,7 @@ export default function AdminPage() {
   useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, loadMonthAbsences, loadMonthUpcomingAbsences]);
   useEffect(() => { loadMonthAcceptedRepl(); }, [loadMonthAcceptedRepl]);
 
-  /* Realtime : absences + replacement + leaves */
+  /* Realtime : absences + replacement + leaves (sans fetch profiles) */
   useEffect(() => {
     const chAbs = supabase
       .channel("absences_rt_admin")
@@ -505,14 +477,13 @@ export default function AdminPage() {
         if (payload.eventType === "INSERT") {
           const r = payload.new;
           const { data: abs } = await supabase.from("absences").select("date, seller_id").eq("id", r.absence_id).single();
-          const [vol, absName] = await Promise.all([
-            supabase.from("profiles").select("full_name").eq("user_id", r.volunteer_id).single(),
-            supabase.from("profiles").select("full_name").eq("user_id", abs?.seller_id).single(),
-          ]);
           setLatestRepl({
-            id: r.id, volunteer_id: r.volunteer_id, volunteer_name: vol.data?.full_name || "-",
-            absence_id: r.absence_id, date: abs?.date, absent_id: abs?.seller_id,
-            absent_name: absName.data?.full_name || "-", status: r.status,
+            id: r.id,
+            volunteer_id: r.volunteer_id,
+            absence_id: r.absence_id,
+            date: abs?.date,
+            absent_id: abs?.seller_id,
+            status: r.status,
           });
         }
         loadReplacements(); loadMonthAcceptedRepl();
@@ -525,14 +496,13 @@ export default function AdminPage() {
         await loadApprovedLeaves();
       }).subscribe();
 
-    // Nouveau : bannière quand une absence est supprimée par une vendeuse
+    // Bannière quand une absence est supprimée par une vendeuse
     const chCancel = supabase
       .channel("absences_delete_banner")
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "absences" }, async (payload) => {
         const old = payload?.old;
         if (!old?.seller_id || !old?.date) return;
-        const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", old.seller_id).single();
-        setLatestCancel({ name: prof?.full_name || "-", date: old.date });
+        setLatestCancel({ seller_id: old.seller_id, date: old.date }); // plus de fetch profile
         setTimeout(() => setLatestCancel(null), 5000);
       })
       .subscribe();
@@ -610,7 +580,7 @@ export default function AdminPage() {
     // 3) Les autres propositions deviennent 'declined'
     await supabase.from("replacement_interest").update({ status: "declined" }).eq("absence_id", repl.absence_id).neq("id", repl.id);
 
-    // 4) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
+    // 4) Si l’absence est encore 'pending', l’approuver automatiquement
     const { data: absRow } = await supabase.from("absences").select("status").eq("id", repl.absence_id).single();
     if (absRow?.status !== "approved") {
       await supabase.from("absences").update({ status: "approved" }).eq("id", repl.absence_id);
@@ -633,87 +603,77 @@ export default function AdminPage() {
 
   /* Inline ABSENCES (admin) pour chaque jour de la semaine */
   const loadWeekAbsences = useCallback(async () => {
-  const from = fmtISODate(days[0]);
-  const to   = fmtISODate(days[6]);
+    const from = fmtISODate(days[0]);
+    const to   = fmtISODate(days[6]);
 
-  // 1) Essai RPC admin (bypass RLS)
-  try {
-    const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: from, p_to: to });
-    if (!error && Array.isArray(data)) {
-      const grouped = {};
-      (data || []).forEach((r) => {
-        if (!grouped[r.date]) grouped[r.date] = [];
-        if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
-      });
-      setAbsencesByDate(grouped);
-      return;
+    try {
+      const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: from, p_to: to });
+      if (!error && Array.isArray(data)) {
+        const grouped = {};
+        (data || []).forEach((r) => {
+          if (!grouped[r.date]) grouped[r.date] = [];
+          if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
+        });
+        setAbsencesByDate(grouped);
+        return;
+      }
+      console.warn("admin_absences_by_range KO -> fallback", error);
+    } catch (e) {
+      console.warn("admin_absences_by_range threw -> fallback", e);
     }
-    console.warn("admin_absences_by_range KO -> fallback", error);
-  } catch (e) {
-    console.warn("admin_absences_by_range threw -> fallback", e);
-  }
 
-  // 2) Fallback (si jamais)
-  const { data, error } = await supabase
-    .from("absences")
-    .select("date, seller_id, status")
-    .gte("date", from)
-    .lte("date", to)
-    .in("status", ["approved", "pending"]);
-  if (error) { console.error("loadWeekAbsences error:", error); return; }
-  const grouped = {};
-  (data || []).forEach((r) => {
-    if (!grouped[r.date]) grouped[r.date] = [];
-    if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
-  });
-  setAbsencesByDate(grouped);
-}, [days]);
-
+    const { data, error } = await supabase
+      .from("absences")
+      .select("date, seller_id, status")
+      .gte("date", from)
+      .lte("date", to)
+      .in("status", ["approved", "pending"]);
+    if (error) { console.error("loadWeekAbsences error:", error); return; }
+    const grouped = {};
+    (data || []).forEach((r) => {
+      if (!grouped[r.date]) grouped[r.date] = [];
+      if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
+    });
+    setAbsencesByDate(grouped);
+  }, [days]);
 
   // Était: upsert direct sur absences → remplace par l'RPC
-const setSellerAbsent = useCallback(async (isoDate, sellerId) => {
-  if (!sellerId) return;
-  const { error } = await supabase.rpc("admin_upsert_absence", {
-    p_date: isoDate,
-    p_seller: sellerId,
-    p_reason: "Absence non déclarée (admin)",
-  });
-  if (error) {
-    console.error("admin_upsert_absence error:", error);
-    alert("Impossible d'enregistrer l'absence.");
-    return;
-  }
-  setAbsencesByDate((prev) => {
-    const arr = new Set([...(prev[isoDate] || []), sellerId]);
-    return { ...prev, [isoDate]: Array.from(arr) };
-  });
-}, []);
+  const setSellerAbsent = useCallback(async (isoDate, sellerId) => {
+    if (!sellerId) return;
+    const { error } = await supabase.rpc("admin_upsert_absence", {
+      p_date: isoDate,
+      p_seller: sellerId,
+      p_reason: "Absence non déclarée (admin)",
+    });
+    if (error) {
+      console.error("admin_upsert_absence error:", error);
+      alert("Impossible d'enregistrer l'absence.");
+      return;
+    }
+    setAbsencesByDate((prev) => {
+      const arr = new Set([...(prev[isoDate] || []), sellerId]);
+      return { ...prev, [isoDate]: Array.from(arr) };
+    });
+  }, []);
 
-// Était: delete() direct → remplace par l'RPC
-const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
-  const { error } = await supabase.rpc("admin_delete_absence", {
-    p_date: isoDate,
-    p_seller: sellerId,
-  });
-  if (error) {
-    console.error("admin_delete_absence error:", error);
-    alert("Impossible de supprimer l'absence.");
-    return;
-  }
-  setAbsencesByDate((prev) => {
-    const set = new Set(prev[isoDate] || []);
-    set.delete(sellerId);
-    return { ...prev, [isoDate]: Array.from(set) };
-  });
-}, []);
-
+  // Était: delete() direct → remplace par l'RPC
+  const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
+    const { error } = await supabase.rpc("admin_delete_absence", { p_date: isoDate, p_seller: sellerId });
+    if (error) {
+      console.error("admin_delete_absence error:", error);
+      alert("Impossible de supprimer l'absence.");
+      return;
+    }
+    setAbsencesByDate((prev) => {
+      const set = new Set(prev[isoDate] || []);
+      set.delete(sellerId);
+      return { ...prev, [isoDate]: Array.from(set) };
+    });
+  }, []);
 
   /* 🔔 BADGE + REFRESH AUTO */
   useEffect(() => {
-    const count =
-      (pendingAbs?.length || 0) +
-      (pendingLeaves?.length || 0) +
-      (replList?.length || 0);
+    const count = (pendingAbs?.length || 0) + (pendingLeaves?.length || 0) + (replList?.length || 0);
     const nav = typeof navigator !== 'undefined' ? navigator : null;
     if (!nav) return;
     if (count > 0 && nav.setAppBadge) nav.setAppBadge(count).catch(() => {});
@@ -732,10 +692,9 @@ const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
       loadApprovedLeaves?.(),
       loadMonthAbsences?.(),
       loadMonthUpcomingAbsences?.(),
-loadMonthAcceptedRepl?.(),
+      loadMonthAcceptedRepl?.(),
     ]);
     setRefreshKey((k) => k + 1);
-    
   }, [
     days,
     loadSellers,
@@ -748,7 +707,7 @@ loadMonthAcceptedRepl?.(),
     loadApprovedLeaves,
     loadMonthAbsences,
     loadMonthUpcomingAbsences,
-loadMonthAcceptedRepl,
+    loadMonthAcceptedRepl,
   ]);
 
   // Initial load
@@ -773,22 +732,20 @@ loadMonthAcceptedRepl,
     return () => navigator.serviceWorker.removeEventListener('message', handler);
   }, [reloadAll]);
 
-/* ---------- GUARDE AUTH (APRÈS TOUS LES HOOKS) ---------- */
-if (loading || !session) {
-  return (
-    <>
-      <Head><title>Connexion…</title></Head>
-      <div className="p-4">Chargement…</div>
-    </>
-  );
-}
+  /* ---------- GUARDE AUTH (APRÈS TOUS LES HOOKS) ---------- */
+  if (loading || !session) {
+    return (
+      <>
+        <Head><title>Connexion…</title></Head>
+        <div className="p-4">Chargement…</div>
+      </>
+    );
+  }
 
   /* ---------- RENDER ---------- */
   return (
     <>
-      <Head>
-        <title>Admin - {BUILD_TAG}</title>
-      </Head>
+      <Head><title>Admin - {BUILD_TAG}</title></Head>
       <div style={{padding:'8px',background:'#111',color:'#fff',fontWeight:700}}>{BUILD_TAG}</div>
 
       <div className="p-4 max-w-6xl mx-auto space-y-6">
@@ -806,7 +763,7 @@ if (loading || !session) {
         {latestCancel && (
           <div className="border rounded-2xl p-3 flex items-start justify-between gap-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
             <div className="text-sm">
-              <span className="font-medium">{latestCancel.name}</span> a annulé son absence du <span className="font-medium">{latestCancel.date}</span>.
+              <span className="font-medium">{nameFromId(latestCancel.seller_id) || "-"}</span> a annulé son absence du <span className="font-medium">{latestCancel.date}</span>.
             </div>
           </div>
         )}
@@ -815,7 +772,7 @@ if (loading || !session) {
           <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
               style={{ backgroundColor: "#fef3c7", borderColor: "#fcd34d" }}>
             <div className="text-sm">
-              <span className="font-medium">{latestLeave.seller_name}</span> demande un congé du{" "}
+              <span className="font-medium">{nameFromId(latestLeave.seller_id) || "-"}</span> demande un congé du{" "}
               <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
               {latestLeave.reason ? <><span> - </span><span>{latestLeave.reason}</span></> : null}.
             </div>
@@ -830,7 +787,7 @@ if (loading || !session) {
           <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
               style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
             <div className="text-sm">
-              <span className="font-medium">{latestRepl.volunteer_name}</span> veut remplacer <Chip name={latestRepl.absent_name} /> le <span className="font-medium">{latestRepl.date}</span>.
+              <span className="font-medium">{nameFromId(latestRepl.volunteer_id) || "-"}</span> veut remplacer <Chip name={nameFromId(latestRepl.absent_id) || "-"} /> le <span className="font-medium">{latestRepl.date}</span>.
             </div>
             <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
               <ShiftSelect dateStr={latestRepl.date} value={selectedShift[latestRepl.id] || ""} onChange={(val) => setSelectedShift(prev => ({ ...prev, [latestRepl.id]: val }))} />
@@ -852,7 +809,7 @@ if (loading || !session) {
                     <>
                       {" · "}
                       <span>Remplacement accepté : </span>
-                      <Chip name={a.replacement.volunteer_name} />
+                      <Chip name={nameFromId(a.replacement.volunteer_id)} />
                     </>
                   ) : null}
                 </li>
@@ -1093,7 +1050,7 @@ if (loading || !session) {
                               {repl ? (
                                 <>
                                   {" - "}
-                                  <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />
+                                  <Chip name={nameFromId(repl.volunteer_id)} /> remplace <Chip name={name} />
                                   {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
                                 </>
                               ) : null}
@@ -1138,7 +1095,7 @@ if (loading || !session) {
                               {repl ? (
                                 <>
                                   {" - "}
-                                  <Chip name={repl.volunteer_name} /> remplace <Chip name={name} />
+                                  <Chip name={nameFromId(repl.volunteer_id)} /> remplace <Chip name={name} />
                                   {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
                                 </>
                               ) : (
@@ -1160,7 +1117,7 @@ if (loading || !session) {
   );
 }
 
-/* ---------- SOUS-COMPOSANTS (SANS HOOKS OU HOOKS INTERNES) ---------- */
+/* ---------- SOUS-COMPOSANTS ---------- */
 
 function ShiftSelect({ dateStr, value, onChange }) {
   const sunday = isSunday(new Date(dateStr));
@@ -1240,7 +1197,7 @@ function TotalsGrid({
   const [annualLeaveDays, setAnnualLeaveDays] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // agrégateur simple côté client (fallback si RPC KO)
+  // Agrégateur simple côté client
   function aggregateFromRows(rows, sellersList) {
     const dict = Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
     (rows || []).forEach(r => {
@@ -1248,34 +1205,29 @@ function TotalsGrid({
       if (r.seller_id) dict[r.seller_id] = (dict[r.seller_id] || 0) + h;
     });
     return dict;
-    }
+  }
 
-  // tente l'RPC ; sinon fallback en lisant shifts
+  // Heures par RPC d’abord, fallback shifts
   async function fetchHoursRange(fromIso, toIso, sellersList) {
-    // 1) Essai RPC
+    // 1) RPC admin_hours_by_range (SECURITY DEFINER recommandé côté DB)
     try {
       const { data, error } = await supabase.rpc("admin_hours_by_range", { p_from: fromIso, p_to: toIso });
       if (!error && Array.isArray(data)) {
         const dict = Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
-        data.forEach(r => { dict[r.seller_id] = Number(r.hours) || 0; });
+        (data || []).forEach(r => { dict[r.seller_id] = Number(r.hours) || 0; });
         return dict;
       }
-      console.warn("RPC admin_hours_by_range KO -> fallback", error);
-    } catch (e) {
-      console.warn("RPC admin_hours_by_range threw -> fallback", e);
-    }
-
-    // 2) Fallback direct
+    } catch {}
+    // 2) Fallback direct (sujet à RLS)
     try {
-      const { data: rows, error: e2 } = await supabase
+      const { data: rows } = await supabase
         .from("shifts")
         .select("seller_id, date, shift_code")
         .gte("date", fromIso)
         .lte("date", toIso);
-      if (e2) { console.error("fallback shifts error:", e2); return Object.fromEntries((sellersList || []).map(s => [s.user_id, 0])); }
       return aggregateFromRows(rows, sellersList);
     } catch (e) {
-      console.error("fallback shifts threw:", e);
+      console.error("hours fallback error:", e);
       return Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
     }
   }
@@ -1283,22 +1235,21 @@ function TotalsGrid({
   // Heures semaine — jusqu’à HIER (exclut aujourd’hui)
   useEffect(() => {
     let cancelled = false;
-    const run = async () => {
+    (async () => {
       if (!sellers || sellers.length === 0) { setWeekTotals({}); return; }
       const weekStartIso = fmtISODate(startOfWeek(new Date()));
-      const yesterdayIso = fmtISODate(addDays(new Date(), -1)); // hier
-      if (yesterdayIso < weekStartIso) { setWeekTotals({}); return; } // lundi -> rien à compter
+      const yesterdayIso = fmtISODate(addDays(new Date(), -1));
+      if (yesterdayIso < weekStartIso) { setWeekTotals({}); return; }
       const dict = await fetchHoursRange(weekStartIso, yesterdayIso, sellers);
       if (!cancelled) setWeekTotals(dict);
-    };
-    run();
+    })();
     return () => { cancelled = true; };
   }, [sellers, refreshKey]);
 
-  // Heures mois — jusqu’à HIER si mois courant, sinon jusqu’à fin du mois sélectionné
+  // Heures mois — jusqu’à HIER si mois courant, sinon fin du mois sélectionné
   useEffect(() => {
     let cancelled = false;
-    const run = async () => {
+    (async () => {
       if (!sellers || sellers.length === 0) { setMonthTotals({}); return; }
       setLoading(true);
       try {
@@ -1310,15 +1261,14 @@ function TotalsGrid({
       } finally {
         if (!cancelled) setLoading(false);
       }
-    };
-    run();
+    })();
     return () => { cancelled = true; };
   }, [sellers, monthFrom, monthTo, refreshKey]);
 
-  // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd’hui inclus)
+  // Jours de congé pris sur l'année (approved, jusqu’à aujourd’hui inclus)
   useEffect(() => {
     let cancelled = false;
-    const run = async () => {
+    (async () => {
       if (!sellers || sellers.length === 0) { setAnnualLeaveDays({}); return; }
       const now = new Date();
       const yearStart = `${now.getFullYear()}-01-01`;
@@ -1343,28 +1293,28 @@ function TotalsGrid({
         }
       });
       if (!cancelled) setAnnualLeaveDays(dict);
-    };
-    run();
+    })();
     return () => { cancelled = true; };
   }, [sellers, refreshKey]);
 
-  // Compteur d'absences du mois (approved, passées + à venir)
+  // Compteur d'absences du mois
   const absencesCount = useMemo(() => {
     const all = [...(monthAbsences || []), ...(monthUpcomingAbsences || [])];
-    const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
+    const dict = Object.fromEntries((sellers || []).map((s) => [s.user_id, 0]));
     all.forEach(a => {
       if (a?.seller_id) dict[a.seller_id] = (dict[a.seller_id] || 0) + 1;
     });
     return dict;
   }, [sellers, monthAbsences, monthUpcomingAbsences]);
 
-  if (!sellers || sellers.length === 0)
+  if (!sellers || sellers.length === 0) {
     return (
       <div className="card">
         <div className="hdr mb-2">Total heures vendeuses</div>
         <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
       </div>
     );
+  }
 
   return (
     <div className="card">
