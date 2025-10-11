@@ -656,11 +656,10 @@ const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
       loadApprovedLeaves?.(),
       loadMonthAbsences?.(),
       loadMonthUpcomingAbsences?.(),
+loadMonthAcceptedRepl?.(),
     ]);
     setRefreshKey((k) => k + 1);
-    if (typeof navigator !== 'undefined' && navigator.clearAppBadge) {
-      try { await navigator.clearAppBadge(); } catch {}
-    }
+    
   }, [
     days,
     loadSellers,
@@ -673,6 +672,7 @@ const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
     loadApprovedLeaves,
     loadMonthAbsences,
     loadMonthUpcomingAbsences,
+loadMonthAcceptedRepl,
   ]);
 
   // Initial load
