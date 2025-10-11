@@ -1,32 +1,39 @@
-﻿# Next.js
-.next/
-.next/cache/
-out/
-*.local.backup.js
+﻿## --- OS / Editeurs ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
 
-# Node
-node_modules/
-
-# Env / secrets (ne jamais pousser .env.local)
-.env*
-!.env.example
-
-# Logs
+# --- Logs / caches ---
+logs
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-*.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDE / outils
-.vscode/
-.idea/
-.turbo/
-.vercel/
+.pnpm-debug.log*
+.eslintcache
 coverage/
-dist/
+
+# --- Node / Next.js ---
+node_modules/
+.next/
+.next/cache/
+out/
+
+# --- Vercel ---
 .vercel
+
+# --- Env (garde .env.example en repo) ---
+.env
+.env.*
+!.env.example
+
+# --- Supabase (temp) ---
+supabase/.temp/
+
+# --- Backups locaux perso ---
+*.local.backup.*
+

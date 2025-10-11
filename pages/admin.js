@@ -60,13 +60,19 @@ export default function Admin() {
   const r = useRouter();
   // juste après: const { session, profile, loading } = useAuth();
 
-if (loading) {
-  return <div className="p-4">Chargement…</div>;
-}
+if (loading) return <div className="p-4">Chargement…</div>;
 
-// Optionnel : si tu dépends fortement de profile.role
+// Si la session existe mais pas de profil lisible (profil null), on invite à retourner au login
 if (session && !profile) {
-  return <div className="p-4">Chargement du profil…</div>;
+  return (
+    <div className="p-4">
+      Profil introuvable pour cet utilisateur. 
+      Vérifie les droits RLS et la ligne dans <code>public.profiles</code>. 
+      <div className="mt-2">
+        <a className="btn" href="/login">Retour à la connexion</a>
+      </div>
+    </div>
+  );
 }
 
 
