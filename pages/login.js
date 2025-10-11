@@ -1,64 +1,52 @@
-﻿import { useState } from "react";
+// pages/login.js
+import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
+import { useAuth } from "@/lib/useAuth";
 
-export default function Login() {
-  const r = useRouter();
+export default function LoginPage() {
+  const router = useRouter();
+  const { session, profile, loading } = useAuth();
   const [email, setEmail] = useState("");
-  const [password, setPass] = useState("");
-  const [error, setError] = useState("");
+  const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
 
-  async function routeByRole(userId) {
-    try {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("user_id", userId)
-        .single();
-      if (error) throw error;
-      if (data?.role === "admin") r.replace("/admin");
-      else r.replace("/app");
-    } catch {
-      r.replace("/app");
-    }
-  }
+  // Si déjà connecté + profil connu -> route selon le rôle
+  useEffect(() => {
+    if (loading) return;
+    if (!session) return;
+    // profil peut être null si la ligne manque -> on reste sur /login
+    if (!profile) return;
+    if (profile.role === "admin") router.replace("/admin");
+    else router.replace("/app");
+  }, [loading, session, profile, router]);
 
-  const onSubmit = async (e) => {
+  const onLogin = async (e) => {
     e.preventDefault();
-    setError(""); setBusy(true);
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      const userId = data?.user?.id;
-      if (!userId) throw new Error("Utilisateur introuvable");
-      await routeByRole(userId);
-    } catch (e) {
-      setError(e?.message || "Échec de connexion");
-    } finally {
-      setBusy(false);
-    }
+    setBusy(true);
+    setErr("");
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) setErr(error.message || "Échec de connexion");
+    setBusy(false);
+    // NE PAS router ici : on laisse useAuth capter la session et router via l'effet ci-dessus
   };
 
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui" }}>
-      <h1 style={{ fontSize: 20, fontWeight: 700 }}>Connexion</h1>
-      <form onSubmit={onSubmit} style={{ marginTop: 12, maxWidth: 360 }}>
-        <div style={{ display: "grid", gap: 8 }}>
-          <input type="email" placeholder="Email" value={email}
-            onChange={(e) => setEmail(e.target.value)} required
-            style={{ padding: 10, borderRadius: 8, border: "1px solid #e5e7eb" }} />
-          <input type="password" placeholder="Mot de passe" value={password}
-            onChange={(e) => setPass(e.target.value)} required
-            style={{ padding: 10, borderRadius: 8, border: "1px solid #e5e7eb" }} />
-          <button type="submit" disabled={busy}
-            style={{ padding: "10px 12px", borderRadius: 8, background: "#2563eb", color: "#fff" }}>
-            {busy ? "Connexion…" : "Se connecter"}
-          </button>
-          {error ? <div style={{ color: "#b91c1c" }}>{error}</div> : null}
+    <div style={{ maxWidth: 420, margin: "64px auto", padding: 16 }}>
+      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12 }}>Connexion</h1>
+      <form onSubmit={onLogin} className="space-y-3">
+        <div>
+          <label className="block text-sm mb-1">Email</label>
+          <input className="input w-full" type="email" value={email} onChange={(e)=>setEmail(e.target.value)} required />
         </div>
+        <div>
+          <label className="block text-sm mb-1">Mot de passe</label>
+          <input className="input w-full" type="password" value={password} onChange={(e)=>setPassword(e.target.value)} required />
+        </div>
+        {err && <div className="text-red-600 text-sm">{err}</div>}
+        <button className="btn" type="submit" disabled={busy}>{busy ? "Connexion…" : "Se connecter"}</button>
       </form>
     </div>
   );
 }
-
