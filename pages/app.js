@@ -106,6 +106,8 @@ if (session && !profile) {
   // Charger le planning de la semaine (lecture seule)
   useEffect(() => {
     const load = async () => {
+      if (!session) return; // ⬅️ ne rien faire tant qu’on n’a pas de session
+ const load = async () => {
       const from = fmtISODate(days[0]);
       const to = fmtISODate(days[6]);
       const { data, error } = await supabase
