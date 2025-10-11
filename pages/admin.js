@@ -7,8 +7,7 @@ import { useAuth } from "@/lib/useAuth";
 import WeekNav from "../components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "../lib/date";
 
-/* ---------- Build tag ---------- */
-const BUILD_TAG = "ADMIN FIX — 10/10/2025 19:15 (full merge + absents inline + fallback)";
+
 
 /* Heures par créneau (inclut le dimanche spécial) */
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
