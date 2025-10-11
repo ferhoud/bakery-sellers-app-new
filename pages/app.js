@@ -38,19 +38,46 @@ export default function AppSeller() {
   const { session, profile, loading } = useAuth();
   const r = useRouter();
 
-  if (loading) {
-    return <div className="p-4">Chargement…</div>;
-  }
-  if (session && !profile) {
-    return <div className="p-4">Chargement du profil…</div>;
-  }
+  // 🔧 Fallback local pour ne pas rester bloqué si profile tarde / manque
+  const [profileFallback, setProfileFallback] = useState(null);
+  const [profileTried, setProfileTried] = useState(false);
 
-  /* Sécurité / redirections */
+  useEffect(() => {
+    // Quand on a une session mais pas de profile fourni par useAuth, on tente une lecture directe.
+    const run = async () => {
+      if (!session || profile || profileTried) return;
+      try {
+        const { data: p, error } = await supabase
+          .from("profiles")
+          .select("user_id, full_name, role")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (!error && p) setProfileFallback(p);
+      } catch (e) {
+        // ignore
+      } finally {
+        setProfileTried(true);
+      }
+    };
+    run();
+  }, [session, profile, profileTried]);
+
+  const displayName =
+    profile?.full_name ||
+    profileFallback?.full_name ||
+    session?.user?.user_metadata?.full_name ||
+    (session?.user?.email ? session.user.email.split("@")[0] : "—");
+
+  // Sécurité / redirections
   useEffect(() => {
     if (loading) return;
-    if (!session) r.replace("/login");
-    if (profile && profile.role === "admin") r.replace("/admin");
-  }, [session, profile, loading, r]);
+    if (!session) {
+      if (r.pathname !== "/login") r.replace("/login");
+      return;
+    }
+    const role = profile?.role || profileFallback?.role;
+    if (role === "admin") r.replace("/admin");
+  }, [session, profile, profileFallback, loading, r]);
 
   // Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
@@ -488,10 +515,14 @@ export default function AppSeller() {
     return () => navigator.serviceWorker.removeEventListener('message', handler);
   }, []);
 
+  // --- ÉTATS GÉNÉRAUX D'ACCÈS ---
+  if (loading) return <div className="p-4">Chargement…</div>;
+  if (!session) return <div className="p-4">Connexion requise…</div>;
+
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-        <div className="hdr">Bonjour {profile?.full_name || "—"}</div>
+        <div className="hdr">Bonjour {displayName}</div>
         <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
       </div>
 
@@ -646,7 +677,7 @@ export default function AppSeller() {
                   <div className="text-sm">
                     <b>{frDate(date)}</b>
                     {accepted ? (
-                      <> — <b>{accepted.volunteer_name}</b> remplace <b>{profile?.full_name || "vous"}</b>
+                      <> — <b>{accepted.volunteer_name}</b> remplace <b>{displayName || "vous"}</b>
                         {acceptedShift ? <> (<span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(acceptedShift)}</span>)</> : null}
                       </>
                     ) : null}
