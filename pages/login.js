@@ -1,52 +1,100 @@
-// pages/login.js
-import { useEffect, useState } from "react";
+/* pages/login.js */
+import { useState, useEffect } from "react";
+import Head from "next/head";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { session, profile, loading } = useAuth();
+  const { profile, loading } = useAuth(); // profile est mis à jour par AuthProvider
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
-  // Si déjà connecté + profil connu -> route selon le rôle
+  // Après connexion: route selon le rôle dès que profile est dispo
   useEffect(() => {
-    if (loading) return;
-    if (!session) return;
-    // profil peut être null si la ligne manque -> on reste sur /login
-    if (!profile) return;
+    if (loading) return;                 // attend la fin du chargement
+    if (!profile) return;                // pas encore de profil -> attendre
     if (profile.role === "admin") router.replace("/admin");
-    else router.replace("/app");
-  }, [loading, session, profile, router]);
+    else router.replace("/app");         // page vendeuse
+  }, [profile, loading, router]);
 
-  const onLogin = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    setBusy(true);
-    setErr("");
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) setErr(error.message || "Échec de connexion");
-    setBusy(false);
-    // NE PAS router ici : on laisse useAuth capter la session et router via l'effet ci-dessus
+    setErrorMsg("");
+    setSubmitting(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password: password,
+      });
+      if (error) {
+        setErrorMsg(error.message || "Échec de connexion.");
+        return; // on laisse le bouton revenir à "Se connecter"
+      }
+      // Pas de redirection immédiate ici : on laisse useAuth détecter la session
+      // puis faire la redirection dans le useEffect ci-dessus.
+    } catch (err) {
+      setErrorMsg(err?.message || "Erreur réseau.");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
-    <div style={{ maxWidth: 420, margin: "64px auto", padding: 16 }}>
-      <h1 style={{ fontSize: 20, fontWeight: 700, marginBottom: 12 }}>Connexion</h1>
-      <form onSubmit={onLogin} className="space-y-3">
-        <div>
-          <label className="block text-sm mb-1">Email</label>
-          <input className="input w-full" type="email" value={email} onChange={(e)=>setEmail(e.target.value)} required />
-        </div>
-        <div>
-          <label className="block text-sm mb-1">Mot de passe</label>
-          <input className="input w-full" type="password" value={password} onChange={(e)=>setPassword(e.target.value)} required />
-        </div>
-        {err && <div className="text-red-600 text-sm">{err}</div>}
-        <button className="btn" type="submit" disabled={busy}>{busy ? "Connexion…" : "Se connecter"}</button>
-      </form>
-    </div>
+    <>
+      <Head>
+        <title>Connexion</title>
+      </Head>
+
+      <div className="min-h-screen flex items-center justify-center bg-[#f5f5f5] p-4">
+        <form onSubmit={handleSubmit} className="w-full max-w-sm bg-white border rounded-2xl p-4 space-y-3">
+          <div className="text-xl font-semibold">Se connecter</div>
+
+          <label className="block">
+            <div className="text-sm mb-1">Email</div>
+            <input
+              type="email"
+              className="input w-full"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+            />
+          </label>
+
+          <label className="block">
+            <div className="text-sm mb-1">Mot de passe</div>
+            <input
+              type="password"
+              className="input w-full"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="current-password"
+            />
+          </label>
+
+          {errorMsg ? (
+            <div className="text-sm text-red-600">{errorMsg}</div>
+          ) : null}
+
+          <button
+            type="submit"
+            className="btn w-full"
+            disabled={submitting}
+          >
+            {submitting ? "Connexion…" : "Se connecter"}
+          </button>
+
+          {/* Petit debug non intrusif */}
+          <div className="text-[11px] text-gray-500 mt-2">
+            {loading ? "Chargement du profil…" : profile ? `Profil: ${profile.full_name} (${profile.role})` : "Non connecté"}
+          </div>
+        </form>
+      </div>
+    </>
   );
 }
