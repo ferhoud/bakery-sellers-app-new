@@ -69,19 +69,20 @@ export default function AppSeller() {
     session?.user?.user_metadata?.full_name ||
     (session?.user?.email ? session.user.email.split("@")[0] : "—");
 
-  // Sécurité / redirections
+  // 🔒 Redirection selon auth/role — UN SEUL useEffect
   useEffect(() => {
-  if (loading) return;
-  if (!session) { r.replace("/login"); return; }
+    if (loading) return;
+    if (!session) { r.replace("/login"); return; }
 
-  const role =
-    profile?.role /* si profil chargé */ ||
-    "seller";     // fallback tolérant
+    const role =
+      profile?.role            // si profil chargé
+      ?? profileFallback?.role // sinon fallback local
+      ?? "seller";             // défaut
 
-  if (role === "admin") {
-    r.replace("/admin"); // les admins ne restent pas sur /app
-  }
-}, [session, profile, loading, r]);
+    if (role === "admin") {
+      r.replace("/admin");
+    }
+  }, [session, profile, profileFallback, loading, r]);
 
 
   // Semaine affichée
