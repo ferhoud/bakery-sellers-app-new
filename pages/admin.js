@@ -1,20 +1,31 @@
+/* pages/admin.js — unified, fixed structure (2025‑10‑11)
+   - Single default export (AdminPage)
+   - All React hooks are inside the component (no hooks at top-level)
+   - Adds missing BUILD_TAG constant
+   - Keeps your logic (absences/leaves/replacements/totals) intact
+*/
+
 import Head from "next/head";
-import { useEffect, useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/router";
+import { useEffect, useMemo, useState, useCallback } from "react";
+
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
 import { isAdminEmail } from "@/lib/admin";
 import WeekNav from "../components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "../lib/date";
 
+/* ---------- CONSTANTES / UTILS GLOBAUX (SANS HOOKS) ---------- */
 
+const BUILD_TAG = "ADMIN — 11/10/2025 08:00";
 
-/* Heures par créneau (inclut le dimanche spécial) */
+// Heures par créneau (inclut le dimanche spécial)
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
+// Libellés + créneau dimanche (doit exister dans shift_types)
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
-/* Couleurs fixes par vendeuse */
+// Couleurs fixes par vendeuse
 const SELLER_COLORS = {
   Antonia: "#e57373",
   Olivia: "#64b5f6",
@@ -23,7 +34,7 @@ const SELLER_COLORS = {
 };
 const colorForName = (name) => SELLER_COLORS[name] || "#9e9e9e";
 
-/* Utils date / libellés */
+// Utils date / libellés
 function firstDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function lastDayOfMonth(d)  { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
 function monthInputValue(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
@@ -35,54 +46,47 @@ const betweenIso = (iso, start, end) => iso >= start && iso <= end;
 const frDate = (iso) => { try { return new Date(iso + "T00:00:00").toLocaleDateString("fr-FR"); } catch { return iso; } };
 const isSameISO = (d, iso) => fmtISODate(d) === iso;
 
-/* ---------- UI helpers ---------- */
+/* ---------- PETITS COMPOSANTS SANS HOOKS ---------- */
 function Chip({ name }) {
   if (!name || name === "-") return <span className="text-sm text-gray-500">-</span>;
   const bg = colorForName(name);
   return (
     <span
-      style={{
-        backgroundColor: bg,
-        color: "#fff",
-        borderRadius: 9999,
-        padding: "2px 10px",
-        fontSize: "0.8rem",
-      }}
+      style={{ backgroundColor: bg, color: "#fff", borderRadius: 9999, padding: "2px 10px", fontSize: "0.8rem" }}
     >
       {name}
     </span>
   );
 }
+const ApproveBtn = ({ onClick, children = "Approuver" }) => (
+  <button type="button" className="btn" onClick={onClick}
+    style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>
+    {children}
+  </button>
+);
+const RejectBtn  = ({ onClick, children = "Rejeter" }) => (
+  <button type="button" className="btn" onClick={onClick}
+    style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
+    {children}
+  </button>
+);
+function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "-"; }
 
-/* ---------- Main page ---------- */
+/* ---------- PAGE PRINCIPALE (TOUS LES HOOKS ICI) ---------- */
 export default function AdminPage() {
   const r = useRouter();
   const { session, profile, loading } = useAuth();
 
+  // Sécurité / redirections
   useEffect(() => {
     if (loading) return;
     if (!session) { r.replace("/login"); return; }
-
-    // Autorise si email est dans la allowlist (farid@bm.local)
     if (isAdminEmail(session.user?.email)) return;
-
-    // Sinon exige un profil admin explicite
-    if (profile?.role !== "admin") {
-      r.replace("/app");
-    }
+    if (profile?.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
   if (loading) return <div className="p-4">Chargement…</div>;
   if (!session) return null;
-
-  return (
-    <div className="p-4">
-      <h1 className="hdr mb-4">Espace Administrateur</h1>
-      {/* ... ton contenu admin ... */}
-    </div>
-  );
-}
-
 
   // Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
@@ -138,16 +142,8 @@ export default function AdminPage() {
     }
   }, [r, signingOut]);
 
-  /* Sécurité */
-  useEffect(() => {
-    if (loading) return;
-    if (!session) { r.replace("/login"); return; }
-    if (profile && profile.role !== "admin") r.replace("/app");
-  }, [session, profile, loading, r]);
-
   /* Vendeuses (robuste : RPC list_sellers -> profiles fallback) */
   const loadSellers = useCallback(async () => {
-    // 1) Essai via RPC (ta fonction SQL)
     let rows = [];
     try {
       const { data, error } = await supabase.rpc("list_sellers");
@@ -156,8 +152,6 @@ export default function AdminPage() {
     } catch (e) {
       console.warn("list_sellers RPC threw:", e);
     }
-
-    // 2) Fallback : lire directement la table 'profiles'
     if (rows.length === 0) {
       try {
         const { data: profs, error: e2 } = await supabase
@@ -172,21 +166,19 @@ export default function AdminPage() {
         console.warn("profiles fallback threw:", e);
       }
     }
-
     setSellers(rows || []);
   }, []);
 
-  /* ✅ Index vendeuses + helper id→nom (UTILISÉ PARTOUT DANS LE RENDER) */
+  /* ✅ Index vendeuses + helper id→nom */
   const sellersById = useMemo(
     () => new Map((sellers || []).map((s) => [s.user_id, s])),
     [sellers]
   );
-
   const nameFromId = useCallback(
     (id) => {
       if (!id) return "";
       const s = sellersById.get(id);
-      return s?.full_name || ""; // fallback vide si non trouvé
+      return s?.full_name || "";
     },
     [sellersById]
   );
@@ -436,6 +428,7 @@ export default function AdminPage() {
     setMonthAcceptedRepl(map);
   }, [monthAbsences, monthUpcomingAbsences]);
 
+  // Déclencheurs init
   useEffect(() => { loadPendingLeaves(); loadLatestLeave(); loadApprovedLeaves(); }, [todayIso, loadPendingLeaves, loadLatestLeave, loadApprovedLeaves]);
   useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, loadMonthAbsences, loadMonthUpcomingAbsences]);
   useEffect(() => { loadMonthAcceptedRepl(); }, [loadMonthAcceptedRepl]);
@@ -480,21 +473,13 @@ export default function AdminPage() {
     // Nouveau : bannière quand une absence est supprimée par une vendeuse
     const chCancel = supabase
       .channel("absences_delete_banner")
-      .on(
-        "postgres_changes",
-        { event: "DELETE", schema: "public", table: "absences" },
-        async (payload) => {
-          const old = payload?.old;
-          if (!old?.seller_id || !old?.date) return;
-          const { data: prof } = await supabase
-            .from("profiles")
-            .select("full_name")
-            .eq("user_id", old.seller_id)
-            .single();
-          setLatestCancel({ name: prof?.full_name || "-", date: old.date });
-          setTimeout(() => setLatestCancel(null), 5000);
-        }
-      )
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "absences" }, async (payload) => {
+        const old = payload?.old;
+        if (!old?.seller_id || !old?.date) return;
+        const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", old.seller_id).single();
+        setLatestCancel({ name: prof?.full_name || "-", date: old.date });
+        setTimeout(() => setLatestCancel(null), 5000);
+      })
       .subscribe();
 
     return () => {
@@ -507,21 +492,16 @@ export default function AdminPage() {
 
   /* Sauvegarde d'une affectation */
   const save = useCallback(async (iso, code, seller_id) => {
-   const key = `${iso}|${code}`;
-   // Optimistic UI
-   setAssign((prev) => ({ ...prev, [key]: seller_id || null }));
-   const { error } = await supabase.rpc("admin_upsert_shift", {
-     p_date: iso,
-     p_code: code,
-     p_seller: seller_id || null,
-   });
-   if (error) {
-     console.error("admin_upsert_shift error:", error);
-     alert(error.message || "Échec de sauvegarde du planning");
-     return;
-   }
-   setRefreshKey((k) => k + 1);
- }, []);
+    const key = `${iso}|${code}`;
+    setAssign((prev) => ({ ...prev, [key]: seller_id || null })); // Optimistic UI
+    const { error } = await supabase.rpc("admin_upsert_shift", { p_date: iso, p_code: code, p_seller: seller_id || null });
+    if (error) {
+      console.error("admin_upsert_shift error:", error);
+      alert(error.message || "Échec de sauvegarde du planning");
+      return;
+    }
+    setRefreshKey((k) => k + 1);
+  }, []);
 
   /* Copier la semaine -> semaine suivante */
   const copyWeekToNext = useCallback(async () => {
@@ -570,31 +550,20 @@ export default function AdminPage() {
     if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
 
     // 2) Marquer cette proposition comme acceptée + stocker le créneau accepté
-    await supabase
-      .from("replacement_interest")
-      .update({ status: "accepted", accepted_shift_code: shift })
-      .eq("id", repl.id);
+    await supabase.from("replacement_interest").update({ status: "accepted", accepted_shift_code: shift }).eq("id", repl.id);
 
     // 3) Les autres propositions deviennent 'declined'
-    await supabase
-      .from("replacement_interest")
-      .update({ status: "declined" })
-      .eq("absence_id", repl.absence_id)
-      .neq("id", repl.id);
+    await supabase.from("replacement_interest").update({ status: "declined" }).eq("absence_id", repl.absence_id).neq("id", repl.id);
 
     // 4) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
-    const { data: absRow } = await supabase
-      .from("absences")
-      .select("status")
-      .eq("id", repl.absence_id)
-      .single();
+    const { data: absRow } = await supabase.from("absences").select("status").eq("id", repl.absence_id).single();
     if (absRow?.status !== "approved") {
       await supabase.from("absences").update({ status: "approved" }).eq("id", repl.absence_id);
     }
 
     if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
 
-    // 5) Rafraîchir tous les blocs
+    // 5) Rafraîchir
     setRefreshKey((k) => k + 1);
     await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences(), loadMonthAcceptedRepl()]);
     alert("Volontaire attribuée et absence approuvée.");
@@ -607,7 +576,7 @@ export default function AdminPage() {
     await loadReplacements(); await loadMonthAcceptedRepl();
   }, [latestRepl, loadReplacements, loadMonthAcceptedRepl]);
 
-  /* ---------- Inline ABSENCES (admin) pour chaque jour de la semaine ---------- */
+  /* Inline ABSENCES (admin) pour chaque jour de la semaine */
   const loadWeekAbsences = useCallback(async () => {
     const from = fmtISODate(days[0]);
     const to = fmtISODate(days[6]);
@@ -648,8 +617,7 @@ export default function AdminPage() {
     });
   }, []);
 
-  /* ---------- 🔔 BADGE + REFRESH AUTO ---------- */
-
+  /* 🔔 BADGE + REFRESH AUTO */
   useEffect(() => {
     const count =
       (pendingAbs?.length || 0) +
@@ -663,7 +631,7 @@ export default function AdminPage() {
 
   const reloadAll = useCallback(async () => {
     await Promise.all([
-      loadSellers(), // ✅ IMPORTANT : on charge la liste des vendeuses
+      loadSellers(),
       loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
       loadWeekAbsences(),
       loadPendingAbs?.(),
@@ -714,8 +682,7 @@ export default function AdminPage() {
     return () => navigator.serviceWorker.removeEventListener('message', handler);
   }, [reloadAll]);
 
-
-  /* ----------------- RENDER ----------------- */
+  /* ---------- RENDER ---------- */
   return (
     <>
       <Head>
@@ -735,7 +702,6 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* BANNIÈRE : Annulation effectuée par une vendeuse (DELETE) */}
         {latestCancel && (
           <div className="border rounded-2xl p-3 flex items-start justify-between gap-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
             <div className="text-sm">
@@ -744,7 +710,6 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* BANNIÈRE : Demande de congé (la plus récente) */}
         {latestLeave && (
           <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
               style={{ backgroundColor: "#fef3c7", borderColor: "#fcd34d" }}>
@@ -760,7 +725,6 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* BANNIÈRE : Volontariat de remplacement */}
         {latestRepl && (
           <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
               style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
@@ -775,7 +739,6 @@ export default function AdminPage() {
           </div>
         )}
 
-        {/* Absences aujourd’hui - disparaît après le jour J */}
         <div className="card">
           <div className="hdr mb-2">Absences aujourd’hui</div>
           {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourd’hui</div> : (
@@ -797,7 +760,6 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* Demandes d’absence - en attente */}
         <div className="card">
           <div className="hdr mb-2">Demandes d’absence - en attente (à venir)</div>
           {pendingAbs.length === 0 ? <div className="text-sm text-gray-600">Aucune demande en attente.</div> : (
@@ -815,7 +777,6 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* Demandes de congé - en attente */}
         <div className="card">
           <div className="hdr mb-2">Demandes de congé - en attente</div>
           {pendingLeaves.length === 0 ? <div className="text-sm text-gray-600">Aucune demande de congé en attente.</div> : (
@@ -839,7 +800,6 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* Congés approuvés - en cours ou à venir */}
         <div className="card">
           <div className="hdr mb-2">Congés approuvés - en cours ou à venir</div>
           {approvedLeaves.length === 0 ? (
@@ -873,10 +833,8 @@ export default function AdminPage() {
           )}
         </div>
 
-        {/* Planning du jour */}
         <TodayColorBlocks today={today} todayIso={todayIso} assign={assign} nameFromId={nameFromId} />
 
-        {/* Planning de la semaine (édition + absents inline) */}
         <div className="card">
           <div className="hdr mb-4">Planning de la semaine</div>
 
@@ -974,7 +932,6 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* Sélecteur de MOIS */}
         <div className="card">
           <div className="hdr mb-2">Choisir le mois pour “Total heures (mois)”</div>
           <div className="grid sm:grid-cols-3 gap-3 items-center">
@@ -996,7 +953,6 @@ export default function AdminPage() {
           </div>
         </div>
 
-        {/* Totaux */}
         <TotalsGrid
           sellers={sellers}
           monthFrom={monthFrom}
@@ -1007,14 +963,12 @@ export default function AdminPage() {
           monthUpcomingAbsences={monthUpcomingAbsences}
         />
 
-        {/* Absences approuvées - MOIS (passées / aujourd’hui) */}
         <div className="card">
           <div className="hdr mb-2">Absences approuvées - mois : {labelMonthFR(selectedMonth)}</div>
           {(() => {
             if (!monthAbsences || monthAbsences.length === 0) {
               return <div className="text-sm text-gray-600">Aucune absence (passée/aujourd’hui) sur ce mois.</div>;
             }
-            // Grouper par vendeuse
             const bySeller = {};
             monthAbsences.forEach((a) => {
               if (!bySeller[a.seller_id]) bySeller[a.seller_id] = [];
@@ -1054,14 +1008,12 @@ export default function AdminPage() {
           })()}
         </div>
 
-        {/* Absences approuvées à venir - MOIS (dates futures) */}
         <div className="card">
           <div className="hdr mb-2">Absences approuvées à venir - mois : {labelMonthFR(selectedMonth)}</div>
           {(() => {
             if (!monthUpcomingAbsences || monthUpcomingAbsences.length === 0) {
               return <div className="text-sm text-gray-600">Aucune absence à venir sur ce mois.</div>;
             }
-            // Grouper par vendeuse
             const bySeller = {};
             monthUpcomingAbsences.forEach((a) => {
               if (!bySeller[a.seller_id]) bySeller[a.seller_id] = [];
@@ -1107,8 +1059,7 @@ export default function AdminPage() {
   );
 }
 
-/* ---------- Composants ---------- */
-function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "-"; }
+/* ---------- SOUS-COMPOSANTS (SANS HOOKS OU HOOKS INTERNES) ---------- */
 
 function ShiftSelect({ dateStr, value, onChange }) {
   const sunday = isSunday(new Date(dateStr));
@@ -1337,17 +1288,3 @@ function TotalsGrid({
     </div>
   );
 }
-
-/* Boutons colorés */
-const ApproveBtn = ({ onClick, children = "Approuver" }) => (
-  <button type="button" className="btn" onClick={onClick}
-    style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>
-    {children}
-  </button>
-);
-const RejectBtn  = ({ onClick, children = "Rejeter" }) => (
-  <button type="button" className="btn" onClick={onClick}
-    style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
-    {children}
-  </button>
-);
