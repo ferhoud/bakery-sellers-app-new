@@ -65,7 +65,7 @@ export default function AppSeller() {
 
   // Absence (form 1 jour)
   const [reasonAbs, setReasonAbs] = useState("");
-  const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const todayIso = useMemo(() => fmtISODate(new Date()), []);
   const [absDate, setAbsDate] = useState(fmtISODate(new Date()));
   const [msgAbs, setMsgAbs] = useState("");
 
@@ -93,6 +93,29 @@ export default function AppSeller() {
   // [{ absence_id, date, absent_id, accepted_shift_code }]
   const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
   const [names, setNames] = useState({}); // user_id -> full_name
+
+  // ✅ DÉRIVÉ : bannière "Absente aujourd'hui" (pour la vendeuse connectée)
+  const absentToday = useMemo(() => {
+    const entry = (myMonthUpcomingAbs || []).find((a) => a.date === todayIso);
+    if (!entry) return null;
+    // Chercher un volontaire accepté pour l'un des ids
+    let accepted = null;
+    let acceptedShift = null;
+    for (const id of entry.ids) {
+      if (acceptedByAbsence[id]) {
+        accepted = acceptedByAbsence[id];
+        acceptedShift = acceptedByAbsence[id].shift || null;
+        break;
+      }
+    }
+    return {
+      date: todayIso,
+      status: entry.status,       // 'pending' | 'approved'
+      locked: !!entry.locked,     // admin_forced => true
+      accepted,                   // { volunteer_name, shift } | null
+      acceptedShift,              // string | null
+    };
+  }, [myMonthUpcomingAbs, acceptedByAbsence, todayIso]);
 
   // Charger le planning de la semaine (lecture seule)
   useEffect(() => {
@@ -384,12 +407,14 @@ export default function AppSeller() {
     }
 
     setMyUpcomingRepl(
-      (myReplRows || []).map((r) => ({
-        absence_id: r.absence_id,
-        date: r.absences?.date,
-        absent_id: r.absences?.seller_id,
-        accepted_shift_code: r.accepted_shift_code,
-      }))
+      (myReplRows || []).map((r) => (
+        {
+          absence_id: r.absence_id,
+          date: r.absences?.date,
+          absent_id: r.absences?.seller_id,
+          accepted_shift_code: r.accepted_shift_code,
+        }
+      ))
     );
   }, [session?.user?.id]);
 
@@ -470,6 +495,33 @@ export default function AppSeller() {
         <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
       </div>
 
+      {/* 🟥 Bannière “Absente aujourd’hui” (pour la vendeuse connectée) */}
+      {absentToday && (
+        <div className="border rounded-2xl p-3 flex flex-col gap-2"
+             style={{ backgroundColor: absentToday.status === 'approved' ? "#fee2e2" : "#fff7ed", borderColor: "#fca5a5" }}>
+          <div className="font-medium">Absente aujourd’hui — {frDate(absentToday.date)}</div>
+          <div className="text-sm">
+            {absentToday.status === 'approved' ? "Absence approuvée par l’administrateur." : "Demande d’absence en attente d’approbation."}
+            {absentToday.accepted ? (
+              <> Remplacée par <b>{absentToday.accepted.volunteer_name}</b>
+              {absentToday.acceptedShift ? <> (<span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(absentToday.acceptedShift)}</span>)</> : null}
+              </>
+            ) : <> — Aucun remplaçant validé pour le moment.</>}
+          </div>
+          <div className="flex gap-2">
+            <button
+              className="btn"
+              disabled={absentToday.locked}
+              onClick={() => deleteMyAbsencesForDate(todayIso)}
+              title={absentToday.locked ? "Absence verrouillée par l’admin" : `Annuler l'absence du ${frDate(todayIso)}`}
+              style={{ backgroundColor: absentToday.locked ? "#9ca3af" : "#dc2626", color: "#fff", borderColor: "transparent" }}
+            >
+              Annuler l'absence d'aujourd'hui
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Bannière “Remplacer ?” */}
       {replAsk && (
         <div className="border rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
@@ -529,7 +581,7 @@ export default function AppSeller() {
       )}
 
       {/* Planning de la semaine */}
-      <WeekView days={days} assign={assign} />
+      <WeekView days={days} assign={assign} todayIso={todayIso} />
 
       {/* CONGÉS APPROUVÉS */}
       <div className="card">
@@ -674,7 +726,7 @@ export default function AppSeller() {
   );
 
   /* --- composant interne pour la semaine (lecture seule) --- */
-  function WeekView({ days, assign }) {
+  function WeekView({ days, assign, todayIso }) {
     return (
       <div className="card">
         <div className="hdr mb-4">Planning de la semaine</div>
@@ -688,8 +740,13 @@ export default function AppSeller() {
           {days.map((d) => {
             const iso = fmtISODate(d);
             const sunday = isSunday(d);
+            const isToday = iso === todayIso; // ✅ contour pour tout le jour courant
             return (
-              <div key={iso} className="border rounded-2xl p-3 space-y-3">
+              <div
+                key={iso}
+                className="border rounded-2xl p-3 space-y-3"
+                style={isToday ? { borderColor: "#1976d2", boxShadow: "0 0 0 3px rgba(25,118,210,0.15)" } : {}}
+              >
                 <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
                 <div className="font-semibold">{iso}</div>
                 {["MORNING", "MIDDAY", ...(sunday ? ["SUNDAY_EXTRA"] : []), "EVENING"].map((code) => {
