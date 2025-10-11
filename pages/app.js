@@ -1,4 +1,4 @@
-﻿/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable react/no-unescaped-entities */
 
 import { notifyAdminsNewAbsence } from '../lib/pushNotify';
 
@@ -9,10 +9,10 @@ import { useAuth } from "../lib/useAuth";
 import WeekNav from "@/components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
 
-/* LibellÃ©s + crÃ©neau dimanche (doit exister dans shift_types) */
+/* Libellés + créneau dimanche (doit exister dans shift_types) */
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
-/* Couleurs (identiques Ã  lâ€™admin) */
+/* Couleurs (identiques à l’admin) */
 const SELLER_COLORS = { Antonia: "#e57373", Olivia: "#64b5f6", Colleen: "#81c784", Ibtissam: "#ba68c8" };
 const colorForName = (name) => SELLER_COLORS[name] || "#9e9e9e";
 
@@ -29,7 +29,7 @@ function labelForShift(code) {
     case "MIDDAY": return "Midi (7h-13h)";
     case "SUNDAY_EXTRA": return "Dimanche 9h-13h30";
     case "EVENING": return "Soir (13h30-20h30)";
-    default: return code || "â€”";
+    default: return code || "—";
   }
 }
 
@@ -37,7 +37,7 @@ export default function AppSeller() {
   const { session, profile, loading } = useAuth();
   const r = useRouter();
 
-  // Semaine affichÃ©e
+  // Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
   const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)), [monday]);
 
@@ -53,39 +53,39 @@ export default function AppSeller() {
   const [absDate, setAbsDate] = useState(fmtISODate(new Date()));
   const [msgAbs, setMsgAbs] = useState("");
 
-  // CongÃ© (form pÃ©riode)
+  // Congé (form période)
   const [leaveStart, setLeaveStart] = useState(fmtISODate(new Date()));
   const [leaveEnd, setLeaveEnd] = useState(fmtISODate(addDays(new Date(), 1)));
   const [leaveReason, setLeaveReason] = useState("");
   const [msgLeave, setMsgLeave] = useState("");
 
-  // CongÃ©s approuvÃ©s (tout le monde voit) â€” end_date >= today
+  // Congés approuvés (tout le monde voit) — end_date >= today
   const [approvedLeaves, setApprovedLeaves] = useState([]);
 
-  // FenÃªtres de temps :
+  // Fenêtres de temps :
   const todayIso = fmtISODate(new Date());
   const rangeTo  = fmtISODate(addDays(new Date(), 60)); // prochains 60 jours
 
-  // Mes absences passÃ©es (approuvÃ©es) â€” mois courant
+  // Mes absences passées (approuvées) — mois courant
   const now = new Date();
   const myMonthFromPast = fmtISODate(firstDayOfMonth(now));
   const myMonthToPast   = fmtISODate(lastDayOfMonth(now));
   const [myMonthAbs, setMyMonthAbs] = useState([]);
 
-  // Mes absences Ã  venir (fenÃªtre glissante, pas seulement le mois)
-  // [{ date, ids: [...], status: 'pending' | 'approved' }]
+  // Mes absences à venir (fenêtre glissante, pas seulement le mois)
+  // [{ date, ids: [...], status: 'pending' | 'approved', locked: boolean }]
   const [myMonthUpcomingAbs, setMyMonthUpcomingAbs] = useState([]);
 
-  // Remplacements acceptÃ©s pour MES absences (par absence_id)
+  // Remplacements acceptés pour MES absences (par absence_id)
   // { [absence_id]: { volunteer_id, volunteer_name, shift: accepted_shift_code } }
   const [acceptedByAbsence, setAcceptedByAbsence] = useState({});
 
-  // Mes remplacements Ã  venir (je suis volontaire acceptÃ©)
+  // Mes remplacements à venir (je suis la volontaire acceptée)
   // [{ absence_id, date, absent_id, accepted_shift_code }]
   const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
   const [names, setNames] = useState({}); // user_id -> full_name
 
-  /* SÃ©curitÃ© / redirections */
+  /* Sécurité / redirections */
   useEffect(() => {
     if (loading) return;
     if (!session) r.replace("/login");
@@ -105,7 +105,7 @@ export default function AppSeller() {
       if (error) { console.error("view_week_assignments error:", error); setAssign({}); return; }
       const next = {};
       (data || []).forEach((row) => {
-        next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: row.full_name || "â€”" };
+        next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: row.full_name || "—" };
       });
       setAssign(next);
     };
@@ -126,11 +126,11 @@ export default function AppSeller() {
 
     if (error) {
       console.error(error);
-      setMsgAbs("Ã‰chec d'envoi de la demande.");
+      setMsgAbs("Échec d'envoi de la demande.");
       return;
     }
 
-    // ðŸ”” push aux admins
+    // 🔔 push aux admins
     const { data: { user } } = await supabase.auth.getUser();
     const sellerName =
       user?.user_metadata?.full_name ||
@@ -139,30 +139,31 @@ export default function AppSeller() {
 
     await notifyAdminsNewAbsence({ sellerName, startDate: absDate, endDate: absDate });
 
-    setMsgAbs("Demande d'absence envoyÃ©e. En attente de validation.");
+    setMsgAbs("Demande d'absence envoyée. En attente de validation.");
     setReasonAbs("");
   };
 
-  /* ----------------- CongÃ© (form) ----------------- */
+  /* ----------------- Congé (form) ----------------- */
   const submitLeave = async () => {
     setMsgLeave("");
-    if (!leaveStart || !leaveEnd) { setMsgLeave("Merci de choisir une pÃ©riode complÃ¨te."); return; }
-    if (leaveEnd < leaveStart)    { setMsgLeave("La date de retour doit Ãªtre aprÃ¨s la date de dÃ©part."); return; }
+    if (!leaveStart || !leaveEnd) { setMsgLeave("Merci de choisir une période complète."); return; }
+    if (leaveEnd < leaveStart)    { setMsgLeave("La date de retour doit être après la date de départ."); return; }
     const { error } = await supabase.from("leaves").insert({
       seller_id: session.user.id, start_date: leaveStart, end_date: leaveEnd, reason: leaveReason || null, status: "pending",
     });
-    if (error) { console.error(error); setMsgLeave("Ã‰chec de lâ€™envoi du congÃ©."); return; }
-    setMsgLeave("Demande de congÃ© envoyÃ©e. En attente de validation."); setLeaveReason("");
+    if (error) { console.error(error); setMsgLeave("Échec de l’envoi du congé."); return; }
+    setMsgLeave("Demande de congé envoyée. En attente de validation."); setLeaveReason("");
   };
 
-  /* ----------------- â€œRemplacer ?â€ (pending/approved) ----------------- */
+  /* ----------------- “Remplacer ?” (pending/approved) ----------------- */
   const shouldPrompt = async (absence) => {
     const me = session?.user?.id;
     if (!me || !absence) return false;
     const tIso = fmtISODate(new Date());
-    if (absence.seller_id === me) return false;  // ne pas prÃ©venir lâ€™absente
+    if (absence.seller_id === me) return false;  // ne pas prévenir l’absente
     if (absence.date < tIso) return false;       // seulement futur
     if (!["pending", "approved"].includes(absence.status)) return false;
+    if (absence.admin_forced) return false;      // 🚫 pas de prompt si absence posée par l’admin
     const { data: mine } = await supabase
       .from("replacement_interest").select("id")
       .eq("absence_id", absence.id).eq("volunteer_id", me).limit(1).maybeSingle();
@@ -174,31 +175,34 @@ export default function AppSeller() {
     setReplAsk({ absence_id: absence.id, date: absence.date, absent_name: prof?.full_name || "Une vendeuse" });
   };
 
-  /* ----------------- Temps rÃ©el : INSERT/UPDATE absences (pending/approved) ----------------- */
+  /* ----------------- Temps réel : INSERT/UPDATE absences (pending/approved) ----------------- */
   useEffect(() => {
     if (!session?.user?.id) return;
     const ch = supabase
       .channel("absences_rt_seller_pending_approved")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "absences" }, async (payload) => {
-        const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
+        const abs = payload.new;
+        if (await shouldPrompt(abs)) openPrompt(abs);
         await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl();
       })
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "absences" }, async (payload) => {
-        const abs = payload.new; if (await shouldPrompt(abs)) openPrompt(abs);
+        const abs = payload.new;
+        if (await shouldPrompt(abs)) openPrompt(abs);
         await loadMyMonthAbs(); await loadMyMonthUpcomingAbs(); await reloadAccepted(); await loadMyUpcomingRepl();
       })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [session?.user?.id]);
 
-  /* ----------------- PRÃ‰CHARGEMENT : proposer un remplacement Ã  lâ€™ouverture ----------------- */
+  /* ----------------- PRÉCHARGEMENT : proposer un remplacement à l’ouverture ----------------- */
   useEffect(() => {
     if (!session?.user?.id) return;
     const preload = async () => {
       const tIso = fmtISODate(new Date());
       const { data: abs, error } = await supabase
-        .from("absences").select("id, date, seller_id, status")
+        .from("absences").select("id, date, seller_id, status, admin_forced")
         .in("status", ["pending", "approved"]).gte("date", tIso)
+        .eq("admin_forced", false)  // 🚫 exclure absences admin
         .order("date", { ascending: true });
       if (error || !abs || abs.length === 0) return;
       const { data: mine } = await supabase.from("replacement_interest").select("absence_id").eq("volunteer_id", session.user.id);
@@ -216,24 +220,24 @@ export default function AppSeller() {
     const { error } = await supabase.from("replacement_interest").insert({
       absence_id: replAsk.absence_id, volunteer_id: session.user.id, status: "pending",
     });
-    if (error) { console.error(error); alert("Impossible dâ€™enregistrer votre volontariat."); return; }
+    if (error) { console.error(error); alert("Impossible d’enregistrer votre volontariat."); return; }
     setReplAsk(null);
-    alert("Merci ! Votre proposition de remplacement a Ã©tÃ© envoyÃ©e Ã  lâ€™admin.");
+    alert("Merci ! Votre proposition de remplacement a été envoyée à l’admin.");
   };
   const volunteerNo = () => setReplAsk(null);
 
-  /* ----------------- mÃ©moriser les â€œvalidÃ©â€ dÃ©jÃ  vus (localStorage) ----------------- */
+  /* ----------------- mémoriser les “validé” déjà vus (localStorage) ----------------- */
   const seenKey = (absenceId) => `ri_seen_${absenceId}`;
   const isSeen = (absenceId) => typeof window !== "undefined" && localStorage.getItem(seenKey(absenceId)) === "1";
 
-  /* ----------------- NOTIF â€œVALIDÃ‰â€ pour la volontaire (temps rÃ©el) ----------------- */
+  /* ----------------- NOTIF “Validé” — volontaire ----------------- */
   useEffect(() => {
     if (!session?.user?.id) return;
     const ch = supabase
       .channel("replacement_rt_seller_approved")
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "replacement_interest" }, async (payload) => {
         const oldS = payload.old?.status, newS = payload.new?.status;
-        // ðŸ‘‰ Si JE suis la volontaire : banniÃ¨re "validÃ©"
+        // 👉 Si JE suis la volontaire : bannière "validé"
         if (payload.new?.volunteer_id === session.user.id && oldS !== "accepted" && newS === "accepted" && !isSeen(payload.new.absence_id)) {
           const { data: abs } = await supabase.from("absences").select("date, seller_id").eq("id", payload.new.absence_id).single();
           const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", abs?.seller_id).single();
@@ -245,7 +249,7 @@ export default function AppSeller() {
     return () => { supabase.removeChannel(ch); };
   }, [session?.user?.id]);
 
-  // PrÃ©chargement : notif â€œvalidÃ©â€ pas encore vue
+  // Préchargement : notif “validé” pas encore vue
   useEffect(() => {
     if (!session?.user?.id) return;
     const preloadAccepted = async () => {
@@ -260,7 +264,7 @@ export default function AppSeller() {
     preloadAccepted();
   }, [session?.user?.id]);
 
-  /* ----------------- CongÃ©s approuvÃ©s visibles Ã  toutes (end_date >= today) ----------------- */
+  /* ----------------- Congés approuvés visibles à toutes (end_date >= today) ----------------- */
   const loadApprovedLeaves = async () => {
     const tIso = fmtISODate(new Date());
     const { data } = await supabase.from("leaves")
@@ -273,7 +277,7 @@ export default function AppSeller() {
       const { data: profs } = await supabase.from("profiles").select("user_id, full_name").in("user_id", ids);
       (profs || []).forEach((p) => { namesMap[p.user_id] = p.full_name; });
     }
-    setApprovedLeaves(data.map((l) => ({ ...l, seller_name: namesMap[l.seller_id] || "â€”" })));
+    setApprovedLeaves(data.map((l) => ({ ...l, seller_name: namesMap[l.seller_id] || "—" })));
   };
   useEffect(() => { loadApprovedLeaves(); }, []);
   useEffect(() => {
@@ -283,7 +287,7 @@ export default function AppSeller() {
     return () => { supabase.removeChannel(chLeaves); };
   }, []);
 
-  /* ----------------- Mes absences approuvÃ©es â€” mois courant (passÃ©es uniquement) ----------------- */
+  /* ----------------- Mes absences approuvées — mois courant (passées uniquement) ----------------- */
   const loadMyMonthAbs = async () => {
     if (!session?.user?.id) return;
     const tIso = fmtISODate(new Date());
@@ -294,28 +298,30 @@ export default function AppSeller() {
       .eq("status", "approved")
       .gte("date", myMonthFromPast)
       .lte("date", myMonthToPast)
-      .lt("date", tIso); // passÃ©es uniquement
+      .lt("date", tIso); // passées uniquement
     const arr = Array.from(new Set((data || []).map((r) => r.date))).sort((a, b) => a.localeCompare(b));
     setMyMonthAbs(arr);
   };
 
-  /* ----------------- Mes absences Ã  venir â€” fenÃªtre glissante (pending/approved) ----------------- */
+  /* ----------------- Mes absences à venir — fenêtre glissante (pending/approved) ----------------- */
   const loadMyMonthUpcomingAbs = async () => {
     if (!session?.user?.id) return;
     const { data } = await supabase
       .from("absences")
-      .select("id, date, status")
+      .select("id, date, status, admin_forced")   // ⬅️ inclure le flag
       .eq("seller_id", session.user.id)
       .in("status", ["approved", "pending"])
       .gte("date", todayIso)
       .lte("date", rangeTo)
       .order("date", { ascending: true });
+
     const byDate = {};
     (data || []).forEach((r) => {
-      if (!byDate[r.date]) byDate[r.date] = { ids: [], approved: false, pending: false };
+      if (!byDate[r.date]) byDate[r.date] = { ids: [], approved: false, pending: false, locked: false };
       byDate[r.date].ids.push(r.id);
       if (r.status === 'approved') byDate[r.date].approved = true;
       if (r.status === 'pending')  byDate[r.date].pending  = true;
+      if (r.admin_forced)          byDate[r.date].locked   = true;  // 🚫 au moins une absence de cette date posée par l’admin
     });
     const arr = Object.keys(byDate)
       .sort((a, b) => a.localeCompare(b))
@@ -323,11 +329,12 @@ export default function AppSeller() {
         date,
         ids: byDate[date].ids,
         status: byDate[date].approved ? 'approved' : 'pending',
+        locked: byDate[date].locked,
       }));
     setMyMonthUpcomingAbs(arr);
   };
 
-  /* ----------------- Remplacements ACCEPTÃ‰S pour MES absences ----------------- */
+  /* ----------------- Remplacements ACCEPTÉS pour MES absences ----------------- */
   const reloadAccepted = async () => {
     if (!session?.user?.id) return;
     const tIso = fmtISODate(new Date());
@@ -353,14 +360,14 @@ export default function AppSeller() {
     (rows || []).forEach(r => {
       map[r.absence_id] = {
         volunteer_id: r.volunteer_id,
-        volunteer_name: vnames[r.volunteer_id] || 'â€”',
+        volunteer_name: vnames[r.volunteer_id] || '—',
         shift: r.accepted_shift_code || null,
       };
     });
     setAcceptedByAbsence(map);
   };
 
-  /* ----------------- Mes remplacements Ã  venir (je suis la volontaire acceptÃ©e) ----------------- */
+  /* ----------------- Mes remplacements à venir (je suis la volontaire acceptée) ----------------- */
   const loadMyUpcomingRepl = useCallback(async () => {
     if (!session?.user?.id) return;
     const tIso = fmtISODate(new Date());
@@ -405,21 +412,34 @@ export default function AppSeller() {
 
   /* ----------------- ANNULER une absence (direct, sans admin) ----------------- */
   const deleteMyAbsencesForDate = async (date) => {
-  if (!window.confirm(`Annuler votre absence du ${frDate(date)} ?`)) return;
-  const { data: { session: s } } = await supabase.auth.getSession();
-  const resp = await fetch('/api/absences/delete-by-date', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s?.access_token||''}` },
-    body: JSON.stringify({ date })
-  });
-  const json = await resp.json().catch(()=>({}));
-  if (!resp.ok || !json.ok) { alert(`Ã‰chec de lâ€™annulation: ${json.error || resp.statusText}`); return; }
-  await Promise.all([loadMyMonthUpcomingAbs?.(), reloadAccepted?.(), loadMyUpcomingRepl?.()]);
-  alert('Absence annulÃ©e.');
-};
+    if (!window.confirm(`Annuler votre absence du ${frDate(date)} ?`)) return;
+
+    // 🔒 Garde-fou : si l’une des entrées de cette date est admin_forced, on bloque
+    const { data: rows } = await supabase
+      .from("absences")
+      .select("id, admin_forced")
+      .eq("seller_id", session?.user?.id)
+      .eq("date", date);
+
+    if ((rows || []).some(r => r.admin_forced)) {
+      alert("Cette absence a été enregistrée par l’admin et ne peut pas être annulée.");
+      return;
+    }
+
+    const { data: { session: s } } = await supabase.auth.getSession();
+    const resp = await fetch('/api/absences/delete-by-date', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s?.access_token||''}` },
+      body: JSON.stringify({ date })
+    });
+    const json = await resp.json().catch(()=>({}));
+    if (!resp.ok || !json.ok) { alert(`Échec de l’annulation: ${json.error || resp.statusText}`); return; }
+    await Promise.all([loadMyMonthUpcomingAbs?.(), reloadAccepted?.(), loadMyUpcomingRepl?.()]);
+    alert('Absence annulée.');
+  };
 
 
-  // RÃ©veil / retour au premier plan (inclut iOS PWA)
+  // Réveil / retour au premier plan (inclut iOS PWA)
   useEffect(() => {
     const onWake = () => {
       if (document.visibilityState === 'visible') {
@@ -439,7 +459,7 @@ export default function AppSeller() {
     };
   }, []);
 
-  // Push SW â†’ rafraÃ®chir sur message
+  // Push SW → rafraîchir sur message
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const handler = (e) => {
@@ -457,11 +477,11 @@ export default function AppSeller() {
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-        <div className="hdr">Bonjour {profile?.full_name || "â€”"}</div>
-        <button className="btn" onClick={() => supabase.auth.signOut()}>Se dÃ©connecter</button>
+        <div className="hdr">Bonjour {profile?.full_name || "—"}</div>
+        <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
       </div>
 
-      {/* BanniÃ¨re â€œRemplacer ?â€ */}
+      {/* Bannière “Remplacer ?” */}
       {replAsk && (
         <div className="border rounded-2xl p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"
              style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}>
@@ -476,13 +496,13 @@ export default function AppSeller() {
         </div>
       )}
 
-      {/* BanniÃ¨re â€œValidÃ©â€ â€” volontaire */}
+      {/* Bannière “Validé” — volontaire */}
       {approvalMsg && (
         <div className="border rounded-2xl p-3 flex items-start sm:items-center justify-between gap-2"
              style={{ backgroundColor: "#ecfccb", borderColor: "#a3e635" }}>
           <div className="text-sm">
-            âœ… Votre remplacement pour <span className="font-medium">{approvalMsg.absent_name}</span> le{" "}
-            <span className="font-medium">{approvalMsg.date}</span> a Ã©tÃ© <span className="font-medium">validÃ©</span>.
+            ✅ Votre remplacement pour <span className="font-medium">{approvalMsg.absent_name}</span> le{" "}
+            <span className="font-medium">{approvalMsg.date}</span> a été <span className="font-medium">validé</span>.
           </div>
           <button className="btn"
                   onClick={async () => {
@@ -503,16 +523,16 @@ export default function AppSeller() {
         </div>
       )}
 
-      {/* ðŸŸ¨ BanniÃ¨re persistante : mes remplacements Ã  venir (reste tant que la date n'est pas passÃ©e) */}
+      {/* 🟨 Bannière persistante : mes remplacements à venir (reste tant que la date n'est pas passée) */}
       {myUpcomingRepl.length > 0 && (
         <div className="border rounded-2xl p-3"
              style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}>
-          <div className="font-medium mb-2">Rappels â€” remplacements Ã  venir</div>
+          <div className="font-medium mb-2">Rappels — remplacements à venir</div>
           <ul className="list-disc pl-6 space-y-1 text-sm">
             {myUpcomingRepl.map((r) => (
               <li key={r.absence_id}>
-                Tu remplaces <b>{names[r.absent_id] || "â€”"}</b> le <b>{r.date}</b>
-                {r.accepted_shift_code ? <> â€” <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(r.accepted_shift_code)}</span></> : null}
+                Tu remplaces <b>{names[r.absent_id] || "—"}</b> le <b>{r.date}</b>
+                {r.accepted_shift_code ? <> — <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(r.accepted_shift_code)}</span></> : null}
               </li>
             ))}
           </ul>
@@ -522,20 +542,20 @@ export default function AppSeller() {
       {/* Planning de la semaine (lecture seule, toutes vendeuses) */}
       <WeekView days={days} assign={assign} />
 
-      {/* CONGÃ‰S APPROUVÃ‰S â€” visibles Ã  toutes tant que non passÃ©s */}
+      {/* CONGÉS APPROUVÉS — visibles à toutes tant que non passés */}
       <div className="card">
-        <div className="hdr mb-2">CongÃ©s approuvÃ©s â€” en cours ou Ã  venir</div>
+        <div className="hdr mb-2">Congés approuvés — en cours ou à venir</div>
         {approvedLeaves.length === 0 ? (
-          <div className="text-sm text-gray-600">Aucun congÃ© approuvÃ© Ã  venir.</div>
+          <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
         ) : (
           <ul className="space-y-2">
             {approvedLeaves.map((l) => {
               const tIso = fmtISODate(new Date());
-              const tag = betweenIso(tIso, l.start_date, l.end_date) ? "En cours" : "Ã€ venir";
+              const tag = betweenIso(tIso, l.start_date, l.end_date) ? "En cours" : "À venir";
               const tagBg = tag === "En cours" ? "#16a34a" : "#2563eb";
               return (
                 <li key={l.id} className="flex items-center justify-between border rounded-2xl p-3">
-                  <div className="text-sm"><span className="font-medium">{l.seller_name}</span> â€” du {l.start_date} au {l.end_date}</div>
+                  <div className="text-sm"><span className="font-medium">{l.seller_name}</span> — du {l.start_date} au {l.end_date}</div>
                   <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>{tag}</span>
                 </li>
               );
@@ -544,12 +564,12 @@ export default function AppSeller() {
         )}
       </div>
 
-      {/* VOS ABSENCES (passÃ©es) */}
+      {/* VOS ABSENCES (passées) */}
       <div className="card">
         <div className="hdr mb-2">Vos absences ce mois</div>
         {myMonthAbs.length === 0 ? (
           <div className="text-sm text-gray-600">
-            Vous n&#39;avez aucune absence approuvÃ©e passÃ©e (ou aujourd&#39;hui) ce mois-ci.
+            Vous n&#39;avez aucune absence approuvée passée (ou aujourd&#39;hui) ce mois-ci.
           </div>
         ) : (
           <div className="text-sm">
@@ -562,15 +582,15 @@ export default function AppSeller() {
         )}
       </div>
 
-      {/* VOS ABSENCES Ã€ VENIR (texte + badge + bouton dâ€™annulation direct) */}
+      {/* VOS ABSENCES À VENIR (texte + badge + bouton d’annulation direct) */}
       <div className="card">
-        <div className="hdr mb-2">Vos absences Ã  venir</div>
+        <div className="hdr mb-2">Vos absences à venir</div>
         {myMonthUpcomingAbs.length === 0 ? (
-          <div className="text-sm text-gray-600">Aucune absence Ã  venir.</div>
+          <div className="text-sm text-gray-600">Aucune absence à venir.</div>
         ) : (
           <ul className="space-y-2">
-            {myMonthUpcomingAbs.map(({ date, ids, status }) => {
-              // RemplaÃ§ante acceptÃ©e ?
+            {myMonthUpcomingAbs.map(({ date, ids, status, locked }) => {
+              // Remplaçante acceptée ?
               let accepted;
               let acceptedShift = null;
               for (const id of ids) {
@@ -586,31 +606,47 @@ export default function AppSeller() {
                   <div className="text-sm">
                     <b>{frDate(date)}</b>
                     {accepted ? (
-                      <> â€” <b>{accepted.volunteer_name}</b> remplace <b>{profile?.full_name || "vous"}</b>
+                      <> — <b>{accepted.volunteer_name}</b> remplace <b>{profile?.full_name || "vous"}</b>
                         {acceptedShift ? <> (<span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(acceptedShift)}</span>)</> : null}
                       </>
                     ) : null}
                     <div className="mt-1 flex flex-wrap gap-2">
                       {status === 'approved' ? (
                         <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: '#16a34a' }}>
-                          Absence approuvÃ©e par lâ€™administrateur
+                          Absence approuvée par l’administrateur
                         </span>
                       ) : (
                         <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#f3f4f6', color: '#374151' }}>
-                          En attente dâ€™approbation
+                          En attente d’approbation
+                        </span>
+                      )}
+                      {locked && (
+                        <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#f3f4f6', color: '#374151' }}>
+                          Définie par l’admin
                         </span>
                       )}
                     </div>
                   </div>
 
-                  <button
-                    className="btn"
-                    onClick={() => deleteMyAbsencesForDate(date)}
-                    title={`Annuler l'absence du ${frDate(date)}`}
-                    style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
-                  >
-                    Annuler l'absence
-                  </button>
+                  {locked ? (
+                    <button
+                      className="btn"
+                      disabled
+                      title="Absence verrouillée par l’admin"
+                      style={{ backgroundColor: "#9ca3af", color: "#fff", borderColor: "transparent" }}
+                    >
+                      Annuler l'absence
+                    </button>
+                  ) : (
+                    <button
+                      className="btn"
+                      onClick={() => deleteMyAbsencesForDate(date)}
+                      title={`Annuler l'absence du ${frDate(date)}`}
+                      style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
+                    >
+                      Annuler l'absence
+                    </button>
+                  )}
                 </li>
               );
             })}
@@ -628,19 +664,19 @@ export default function AppSeller() {
           </div>
           <div className="md:col-span-2">
             <div className="text-sm mb-1">Motif (optionnel)</div>
-            <input type="text" className="input" placeholder="ex: RDV mÃ©dical" value={reasonAbs} onChange={(e) => setReasonAbs(e.target.value)} />
+            <input type="text" className="input" placeholder="ex: RDV médical" value={reasonAbs} onChange={(e) => setReasonAbs(e.target.value)} />
           </div>
           <div><button className="btn" onClick={submitAbs}>Envoyer la demande</button></div>
         </div>
         {msgAbs && <div className="text-sm mt-2">{msgAbs}</div>}
       </div>
 
-      {/* Demander un congÃ© (pÃ©riode) */}
+      {/* Demander un congé (période) */}
       <div className="card">
-        <div className="hdr mb-2">Demander un congÃ© (pÃ©riode)</div>
+        <div className="hdr mb-2">Demander un congé (période)</div>
         <div className="grid md:grid-cols-4 gap-3 items-end">
           <div>
-            <div className="text-sm mb-1">DÃ©part</div>
+            <div className="text-sm mb-1">Départ</div>
             <input type="date" className="input" value={leaveStart} onChange={(e) => setLeaveStart(e.target.value)} />
           </div>
           <div>
@@ -649,9 +685,9 @@ export default function AppSeller() {
           </div>
           <div className="md:col-span-2">
             <div className="text-sm mb-1">Motif (optionnel)</div>
-            <input type="text" className="input" placeholder="ex: congÃ©s annuels" value={leaveReason} onChange={(e) => setLeaveReason(e.target.value)} />
+            <input type="text" className="input" placeholder="ex: congés annuels" value={leaveReason} onChange={(e) => setLeaveReason(e.target.value)} />
           </div>
-          <div><button className="btn" onClick={submitLeave}>Envoyer le congÃ©</button></div>
+          <div><button className="btn" onClick={submitLeave}>Envoyer le congé</button></div>
         </div>
         {msgLeave && <div className="text-sm mt-2">{msgLeave}</div>}
       </div>
@@ -680,7 +716,7 @@ export default function AppSeller() {
                 {["MORNING", "MIDDAY", ...(sunday ? ["SUNDAY_EXTRA"] : []), "EVENING"].map((code) => {
                   const label = SHIFT_LABELS[code];
                   const rec = assign[`${iso}|${code}`];
-                  const name = rec?.full_name || "â€”";
+                  const name = rec?.full_name || "—";
                   const assigned = rec?.seller_id;
                   const bg = assigned ? colorForName(name) : "#f3f4f6";
                   const fg = assigned ? "#fff" : "#6b7280";
@@ -700,4 +736,3 @@ export default function AppSeller() {
     );
   }
 }
-
