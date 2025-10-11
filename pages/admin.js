@@ -1,4 +1,4 @@
-/* pages/admin.js - unified, fixed structure (2025-10-11)
+/* pages/admin.js - unified, fixed structure (2025-10-11 16:14)
    - Single default export (AdminPage)
    - All React hooks are inside the component (no hooks at top-level)
    - Adds missing BUILD_TAG constant
