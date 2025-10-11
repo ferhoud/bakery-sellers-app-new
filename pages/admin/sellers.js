@@ -27,26 +27,36 @@ export default function AdminSellers() {
   }, [session, profile, r]);
 
   // Charger vendeuses (depuis profiles)
-  const load = async () => {
-    setBusy(true);
-    setErrMsg("");
+  // tente RPC d’abord, puis fallback SELECT sur profiles
+const load = async () => {
+  setBusy(true);
+  setErrMsg("");
+  try {
+    let data = [];
     try {
-      const { data, error } = await supabase
+      const { data: rpc, error: errRpc } = await supabase.rpc("list_sellers");
+      if (!errRpc && Array.isArray(rpc)) data = rpc;
+    } catch { /* ignore */ }
+
+    if (!data || data.length === 0) {
+      const { data: profs, error } = await supabase
         .from("profiles")
         .select("user_id, full_name, role, active, email")
         .eq("role", "seller")
         .order("full_name", { ascending: true });
-
       if (error) throw error;
-      setRows((data || []).map(r => ({ ...r, email: r.email || "" })));
-    } catch (e) {
-      console.error("profiles SELECT failed:", e);
-      setErrMsg(e?.message || "Lecture impossible (RLS ?)");
-      setRows([]);
-    } finally {
-      setBusy(false);
+      data = profs || [];
     }
-  };
+    setRows((data || []).map(r => ({ ...r, email: r.email || "" })));
+  } catch (e) {
+    console.error("load sellers failed:", e);
+    setErrMsg(e?.message || "Lecture impossible (RLS ?)");
+    setRows([]);
+  } finally {
+    setBusy(false);
+  }
+};
+
 
   // Init/refresh quand la session existe
   useEffect(() => { if (session) load(); }, [session]);
