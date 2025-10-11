@@ -1,33 +1,31 @@
-﻿// pages/api/admin/users/delete.js
-import { getSupabaseAdmin } from '@/lib/server/supabaseAdmin';
+// pages/api/admin/users/delete.js
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
+  const { user_id } = req.body || {};
+  if (!user_id) return res.status(400).json({ error: "Missing user_id" });
+
   try {
-    const { user_id, hard } = req.body || {};
-    if (!user_id) return res.status(400).json({ error: 'user_id required' });
+    // 1) purger données applicatives (ordre pour éviter FK)
+    await supabaseAdmin.from("replacement_interest").delete().eq("volunteer_id", user_id);
+    await supabaseAdmin.from("replacement_interest").delete().eq("absence_id",
+      supabaseAdmin.from("absences").select("id").eq("seller_id", user_id)
+    ); // si FK, tu peux avoir un trigger ON DELETE CASCADE; sinon garde la ligne précédente uniquement.
 
-    const supa = getSupabaseAdmin();
+    await supabaseAdmin.from("shifts").delete().eq("seller_id", user_id);
+    await supabaseAdmin.from("absences").delete().eq("seller_id", user_id);
+    await supabaseAdmin.from("leaves").delete().eq("seller_id", user_id);
+    await supabaseAdmin.from("sellers").delete().eq("user_id", user_id);
+    await supabaseAdmin.from("profiles").delete().eq("user_id", user_id);
 
-    if (hard) {
-      // Hard delete Auth user
-      const { error: dErr } = await supa.auth.admin.deleteUser(user_id);
-      if (dErr) return res.status(500).json({ error: 'auth delete failed: ' + dErr.message });
+    // 2) supprimer le compte auth
+    const { error: eA } = await supabaseAdmin.auth.admin.deleteUser(user_id);
+    if (eA) throw eA;
 
-      // Conserver le profil pour l’historique ? En général on le garde.
-      // Si tu préfères le marquer inactif :
-      await supa.from('profiles').update({ active: false }).eq('user_id', user_id);
-    } else {
-      // Soft delete (suspension + inactive)
-      const { error: banErr } = await supa.auth.admin.updateUserById(user_id, { banned_until: '9999-12-31T00:00:00Z' });
-      if (banErr) return res.status(500).json({ error: 'auth ban failed: ' + banErr.message });
-      await supa.from('profiles').update({ active: false }).eq('user_id', user_id);
-    }
-
-    return res.status(200).json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: 'Server error' });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: err.message || "delete failed" });
   }
 }
-
