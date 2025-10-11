@@ -232,10 +232,14 @@ const load = async () => {
 
               {/* Col droit (actions) */}
               <div className="flex items-center gap-2 flex-wrap">
-                <span className={`text-xs px-2 py-1 rounded-full ${r.active ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
-                  {r.active ? "Active" : "Inactive"}
-                </span>
-
+                {(() => {
+   const isActive = r.active !== false; // true ou NULL => Active
+   return (
+     <span className={`text-xs px-2 py-1 rounded-full ${isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+       {isActive ? "Active" : "Inactive"}
+     </span>
+   );
+ })()}
                 {editId === r.user_id ? (
                   <>
                     <button className="btn" disabled={busy} onClick={()=>saveEdit(r.user_id)}>Enregistrer</button>
