@@ -1,9 +1,4 @@
-// pages/_app.js — baseline sûr
-
-import '../styles/globals.css'; // ajuste le chemin si besoin
-
-function MyApp({ Component, pageProps }) {
+// pages/_app.js — version ultra-minimale et sûre
+export default function MyApp({ Component, pageProps }) {
   return <Component {...pageProps} />;
 }
-
-export default MyApp;
