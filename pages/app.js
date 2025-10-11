@@ -1,7 +1,6 @@
 /* eslint-disable react/no-unescaped-entities */
 
 import { notifyAdminsNewAbsence } from '../lib/pushNotify';
-import LeaveRequestForm from "@/components/LeaveRequestForm";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
@@ -9,6 +8,8 @@ import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/useAuth";
 import WeekNav from "@/components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
+import LeaveRequestForm from "@/components/LeaveRequestForm";
+
 
 /* Libellés + créneau dimanche (doit exister dans shift_types) */
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
