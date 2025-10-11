@@ -9,7 +9,6 @@ export default function MyApp({ Component, pageProps }) {
 
   useEffect(() => {
     if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
-
     navigator.serviceWorker
       .register("/sw.js")
       .then((reg) => {
@@ -25,7 +24,6 @@ export default function MyApp({ Component, pageProps }) {
         });
       })
       .catch(() => {});
-
     const onCtrl = () => {
       if (!reloadedRef.current) {
         reloadedRef.current = true;
