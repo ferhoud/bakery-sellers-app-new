@@ -1,6 +1,7 @@
 /* eslint-disable react/no-unescaped-entities */
 
 import { notifyAdminsNewAbsence } from '../lib/pushNotify';
+import LeaveRequestForm from "@/components/LeaveRequestForm";
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
