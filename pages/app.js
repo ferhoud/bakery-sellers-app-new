@@ -1,4 +1,4 @@
-/* eslint-disable react/no-unescaped-entities */
+﻿/* eslint-disable react/no-unescaped-entities */
 
 import { notifyAdminsNewAbsence } from '../lib/pushNotify';
 
@@ -69,20 +69,21 @@ export default function AppSeller() {
     session?.user?.user_metadata?.full_name ||
     (session?.user?.email ? session.user.email.split("@")[0] : "—");
 
-  // 🔒 Redirection selon auth/role — UN SEUL useEffect
-  useEffect(() => {
-    if (loading) return;
-    if (!session) { r.replace("/login"); return; }
+  // Sécurité / redirections
+ // 🔒 Redirection selon auth/role — UN SEUL useEffect
+useEffect(() => {
+  if (loading) return;
+  if (!session) { r.replace("/login"); return; }
 
-    const role =
-      profile?.role            // si profil chargé
-      ?? profileFallback?.role // sinon fallback local
-      ?? "seller";             // défaut
+  const role =
+    profile?.role
+    ?? profileFallback?.role
+    ?? "seller";
 
-    if (role === "admin") {
-      r.replace("/admin");
-    }
-  }, [session, profile, profileFallback, loading, r]);
+  if (role === "admin") {
+    r.replace("/admin");
+  }
+}, [session, profile, profileFallback, loading, r]);
 
 
   // Semaine affichée

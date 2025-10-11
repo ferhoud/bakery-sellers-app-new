@@ -681,6 +681,16 @@ export default function AdminPage() {
     return () => navigator.serviceWorker.removeEventListener('message', handler);
   }, [reloadAll]);
 
+/* ---------- GUARDE AUTH (APRÈS TOUS LES HOOKS) ---------- */
+if (loading || !session) {
+  return (
+    <>
+      <Head><title>Connexion…</title></Head>
+      <div className="p-4">Chargement…</div>
+    </>
+  );
+}
+
   /* ---------- RENDER ---------- */
   return (
     <>
@@ -1138,65 +1148,72 @@ function TotalsGrid({
   const [annualLeaveDays, setAnnualLeaveDays] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // Heures semaine - depuis la DB, **semaine en cours** et **uniquement les jours passés** (date < aujourd’hui)
+  // agrégateur simple côté client (fallback si RPC KO)
+  function aggregateFromRows(rows, sellersList) {
+    const dict = Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
+    (rows || []).forEach(r => {
+      const h = SHIFT_HOURS[r.shift_code] ?? 0;
+      if (r.seller_id) dict[r.seller_id] = (dict[r.seller_id] || 0) + h;
+    });
+    return dict;
+    }
+
+  // tente l'RPC ; sinon fallback en lisant shifts
+  async function fetchHoursRange(fromIso, toIso, sellersList) {
+    // 1) Essai RPC
+    try {
+      const { data, error } = await supabase.rpc("admin_hours_by_range", { p_from: fromIso, p_to: toIso });
+      if (!error && Array.isArray(data)) {
+        const dict = Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
+        data.forEach(r => { dict[r.seller_id] = Number(r.hours) || 0; });
+        return dict;
+      }
+      console.warn("RPC admin_hours_by_range KO -> fallback", error);
+    } catch (e) {
+      console.warn("RPC admin_hours_by_range threw -> fallback", e);
+    }
+
+    // 2) Fallback direct
+    try {
+      const { data: rows, error: e2 } = await supabase
+        .from("shifts")
+        .select("seller_id, date, shift_code")
+        .gte("date", fromIso)
+        .lte("date", toIso);
+      if (e2) { console.error("fallback shifts error:", e2); return Object.fromEntries((sellersList || []).map(s => [s.user_id, 0])); }
+      return aggregateFromRows(rows, sellersList);
+    } catch (e) {
+      console.error("fallback shifts threw:", e);
+      return Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
+    }
+  }
+
+  // Heures semaine — jusqu’à HIER (exclut aujourd’hui)
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       if (!sellers || sellers.length === 0) { setWeekTotals({}); return; }
-      try {
-        const weekStart = fmtISODate(startOfWeek(new Date()));
-        const todayIso = fmtISODate(new Date());
-        const { data } = await supabase
-          .from("shifts")
-          .select("date, shift_code, seller_id")
-          .gte("date", weekStart)
-          .lt("date", todayIso); // exclut aujourd’hui et futurs
-
-        const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
-        (data || []).forEach((r) => {
-          if (!r?.seller_id) return;
-          const hrs = SHIFT_HOURS[r.shift_code] || 0;
-          dict[r.seller_id] = (dict[r.seller_id] || 0) + hrs;
-        });
-        if (!cancelled) setWeekTotals(dict);
-      } catch {
-        if (!cancelled) setWeekTotals({});
-      }
+      const weekStartIso = fmtISODate(startOfWeek(new Date()));
+      const yesterdayIso = fmtISODate(addDays(new Date(), -1)); // hier
+      if (yesterdayIso < weekStartIso) { setWeekTotals({}); return; } // lundi -> rien à compter
+      const dict = await fetchHoursRange(weekStartIso, yesterdayIso, sellers);
+      if (!cancelled) setWeekTotals(dict);
     };
     run();
     return () => { cancelled = true; };
   }, [sellers, refreshKey]);
 
-  // Heures mois (dédupliqué + sans jours futurs si mois courant)
+  // Heures mois — jusqu’à HIER si mois courant, sinon jusqu’à fin du mois sélectionné
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
       if (!sellers || sellers.length === 0) { setMonthTotals({}); return; }
       setLoading(true);
       try {
-        const todayIso = fmtISODate(new Date());
-        const isCurrentMonth = todayIso >= monthFrom && todayIso <= monthTo;
-        const upper = isCurrentMonth ? todayIso : monthTo;
-
-        const mq = await supabase
-          .from("shifts")
-          .select("date, shift_code, seller_id")
-          .gte("date", monthFrom)
-          .lte("date", upper);
-
-        const rows = mq.data || [];
-        const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
-        const seen = new Set();
-
-        rows.forEach((r) => {
-          if (!r.seller_id) return;
-          const key = `${r.date}|${r.shift_code}|${r.seller_id}`;
-          if (seen.has(key)) return;
-          seen.add(key);
-          const hrs = SHIFT_HOURS[r.shift_code] || 0;
-          dict[r.seller_id] = (dict[r.seller_id] || 0) + hrs;
-        });
-
+        const yesterdayIso = fmtISODate(addDays(new Date(), -1));
+        const upper = (yesterdayIso < monthTo) ? yesterdayIso : monthTo;
+        if (upper < monthFrom) { setMonthTotals({}); return; }
+        const dict = await fetchHoursRange(monthFrom, upper, sellers);
         if (!cancelled) setMonthTotals(dict);
       } finally {
         if (!cancelled) setLoading(false);
@@ -1263,19 +1280,19 @@ function TotalsGrid({
       {loading && <div className="text-sm text-gray-500 mb-3">Calcul en cours…</div>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {sellers.map((s) => {
-          const week = weekTotals[s.user_id] || 0;
-          const month = monthTotals[s.user_id] || 0;
-          const absCount = absencesCount[s.user_id] || 0;
-          const leaveDays = annualLeaveDays[s.user_id] || 0;
+          const week = weekTotals[s.user_id] ?? 0;
+          const month = monthTotals[s.user_id] ?? 0;
+          const absCount = absencesCount[s.user_id] ?? 0;
+          const leaveDays = annualLeaveDays[s.user_id] ?? 0;
           return (
             <div key={s.user_id} className="border rounded-2xl p-3 space-y-2">
               <div className="flex items-center justify-between">
                 <Chip name={s.full_name} />
               </div>
               <div className="text-sm text-gray-600">Semaine (jusqu’à hier)</div>
-              <div className="text-2xl font-semibold">{week}</div>
+              <div className="text-2xl font-semibold">{Number(week).toFixed(1)} h</div>
               <div className="text-sm text-gray-600 mt-2">Mois ({monthLabel})</div>
-              <div className="text-2xl font-semibold">{month}</div>
+              <div className="text-2xl font-semibold">{Number(month).toFixed(1)} h</div>
               <div className="text-sm text-gray-600 mt-2">Absences (mois)</div>
               <div className="text-2xl font-semibold">{absCount}</div>
               <div className="text-sm text-gray-600 mt-2">Congés pris (année)</div>
