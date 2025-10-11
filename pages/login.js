@@ -3,7 +3,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
-import { isAdminEmail } from "@/lib/admin";
+import { isAdminEmail } from "@/lib/admin"; // assure-toi d'avoir lib/admin.js
 
 export default function LoginPage() {
   const r = useRouter();
@@ -16,7 +16,7 @@ export default function LoginPage() {
   const [lastResp, setLastResp] = useState(null);
   const [deciding, setDeciding] = useState(false);
 
-  // Si déjà connecté, décide la cible (profil.role ou fallback email admin)
+  // Si déjà connecté, décide la destination (profil.role ou fallback email admin)
   useEffect(() => {
     const decide = async () => {
       if (loading || !session?.user?.id) return;
@@ -24,17 +24,28 @@ export default function LoginPage() {
       try {
         let next = r.query.next ? String(r.query.next) : "/app";
 
-        // 1) profil.role si dispo
-        const { data: prof } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("user_id", session.user.id)
-          .maybeSingle();
+        // 1) Si l'email est dans la liste admin => admin direct
+        if (isAdminEmail(session.user.email)) {
+          r.replace("/admin");
+          return;
+        }
 
-        // 2) fallback: email dans liste admin
-        const emailIsAdmin = isAdminEmail(session.user.email);
+        // 2) Sinon, essaye de lire le profil (si RLS permet)
+        try {
+          const { data: prof } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("user_id", session.user.id)
+            .maybeSingle();
 
-        if (prof?.role === "admin" || emailIsAdmin) next = "/admin";
+          if (prof?.role === "admin") {
+            r.replace("/admin");
+            return;
+          }
+        } catch {
+          // ignore les erreurs RLS ici, on tombera sur /app
+        }
+
         r.replace(next);
       } finally {
         setDeciding(false);
@@ -47,23 +58,27 @@ export default function LoginPage() {
   const redirectByRoleOrEmail = async (user) => {
     let next = r.query.next ? String(r.query.next) : "/app";
 
-    // profil.role si possible
-    if (user?.id) {
-      const { data: prof } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      if (prof?.role === "admin") {
-        r.replace("/admin");
-        return;
-      }
-    }
-
-    // fallback: email dans liste admin
+    // Priorité: email "admin" connu
     if (isAdminEmail(user?.email)) {
       r.replace("/admin");
       return;
+    }
+
+    // Sinon, tente profil.role
+    if (user?.id) {
+      try {
+        const { data: prof } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (prof?.role === "admin") {
+          r.replace("/admin");
+          return;
+        }
+      } catch {
+        // ignore (RLS), on garde le fallback /app
+      }
     }
 
     r.replace(next);
@@ -88,6 +103,7 @@ export default function LoginPage() {
     }
   };
 
+  // Test OTP (lien magique)
   const onSendOtp = async () => {
     setError(null);
     setSubmitting(true);
@@ -108,6 +124,7 @@ export default function LoginPage() {
     }
   };
 
+  // Log de présence des variables d'env
   useEffect(() => {
     if (typeof window !== "undefined") {
       console.log("[env] NEXT_PUBLIC_SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL ? "ok" : "manquant");
