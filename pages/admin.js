@@ -63,23 +63,22 @@ export default function AdminPage() {
     if (loading) return;
     if (!session) { r.replace("/login"); return; }
 
-    // autoriser admin par email SANS exiger profile
+    // Autorise si email est dans la allowlist (farid@bm.local)
     if (isAdminEmail(session.user?.email)) return;
 
-    // sinon exiger profil.role === 'admin'
+    // Sinon exige un profil admin explicite
     if (profile?.role !== "admin") {
       r.replace("/app");
     }
   }, [session, profile, loading, r]);
 
   if (loading) return <div className="p-4">Chargement…</div>;
-  if (!session) return null; // redirigé
+  if (!session) return null;
 
-  // Ici, soit email admin, soit profil.role === 'admin'
   return (
     <div className="p-4">
-      <h1 className="hdr mb-4">Admin</h1>
-      {/* … ton contenu admin … */}
+      <h1 className="hdr mb-4">Espace Administrateur</h1>
+      {/* ... ton contenu admin ... */}
     </div>
   );
 }
