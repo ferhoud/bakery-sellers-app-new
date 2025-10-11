@@ -1,17 +1,12 @@
-﻿import "../styles/globals.css";
-import { AuthProvider } from "@/lib/useAuth";
+// pages/_app.js
+import { useEffect } from 'react';
+import '../styles/globals.css';
 
-// Mode bypass : pas d'écran "Chargement…", on rend toujours la page.
-// Les gardes d'accès restent dans /admin et /app.
-function Shell({ Component, pageProps }) {
+export default function MyApp({ Component, pageProps }) {
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  }, []);
   return <Component {...pageProps} />;
 }
-
-export default function MyApp(props) {
-  return (
-    <AuthProvider>
-      <Shell {...props} />
-    </AuthProvider>
-  );
-}
-
