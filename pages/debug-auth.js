@@ -1,5 +1,3 @@
-// pages/debug-auth.js — diagnostic interactif côté client
-// Touch: 2025-10-11
 /* eslint-disable react/no-unescaped-entities */
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
@@ -10,7 +8,6 @@ export default function DebugAuth() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [logs, setLogs] = useState([]);
-
   const log = (m, o) => setLogs((l) => [...l, `[${new Date().toLocaleTimeString()}] ${m} ${o ? JSON.stringify(o) : ""}`]);
 
   useEffect(() => {
@@ -48,33 +45,16 @@ export default function DebugAuth() {
   return (
     <div style={{ maxWidth: 900, margin: "20px auto", padding: 16, fontFamily: "system-ui, sans-serif" }}>
       <h1>Debug Auth</h1>
-
-      <section style={sec}>
-        <h3>Environnement</h3>
+      <section style={sec}><h3>Environnement</h3>
         <div>URL: <b>{envOk.url ? "ok" : "manquant"}</b></div>
         <div>ANON: <b>{envOk.anon ? "ok" : "manquant"}</b></div>
       </section>
-
-      <section style={sec}>
-        <h3>Session</h3>
-        <pre style={pre}>{JSON.stringify(session, null, 2)}</pre>
+      <section style={sec}><h3>Session</h3><pre style={pre}>{JSON.stringify(session, null, 2)}</pre>
         <button onClick={() => supabase.auth.signOut()}>Sign out</button>
       </section>
-
-      <section style={sec}>
-        <h3>User</h3>
-        <pre style={pre}>{JSON.stringify(user, null, 2)}</pre>
-      </section>
-
-      <section style={sec}>
-        <h3>Profile (table profiles)</h3>
-        <pre style={pre}>{JSON.stringify(profile, null, 2)}</pre>
-      </section>
-
-      <section style={sec}>
-        <h3>Logs</h3>
-        <pre style={pre}>{logs.join("\n")}</pre>
-      </section>
+      <section style={sec}><h3>User</h3><pre style={pre}>{JSON.stringify(user, null, 2)}</pre></section>
+      <section style={sec}><h3>Profile (table profiles)</h3><pre style={pre}>{JSON.stringify(profile, null, 2)}</pre></section>
+      <section style={sec}><h3>Logs</h3><pre style={pre}>{logs.join("\n")}</pre></section>
     </div>
   );
 }
