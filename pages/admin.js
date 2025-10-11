@@ -1287,4 +1287,8 @@ function TotalsGrid({
       </div>
     </div>
   );
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> 38dd7c4 (admin: unified structure v-admin-2025-10-11-unified)
