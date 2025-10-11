@@ -7,7 +7,7 @@ import { useAuth } from "@/lib/useAuth";
 import { isAdminEmail } from "@/lib/admin";
 
 export default function AdminSellers() {
-  const { session, profile, loading } = useAuth();
+  const { session, profile, loading, refreshProfile } = useAuth();
   const r = useRouter();
 
   const [q, setQ] = useState("");
