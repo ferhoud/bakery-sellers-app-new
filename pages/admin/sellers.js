@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
+import { isAdminEmail } from "@/lib/admin";
 
 export default function AdminSellers() {
   const { session, profile, loading } = useAuth();
@@ -18,12 +19,13 @@ export default function AdminSellers() {
   const [edit, setEdit] = useState({ full_name: "", email: "" });
 
   // sécurité
+  // sécurité (tolérante) : on autorise l'accès si email admin OU profil admin
   useEffect(() => {
     if (loading) return;
     if (!session) { r.replace("/login"); return; }
-    if (!profile) return;
-    if (profile.role !== "admin") r.replace("/app");
-  }, [session, profile, loading, r]);
+    const isAdmin = isAdminEmail(session.user?.email) || profile?.role === "admin";
+    if (!isAdmin) r.replace("/app");
+  }, [loading, session, profile, r]);
 
   // charger vendeuses (depuis profiles) + emails (via vue/materialisée si dispo sinon champ email nullable)
   const load = async () => {
@@ -126,7 +128,7 @@ export default function AdminSellers() {
     } finally { setBusy(false); }
   };
 
-  if (loading || !session || !profile) {
+  if (loading || !session) {
     return <div className="p-4">Chargement…</div>;
   }
 
