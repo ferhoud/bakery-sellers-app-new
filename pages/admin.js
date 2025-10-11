@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
+import { isAdminEmail } from "@/lib/admin";
 import WeekNav from "../components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "../lib/date";
 
@@ -54,22 +55,31 @@ function Chip({ name }) {
 }
 
 /* ---------- Main page ---------- */
-export default function Admin() {
-  const { session, profile, loading } = useAuth();
+export default function AdminPage() {
   const r = useRouter();
-  // juste après: const { session, profile, loading } = useAuth();
+  const { session, profile, loading } = useAuth();
 
-if (loading) return <div className="p-4">Chargement…</div>;
+  useEffect(() => {
+    if (loading) return;
+    if (!session) { r.replace("/login"); return; }
 
-// Si la session existe mais pas de profil lisible (profil null), on invite à retourner au login
-if (session && !profile) {
+    // autoriser admin par email SANS exiger profile
+    if (isAdminEmail(session.user?.email)) return;
+
+    // sinon exiger profil.role === 'admin'
+    if (profile?.role !== "admin") {
+      r.replace("/app");
+    }
+  }, [session, profile, loading, r]);
+
+  if (loading) return <div className="p-4">Chargement…</div>;
+  if (!session) return null; // redirigé
+
+  // Ici, soit email admin, soit profil.role === 'admin'
   return (
     <div className="p-4">
-      Profil introuvable pour cet utilisateur. 
-      Vérifie les droits RLS et la ligne dans <code>public.profiles</code>. 
-      <div className="mt-2">
-        <a className="btn" href="/login">Retour à la connexion</a>
-      </div>
+      <h1 className="hdr mb-4">Admin</h1>
+      {/* … ton contenu admin … */}
     </div>
   );
 }
