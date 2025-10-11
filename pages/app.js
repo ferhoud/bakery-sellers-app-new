@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/useAuth";
+import { isAdminEmail } from "@/lib/admin";
 import WeekNav from "@/components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
 import LeaveRequestForm from "@/components/LeaveRequestForm";
@@ -70,11 +71,12 @@ export default function AppSeller() {
 
   // Sécurité / redirections
   useEffect(() => {
-    if (loading) return;
-    if (!session) {
-      if (r.pathname !== "/login") r.replace("/login");
-      return;
-    }
+  if (loading) return;
+  if (!session) { r.replace("/login"); return; }
+  if (profile?.role === "admin" || isAdminEmail(session?.user?.email)) {
+    r.replace("/admin");
+  }
+}, [session, profile, loading, r]);
     const role = profile?.role || profileFallback?.role;
     if (role === "admin") r.replace("/admin");
   }, [session, profile, profileFallback, loading, r]);
