@@ -105,7 +105,7 @@ if (session && !profile) {
 
   // Charger le planning de la semaine (lecture seule)
   useEffect(() => {
-    const load = async () => {
+    
       if (!session) return; // ⬅️ ne rien faire tant qu’on n’a pas de session
  const load = async () => {
       const from = fmtISODate(days[0]);
@@ -115,7 +115,7 @@ if (session && !profile) {
         .select("date, shift_code, seller_id, full_name")
         .gte("date", from)
         .lte("date", to);
-      if (error) { console.error("view_week_assignments error:", error); setAssign({}); return; }
+      if (error) { console.error("view_week_assignments error:", error); return; } // ⬅️ ne pas tout vider
       const next = {};
       (data || []).forEach((row) => {
         next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: row.full_name || "—" };
@@ -124,7 +124,7 @@ if (session && !profile) {
     };
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monday]);
+ }, [monday, session]); // ⬅️ dépend de session
 
   /* ----------------- Absence (form) ----------------- */
   const submitAbs = async () => {
