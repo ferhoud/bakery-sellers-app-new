@@ -85,8 +85,7 @@ export default function AdminPage() {
     if (profile?.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
-  if (loading) return <div className="p-4">Chargement…</div>;
-  if (!session) return null;
+  
 
   // Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
