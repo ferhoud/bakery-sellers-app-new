@@ -1,40 +1,98 @@
 // pages/push-setup.js
-import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { getExistingSubscription, ensurePushEnabled } from '@/utils/push';
+import { useState } from 'react';
+
+const isBrowser = () => typeof window !== 'undefined';
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
+async function ensurePushEnabled(vapidPublicKey) {
+  if (!isBrowser()) throw new Error('Client only');
+
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    throw new Error("Navigateur non compatible");
+  }
+
+  // Permission
+  if (typeof Notification === 'undefined') {
+    throw new Error("API Notification indisponible");
+  }
+  if (Notification.permission === 'default') {
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error('Permission refusée');
+  } else if (Notification.permission === 'denied') {
+    throw new Error("Permission refusée dans les réglages du navigateur");
+  }
+
+  // Registre le SW si besoin (sans attendre éternellement)
+  let reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) {
+    reg = await navigator.serviceWorker.register('/sw.js');
+  }
+
+  // Subscription existante ?
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(
+        process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
+      ),
+    });
+  }
+
+  // Sauvegarde côté serveur (sans bloquer l’UI si ça échoue)
+  try {
+    await fetch('/api/push/save-sub', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(sub),
+    });
+  } catch { /* no-op */ }
+
+  return sub;
+}
 
 export default function PushSetup() {
-  const [status, setStatus] = useState('checking'); // 'enabled' | 'disabled' | 'unsupported'
-  const [error, setError] = useState('');
+  const [log, setLog] = useState('');
+  const [enabled, setEnabled] = useState(false);
+  const [checking, setChecking] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        if (typeof window === 'undefined') return;
-        if (!('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification === 'undefined') {
-          if (mounted) setStatus('unsupported');
-          return;
-        }
-        const sub = await getExistingSubscription();
-        if (!mounted) return;
-        setStatus(Notification.permission === 'granted' && sub ? 'enabled' : 'disabled');
-      } catch {
-        if (mounted) setStatus('disabled');
-      }
-    })();
-    return () => { mounted = false; };
-  }, []);
+  const checkStatus = async () => {
+    setLog('');
+    if (!isBrowser()) return;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || typeof Notification === 'undefined') {
+      setLog("Navigateur non compatible avec les notifications push.");
+      return;
+    }
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = reg ? await reg.pushManager.getSubscription() : null;
+    const granted = Notification.permission === 'granted';
+    setEnabled(Boolean(granted && sub));
+    setLog(`Permission: ${Notification.permission} · Subscription: ${sub ? 'oui' : 'non'}`);
+  };
 
   const onEnable = async () => {
-    setError('');
+    setChecking(true);
+    setLog('');
     try {
       await ensurePushEnabled(process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY);
-      setStatus('enabled');
+      setEnabled(true);
+      setLog('Notifications activées ✅');
       alert('Notifications activées ✅');
     } catch (e) {
-      setError(e?.message || "Impossible d’activer les notifications");
-      setStatus('disabled');
+      setEnabled(false);
+      setLog(e?.message || 'Impossible d’activer');
+      alert(e?.message || 'Impossible d’activer');
+    } finally {
+      setChecking(false);
     }
   };
 
@@ -45,25 +103,14 @@ export default function PushSetup() {
         <h1 className="hdr">Notifications</h1>
       </div>
 
-      {status === 'checking' && <div className="text-sm text-gray-600">Vérification en cours…</div>}
-
-      {status === 'unsupported' && (
-        <div className="text-sm">
-          Ce navigateur ne supporte pas les notifications push sur le web.
-        </div>
-      )}
-
-      {status === 'enabled' && (
-        <div className="text-sm">🔔 Notifications déjà activées sur cet appareil.</div>
-      )}
-
-      {status === 'disabled' && (
-        <button className="btn" onClick={onEnable}>
-          🔔 Activer les notifications
+      <div className="space-y-2">
+        <button className="btn" onClick={checkStatus}>Vérifier l’état</button>
+        <button className="btn" onClick={onEnable} disabled={checking}>
+          {checking ? 'Activation…' : '🔔 Activer les notifications'}
         </button>
-      )}
-
-      {error && <div className="text-sm text-red-600">{error}</div>}
+        <div className="text-sm text-gray-700">{enabled ? 'État : activées' : 'État : désactivées'}</div>
+        {log && <div className="text-sm">{log}</div>}
+      </div>
     </div>
   );
 }
