@@ -10,7 +10,6 @@ import WeekNav from "@/components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
 import LeaveRequestForm from "@/components/LeaveRequestForm";
 
-
 /* Libellés + créneau dimanche (doit exister dans shift_types) */
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
@@ -38,17 +37,20 @@ function labelForShift(code) {
 export default function AppSeller() {
   const { session, profile, loading } = useAuth();
   const r = useRouter();
-  // juste après: const { session, profile, loading } = useAuth();
 
-if (loading) {
-  return <div className="p-4">Chargement…</div>;
-}
+  if (loading) {
+    return <div className="p-4">Chargement…</div>;
+  }
+  if (session && !profile) {
+    return <div className="p-4">Chargement du profil…</div>;
+  }
 
-// Optionnel : si tu dépends fortement de profile.role
-if (session && !profile) {
-  return <div className="p-4">Chargement du profil…</div>;
-}
-
+  /* Sécurité / redirections */
+  useEffect(() => {
+    if (loading) return;
+    if (!session) r.replace("/login");
+    if (profile && profile.role === "admin") r.replace("/admin");
+  }, [session, profile, loading, r]);
 
   // Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
@@ -63,20 +65,14 @@ if (session && !profile) {
 
   // Absence (form 1 jour)
   const [reasonAbs, setReasonAbs] = useState("");
+  const todayIso = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const [absDate, setAbsDate] = useState(fmtISODate(new Date()));
   const [msgAbs, setMsgAbs] = useState("");
-
-  // Congé (form période)
-  const [leaveStart, setLeaveStart] = useState(fmtISODate(new Date()));
-  const [leaveEnd, setLeaveEnd] = useState(fmtISODate(addDays(new Date(), 1)));
-  const [leaveReason, setLeaveReason] = useState("");
-  const [msgLeave, setMsgLeave] = useState("");
 
   // Congés approuvés (tout le monde voit) — end_date >= today
   const [approvedLeaves, setApprovedLeaves] = useState([]);
 
   // Fenêtres de temps :
-  const todayIso = fmtISODate(new Date());
   const rangeTo  = fmtISODate(addDays(new Date(), 60)); // prochains 60 jours
 
   // Mes absences passées (approuvées) — mois courant
@@ -98,18 +94,10 @@ if (session && !profile) {
   const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
   const [names, setNames] = useState({}); // user_id -> full_name
 
-  /* Sécurité / redirections */
-  useEffect(() => {
-    if (loading) return;
-    if (!session) r.replace("/login");
-    if (profile && profile.role === "admin") r.replace("/admin");
-  }, [session, profile, loading, r]);
-
   // Charger le planning de la semaine (lecture seule)
   useEffect(() => {
-    
-      if (!session) return; // ⬅️ ne rien faire tant qu’on n’a pas de session
- const load = async () => {
+    if (!session) return; // ne rien faire tant qu’on n’a pas de session
+    const load = async () => {
       const from = fmtISODate(days[0]);
       const to = fmtISODate(days[6]);
       const { data, error } = await supabase
@@ -117,7 +105,7 @@ if (session && !profile) {
         .select("date, shift_code, seller_id, full_name")
         .gte("date", from)
         .lte("date", to);
-      if (error) { console.error("view_week_assignments error:", error); return; } // ⬅️ ne pas tout vider
+      if (error) { console.error("view_week_assignments error:", error); return; }
       const next = {};
       (data || []).forEach((row) => {
         next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: row.full_name || "—" };
@@ -125,8 +113,7 @@ if (session && !profile) {
       setAssign(next);
     };
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
- }, [monday, session]); // ⬅️ dépend de session
+  }, [monday, session, days]);
 
   /* ----------------- Absence (form) ----------------- */
   const submitAbs = async () => {
@@ -157,96 +144,6 @@ if (session && !profile) {
     setMsgAbs("Demande d'absence envoyée. En attente de validation.");
     setReasonAbs("");
   };
-
-  /* ----------------- Congé (form) ----------------- */
- // components/LeaveRequestForm.js
-import { useState, useMemo } from "react";
-import { supabase } from "@/lib/supabaseClient";
-import { fmtISODate } from "@/lib/date";
-
-export default function LeaveRequestForm() {
-  const todayIso = useMemo(() => fmtISODate(new Date()), []);
-  const [start, setStart] = useState("");
-  const [end, setEnd] = useState("");
-  const [reason, setReason] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const invalid = !start || !end || end < start || start < todayIso;
-
-  const onSubmit = async (e) => {
-    e.preventDefault();
-    if (invalid) return;
-    setSubmitting(true);
-    try {
-      const { error } = await supabase.from("leaves").insert({
-        start_date: start,
-        end_date: end,
-        reason,
-        status: "pending",
-      });
-      if (error) alert(error.message || "Échec de la demande de congé.");
-      else {
-        setReason(""); setStart(""); setEnd("");
-        alert("Demande envoyée.");
-      }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <form onSubmit={onSubmit} className="space-y-3">
-      <div>
-        <div className="text-sm mb-1">Début</div>
-        <input
-          type="date"
-          className="input"
-          value={start}
-          min={todayIso}
-          onChange={(e) => {
-            const v = e.target.value;
-            setStart(v);
-            if (end && end < v) setEnd(v); // réaligne fin si besoin
-          }}
-          required
-        />
-      </div>
-
-      <div>
-        <div className="text-sm mb-1">Fin</div>
-        <input
-          type="date"
-          className="input"
-          value={end}
-          min={start || todayIso}
-          onChange={(e) => setEnd(e.target.value)}
-          required
-        />
-      </div>
-
-      <div>
-        <div className="text-sm mb-1">Motif (optionnel)</div>
-        <input
-          type="text"
-          className="input"
-          value={reason}
-          onChange={(e) => setReason(e.target.value)}
-          placeholder="Ex: vacances"
-        />
-      </div>
-
-      <button className="btn" type="submit" disabled={submitting || invalid}>
-        {submitting ? "Envoi…" : "Demander un congé"}
-      </button>
-
-      {invalid && (start || end) ? (
-        <div className="text-xs text-red-600">
-          Dates invalides : pas de dates passées, et la fin doit être après (ou égale à) la date de début.
-        </div>
-      ) : null}
-    </form>
-  );
-}
-
 
   /* ----------------- “Remplacer ?” (pending/approved) ----------------- */
   const shouldPrompt = async (absence) => {
@@ -401,7 +298,7 @@ export default function LeaveRequestForm() {
     if (!session?.user?.id) return;
     const { data } = await supabase
       .from("absences")
-      .select("id, date, status, admin_forced")   // ⬅️ inclure le flag
+      .select("id, date, status, admin_forced")
       .eq("seller_id", session.user.id)
       .in("status", ["approved", "pending"])
       .gte("date", todayIso)
@@ -414,7 +311,7 @@ export default function LeaveRequestForm() {
       byDate[r.date].ids.push(r.id);
       if (r.status === 'approved') byDate[r.date].approved = true;
       if (r.status === 'pending')  byDate[r.date].pending  = true;
-      if (r.admin_forced)          byDate[r.date].locked   = true;  // 🚫 au moins une absence de cette date posée par l’admin
+      if (r.admin_forced)          byDate[r.date].locked   = true;
     });
     const arr = Object.keys(byDate)
       .sort((a, b) => a.localeCompare(b))
@@ -519,7 +416,7 @@ export default function LeaveRequestForm() {
       return;
     }
 
-    const { data: { session: s } } = await supabase.auth.getSession();
+    const { data: { session: s} } = await supabase.auth.getSession();
     const resp = await fetch('/api/absences/delete-by-date', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s?.access_token||''}` },
@@ -530,7 +427,6 @@ export default function LeaveRequestForm() {
     await Promise.all([loadMyMonthUpcomingAbs?.(), reloadAccepted?.(), loadMyUpcomingRepl?.()]);
     alert('Absence annulée.');
   };
-
 
   // Réveil / retour au premier plan (inclut iOS PWA)
   useEffect(() => {
@@ -616,7 +512,7 @@ export default function LeaveRequestForm() {
         </div>
       )}
 
-      {/* 🟨 Bannière persistante : mes remplacements à venir (reste tant que la date n'est pas passée) */}
+      {/* 🟨 Bannière persistante : mes remplacements à venir */}
       {myUpcomingRepl.length > 0 && (
         <div className="border rounded-2xl p-3"
              style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}>
@@ -632,10 +528,10 @@ export default function LeaveRequestForm() {
         </div>
       )}
 
-      {/* Planning de la semaine (lecture seule, toutes vendeuses) */}
+      {/* Planning de la semaine */}
       <WeekView days={days} assign={assign} />
 
-      {/* CONGÉS APPROUVÉS — visibles à toutes tant que non passés */}
+      {/* CONGÉS APPROUVÉS */}
       <div className="card">
         <div className="hdr mb-2">Congés approuvés — en cours ou à venir</div>
         {approvedLeaves.length === 0 ? (
@@ -683,7 +579,6 @@ export default function LeaveRequestForm() {
         ) : (
           <ul className="space-y-2">
             {myMonthUpcomingAbs.map(({ date, ids, status, locked }) => {
-              // Remplaçante acceptée ?
               let accepted;
               let acceptedShift = null;
               for (const id of ids) {
@@ -753,7 +648,13 @@ export default function LeaveRequestForm() {
         <div className="grid md:grid-cols-3 gap-3 items-end">
           <div>
             <div className="text-sm mb-1">Date</div>
-            <input type="date" className="input" value={absDate} onChange={(e) => setAbsDate(e.target.value)} />
+            <input
+              type="date"
+              className="input"
+              value={absDate}
+              min={todayIso}                 /* ⬅️ bloque les dates passées */
+              onChange={(e) => setAbsDate(e.target.value)}
+            />
           </div>
           <div className="md:col-span-2">
             <div className="text-sm mb-1">Motif (optionnel)</div>
@@ -767,22 +668,7 @@ export default function LeaveRequestForm() {
       {/* Demander un congé (période) */}
       <div className="card">
         <div className="hdr mb-2">Demander un congé (période)</div>
-        <div className="grid md:grid-cols-4 gap-3 items-end">
-          <div>
-            <div className="text-sm mb-1">Départ</div>
-            <input type="date" className="input" value={leaveStart} onChange={(e) => setLeaveStart(e.target.value)} />
-          </div>
-          <div>
-            <div className="text-sm mb-1">Retour</div>
-            <input type="date" className="input" value={leaveEnd} onChange={(e) => setLeaveEnd(e.target.value)} />
-          </div>
-          <div className="md:col-span-2">
-            <div className="text-sm mb-1">Motif (optionnel)</div>
-            <input type="text" className="input" placeholder="ex: congés annuels" value={leaveReason} onChange={(e) => setLeaveReason(e.target.value)} />
-          </div>
-          <div><button className="btn" onClick={submitLeave}>Envoyer le congé</button></div>
-        </div>
-        {msgLeave && <div className="text-sm mt-2">{msgLeave}</div>}
+        <LeaveRequestForm /> {/* ✅ dates passées bloquées + fin ≥ début */}
       </div>
     </div>
   );
