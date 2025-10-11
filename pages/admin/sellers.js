@@ -13,32 +13,42 @@ export default function AdminSellers() {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState([]); // [{user_id, full_name, email, active}]
   const [busy, setBusy] = useState(false);
+  const [errMsg, setErrMsg] = useState("");
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ full_name: "", identifier: "", email: "", password: "" });
   const [editId, setEditId] = useState(null);
   const [edit, setEdit] = useState({ full_name: "", email: "" });
 
-  // sécurité
-  // sécurité (tolérante) : on autorise l'accès si email admin OU profil admin
+  // Sécurité tolérante : email admin OU profil admin (ne pas attendre "loading")
   useEffect(() => {
-    if (loading) return;
     if (!session) { r.replace("/login"); return; }
-    const isAdmin = isAdminEmail(session.user?.email) || profile?.role === "admin";
-    if (!isAdmin) r.replace("/app");
-  }, [loading, session, profile, r]);
+    const ok = isAdminEmail(session.user?.email) || profile?.role === "admin";
+    if (!ok) r.replace("/app");
+  }, [session, profile, r]);
 
-  // charger vendeuses (depuis profiles) + emails (via vue/materialisée si dispo sinon champ email nullable)
+  // Charger vendeuses (depuis profiles)
   const load = async () => {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("user_id, full_name, role, active, email")
-      .eq("role", "seller")
-      .order("full_name", { ascending: true });
+    setBusy(true);
+    setErrMsg("");
+    try {
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("user_id, full_name, role, active, email")
+        .eq("role", "seller")
+        .order("full_name", { ascending: true });
 
-    if (error) { console.error(error); setRows([]); return; }
-    setRows((data || []).map(r => ({ ...r, email: r.email || "" })));
+      if (error) throw error;
+      setRows((data || []).map(r => ({ ...r, email: r.email || "" })));
+    } catch (e) {
+      console.error("profiles SELECT failed:", e);
+      setErrMsg(e?.message || "Lecture impossible (RLS ?)");
+      setRows([]);
+    } finally {
+      setBusy(false);
+    }
   };
 
+  // Init/refresh quand la session existe
   useEffect(() => { if (session) load(); }, [session]);
 
   const filtered = useMemo(() => {
@@ -128,13 +138,14 @@ export default function AdminSellers() {
     } finally { setBusy(false); }
   };
 
-  if (loading || !session) {
+  // Garde d'affichage : on n'attend que la session (pas "loading", pas "profile")
+  if (!session) {
     return <div className="p-4">Chargement…</div>;
   }
 
   return (
     <div className="p-4 max-w-5xl mx-auto space-y-6">
-      {/* Header avec bouton retour (à gauche) */}
+      {/* Header avec bouton retour */}
       <div className="flex items-center justify-between">
         <Link href="/admin" className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border hover:shadow-sm transition">
           <span>←</span>
@@ -142,6 +153,20 @@ export default function AdminSellers() {
         </Link>
         <div className="text-sm text-gray-500">Gérer les vendeuses</div>
       </div>
+
+      {/* Bandeau d'info si profil indisponible (RLS) */}
+      {!profile && (
+        <div className="border rounded-2xl p-3 text-sm" style={{ background:"#fffbeb", borderColor:"#fde68a" }}>
+          Profil non chargé. Accès autorisé via email admin. (Vérifie les policies RLS si besoin.)
+        </div>
+      )}
+
+      {/* Bandeau d'erreur data */}
+      {errMsg && (
+        <div className="border rounded-2xl p-3 text-sm" style={{ background:"#fef2f2", borderColor:"#fecaca", color:"#7f1d1d" }}>
+          {errMsg} — vérifie les policies RLS de <code>profiles</code> ou l’email admin.
+        </div>
+      )}
 
       {/* Barre d’outils */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -154,11 +179,16 @@ export default function AdminSellers() {
             onChange={(e) => setQ(e.target.value)}
           />
         </div>
-        <button className="btn" onClick={() => setCreating(true)}>+ Ajouter une vendeuse</button>
+        <div className="flex items-center gap-2">
+          <button className="btn" onClick={load} disabled={busy}>↻ Recharger</button>
+          <button className="btn" onClick={() => setCreating(true)}>+ Ajouter une vendeuse</button>
+        </div>
       </div>
 
       {/* Liste des vendeuses */}
       <div className="space-y-3">
+        {busy && <div className="text-sm text-gray-600">Chargement…</div>}
+
         {filtered.length === 0 ? (
           <div className="text-sm text-gray-600">Aucune vendeuse.</div>
         ) : (
@@ -168,8 +198,18 @@ export default function AdminSellers() {
               <div className="min-w-0">
                 {editId === r.user_id ? (
                   <div className="grid sm:grid-cols-2 gap-2">
-                    <input className="input" placeholder="Nom complet" value={edit.full_name} onChange={(e)=>setEdit(p=>({...p,full_name:e.target.value}))}/>
-                    <input className="input" placeholder="Email de connexion" value={edit.email} onChange={(e)=>setEdit(p=>({...p,email:e.target.value}))}/>
+                    <input
+                      className="input"
+                      placeholder="Nom complet"
+                      value={edit.full_name}
+                      onChange={(e)=>setEdit(p=>({ ...p, full_name: e.target.value }))}
+                    />
+                    <input
+                      className="input"
+                      placeholder="Email de connexion"
+                      value={edit.email}
+                      onChange={(e)=>setEdit(p=>({ ...p, email: e.target.value }))}
+                    />
                   </div>
                 ) : (
                   <>
@@ -194,8 +234,8 @@ export default function AdminSellers() {
                 ) : (
                   <>
                     <button className="btn" onClick={()=>startEdit(r)}>Modifier</button>
-                    <button className="btn" onClick={()=>deactivate(r)} style={{background:"#f59e0b",color:"#fff",borderColor:"transparent"}}>Désactiver</button>
-                    <button className="btn" onClick={()=>hardDelete(r)} style={{background:"#dc2626",color:"#fff",borderColor:"transparent"}}>Supprimer</button>
+                    <button className="btn" onClick={()=>deactivate(r)} style={{ background:"#f59e0b", color:"#fff", borderColor:"transparent" }}>Désactiver</button>
+                    <button className="btn" onClick={()=>hardDelete(r)} style={{ background:"#dc2626", color:"#fff", borderColor:"transparent" }}>Supprimer</button>
                   </>
                 )}
               </div>
@@ -212,24 +252,47 @@ export default function AdminSellers() {
             <form className="space-y-3" onSubmit={onCreate}>
               <div>
                 <div className="text-sm mb-1">Nom complet</div>
-                <input className="input w-full" required value={form.full_name} onChange={(e)=>setForm(p=>({...p,full_name:e.target.value}))}/>
+                <input
+                  className="input w-full"
+                  required
+                  value={form.full_name}
+                  onChange={(e)=>setForm(p=>({ ...p, full_name: e.target.value }))}
+                />
               </div>
               <div>
                 <div className="text-sm mb-1">Identifiant (libre, optionnel)</div>
-                <input className="input w-full" value={form.identifier} onChange={(e)=>setForm(p=>({...p,identifier:e.target.value}))}/>
+                <input
+                  className="input w-full"
+                  value={form.identifier}
+                  onChange={(e)=>setForm(p=>({ ...p, identifier: e.target.value }))}
+                />
               </div>
               <div>
                 <div className="text-sm mb-1">Mail de connexion</div>
-                <input className="input w-full" type="email" required value={form.email} onChange={(e)=>setForm(p=>({...p,email:e.target.value}))}/>
+                <input
+                  className="input w-full"
+                  type="email"
+                  required
+                  value={form.email}
+                  onChange={(e)=>setForm(p=>({ ...p, email: e.target.value }))}
+                />
               </div>
               <div>
                 <div className="text-sm mb-1">Mot de passe</div>
-                <input className="input w-full" type="password" required value={form.password} onChange={(e)=>setForm(p=>({...p,password:e.target.value}))}/>
+                <input
+                  className="input w-full"
+                  type="password"
+                  required
+                  value={form.password}
+                  onChange={(e)=>setForm(p=>({ ...p, password: e.target.value }))}
+                />
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-2">
                 <button type="button" className="btn" onClick={()=>setCreating(false)}>Annuler</button>
-                <button type="submit" className="btn" disabled={busy} style={{background:"#2563eb",color:"#fff",borderColor:"transparent"}}>Créer</button>
+                <button type="submit" className="btn" disabled={busy} style={{ background:"#2563eb", color:"#fff", borderColor:"transparent" }}>
+                  Créer
+                </button>
               </div>
             </form>
           </div>
