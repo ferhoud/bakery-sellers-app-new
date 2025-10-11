@@ -164,8 +164,8 @@ const load = async () => {
         <div className="text-sm text-gray-500">Gérer les vendeuses</div>
       </div>
 
-      {/* Bandeau d'info si profil indisponible (RLS) */}
-      {!profile && (
+      {/* Bandeau d'info si profil indisponible ET pas admin par email */}
+ {!profile && !isAdminEmail(session.user?.email) && (
         <div className="border rounded-2xl p-3 text-sm" style={{ background:"#fffbeb", borderColor:"#fde68a" }}>
           Profil non chargé. Accès autorisé via email admin. (Vérifie les policies RLS si besoin.)
         </div>
