@@ -18,7 +18,7 @@ import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from ".
 
 /* ---------- CONSTANTES / UTILS GLOBAUX (SANS HOOKS) ---------- */
 
-const BUILD_TAG = "ADMIN - 12/10/2025 00:50";
+const BUILD_TAG = "ADMIN - 12/10/2025 00:56";
 
 // Heures par créneau (inclut le dimanche spécial)
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
@@ -1346,3 +1346,4 @@ function TotalsGrid({
     </div>
   );
 }
+
