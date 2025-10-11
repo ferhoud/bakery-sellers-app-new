@@ -1,4 +1,4 @@
-/* pages/admin.js — unified, fixed structure (2025‑10‑11)
+﻿/* pages/admin.js â€” unified, fixed structure (2025â€‘10â€‘11)
    - Single default export (AdminPage)
    - All React hooks are inside the component (no hooks at top-level)
    - Adds missing BUILD_TAG constant
@@ -18,11 +18,11 @@ import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from ".
 
 /* ---------- CONSTANTES / UTILS GLOBAUX (SANS HOOKS) ---------- */
 
-const BUILD_TAG = "ADMIN — 11/10/2025 08:00";
+const BUILD_TAG = "ADMIN â€” 11/10/2025 08:00";
 
-// Heures par créneau (inclut le dimanche spécial)
+// Heures par crÃ©neau (inclut le dimanche spÃ©cial)
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
-// Libellés + créneau dimanche (doit exister dans shift_types)
+// LibellÃ©s + crÃ©neau dimanche (doit exister dans shift_types)
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
 // Couleurs fixes par vendeuse
@@ -34,7 +34,7 @@ const SELLER_COLORS = {
 };
 const colorForName = (name) => SELLER_COLORS[name] || "#9e9e9e";
 
-// Utils date / libellés
+// Utils date / libellÃ©s
 function firstDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
 function lastDayOfMonth(d)  { return new Date(d.getFullYear(), d.getMonth() + 1, 0); }
 function monthInputValue(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; }
@@ -77,7 +77,7 @@ export default function AdminPage() {
   const r = useRouter();
   const { session, profile, loading } = useAuth();
 
-  // Sécurité / redirections
+  // SÃ©curitÃ© / redirections
   useEffect(() => {
     if (loading) return;
     if (!session) { r.replace("/login"); return; }
@@ -85,48 +85,48 @@ export default function AdminPage() {
     if (profile?.role !== "admin") r.replace("/app");
   }, [session, profile, loading, r]);
 
-  if (loading) return <div className="p-4">Chargement…</div>;
+  if (loading) return <div className="p-4">Chargementâ€¦</div>;
   if (!session) return null;
 
-  // Semaine affichée
+  // Semaine affichÃ©e
   const [monday, setMonday] = useState(startOfWeek(new Date()));
   const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)), [monday]);
 
-  // Mois pour les totaux (sélecteur en bas)
+  // Mois pour les totaux (sÃ©lecteur en bas)
   const [selectedMonth, setSelectedMonth] = useState(firstDayOfMonth(new Date()));
   const monthFrom = fmtISODate(firstDayOfMonth(selectedMonth));
   const monthTo   = fmtISODate(lastDayOfMonth(selectedMonth));
 
-  // Données UI
+  // DonnÃ©es UI
   const [sellers, setSellers] = useState([]);               // [{user_id, full_name}]
   const [assign, setAssign] = useState({});                 // "YYYY-MM-DD|SHIFT" -> seller_id
   const [absencesByDate, setAbsencesByDate] = useState({}); // { "YYYY-MM-DD": [seller_id,...] }
-  const [absencesToday, setAbsencesToday] = useState([]);   // d’aujourd’hui (pending/approved)
-  const [pendingAbs, setPendingAbs] = useState([]);         // absences à venir (pending)
-  const [replList, setReplList] = useState([]);             // volontaires (pending) sur absences approuvées
+  const [absencesToday, setAbsencesToday] = useState([]);   // dâ€™aujourdâ€™hui (pending/approved)
+  const [pendingAbs, setPendingAbs] = useState([]);         // absences Ã  venir (pending)
+  const [replList, setReplList] = useState([]);             // volontaires (pending) sur absences approuvÃ©es
   const [selectedShift, setSelectedShift] = useState({});   // {replacement_interest_id: "MIDDAY"}
-  const [latestRepl, setLatestRepl] = useState(null);       // bannière: dernier volontariat reçu
+  const [latestRepl, setLatestRepl] = useState(null);       // banniÃ¨re: dernier volontariat reÃ§u
 
-  // Congés
-  const [pendingLeaves, setPendingLeaves] = useState([]);   // congés en attente (à venir ou en cours)
-  const [latestLeave, setLatestLeave] = useState(null);     // bannière congé la plus récente (pending)
-  const [approvedLeaves, setApprovedLeaves] = useState([]); // congés approuvés (end_date >= today)
+  // CongÃ©s
+  const [pendingLeaves, setPendingLeaves] = useState([]);   // congÃ©s en attente (Ã  venir ou en cours)
+  const [latestLeave, setLatestLeave] = useState(null);     // banniÃ¨re congÃ© la plus rÃ©cente (pending)
+  const [approvedLeaves, setApprovedLeaves] = useState([]); // congÃ©s approuvÃ©s (end_date >= today)
 
-  // Absences approuvées du mois sélectionné
-  const [monthAbsences, setMonthAbsences] = useState([]);           // passées/aujourd’hui (items avec id)
-  const [monthUpcomingAbsences, setMonthUpcomingAbsences] = useState([]); // à venir (items avec id)
+  // Absences approuvÃ©es du mois sÃ©lectionnÃ©
+  const [monthAbsences, setMonthAbsences] = useState([]);           // passÃ©es/aujourdâ€™hui (items avec id)
+  const [monthUpcomingAbsences, setMonthUpcomingAbsences] = useState([]); // Ã  venir (items avec id)
 
-  // Remplacements acceptés du mois (absence_id -> { volunteer_id, volunteer_name, shift })
+  // Remplacements acceptÃ©s du mois (absence_id -> { volunteer_id, volunteer_name, shift })
   const [monthAcceptedRepl, setMonthAcceptedRepl] = useState({});
 
-  // Bannière éphémère quand une vendeuse annule son absence (DELETE)
+  // BanniÃ¨re Ã©phÃ©mÃ¨re quand une vendeuse annule son absence (DELETE)
   const [latestCancel, setLatestCancel] = useState(null);   // { name, date }
 
   const [refreshKey, setRefreshKey] = useState(0);          // recalcul totaux mois
   const today = new Date();
   const todayIso = fmtISODate(today);
 
-  // Déconnexion robuste
+  // DÃ©connexion robuste
   const [signingOut, setSigningOut] = useState(false);
   const handleSignOut = useCallback(async () => {
     if (signingOut) return;
@@ -169,7 +169,7 @@ export default function AdminPage() {
     setSellers(rows || []);
   }, []);
 
-  /* ✅ Index vendeuses + helper id→nom */
+  /* âœ… Index vendeuses + helper idâ†’nom */
   const sellersById = useMemo(
     () => new Map((sellers || []).map((s) => [s.user_id, s])),
     [sellers]
@@ -206,7 +206,7 @@ export default function AdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monday]);
 
-  /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
+  /* Absences d'aujourd'hui (avec remplacement acceptÃ© si existe) */
   const loadAbsencesToday = useCallback(async () => {
     const { data: abs, error } = await supabase
       .from("absences")
@@ -245,7 +245,7 @@ export default function AdminPage() {
     setAbsencesToday(rows);
   }, [todayIso]);
 
-  /* Absences en attente (toutes à venir) */
+  /* Absences en attente (toutes Ã  venir) */
   const loadPendingAbs = useCallback(async () => {
     const { data, error } = await supabase
       .from("absences")
@@ -257,7 +257,7 @@ export default function AdminPage() {
     setPendingAbs(data || []);
   }, [todayIso]);
 
-  /* Volontaires (absences approuvées) */
+  /* Volontaires (absences approuvÃ©es) */
   const loadReplacements = useCallback(async () => {
     const { data: rows, error } = await supabase
       .from("replacement_interest")
@@ -283,7 +283,7 @@ export default function AdminPage() {
     setReplList(list);
   }, [todayIso]);
 
-  /* ======= CONGÉS ======= */
+  /* ======= CONGÃ‰S ======= */
   const loadPendingLeaves = useCallback(async () => {
     const { data, error } = await supabase
       .from("leaves")
@@ -321,7 +321,7 @@ export default function AdminPage() {
     setApprovedLeaves(data || []);
   }, [todayIso]);
 
-  // Actions congés
+  // Actions congÃ©s
   const approveLeave = useCallback(async (id) => {
     const { error } = await supabase.from("leaves").update({ status: "approved" }).eq("id", id);
     if (error) { alert("Impossible d'approuver (RLS ?)"); return; }
@@ -336,19 +336,19 @@ export default function AdminPage() {
 
   const cancelFutureLeave = useCallback(async (id) => {
     const { data: leave } = await supabase.from("leaves").select("start_date,status").eq("id", id).single();
-    if (!leave) { alert("Congé introuvable."); return; }
-    if (!(leave.status === "approved" || leave.status === "pending")) { alert("Seuls les congés approuvés/en attente peuvent être annulés."); return; }
+    if (!leave) { alert("CongÃ© introuvable."); return; }
+    if (!(leave.status === "approved" || leave.status === "pending")) { alert("Seuls les congÃ©s approuvÃ©s/en attente peuvent Ãªtre annulÃ©s."); return; }
     const tIso = fmtISODate(new Date());
-    if (!(leave.start_date > tIso)) { alert("On ne peut annuler que les congés à venir."); return; }
+    if (!(leave.start_date > tIso)) { alert("On ne peut annuler que les congÃ©s Ã  venir."); return; }
 
     const { error } = await supabase.from("leaves").delete().eq("id", id);
-    if (error) { console.error(error); alert("Échec de l’annulation du congé."); return; }
+    if (error) { console.error(error); alert("Ã‰chec de lâ€™annulation du congÃ©."); return; }
 
     await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
-    alert("Congé à venir annulé. La vendeuse peut refaire une demande.");
+    alert("CongÃ© Ã  venir annulÃ©. La vendeuse peut refaire une demande.");
   }, [loadPendingLeaves, loadApprovedLeaves, loadLatestLeave]);
 
-  /* ======= ABSENCES DU MOIS (APPROUVÉES) ======= */
+  /* ======= ABSENCES DU MOIS (APPROUVÃ‰ES) ======= */
   const loadMonthAbsences = useCallback(async () => {
     const tIso = fmtISODate(new Date());
     const { data, error } = await supabase
@@ -357,7 +357,7 @@ export default function AdminPage() {
       .eq("status", "approved")
       .gte("date", monthFrom)
       .lte("date", monthTo)
-      .lte("date", tIso); // passées/aujourd’hui
+      .lte("date", tIso); // passÃ©es/aujourdâ€™hui
     if (error) console.error("month absences error:", error);
 
     const seen = new Set();
@@ -389,7 +389,7 @@ export default function AdminPage() {
     setMonthUpcomingAbsences(uniq);
   }, [monthFrom, monthTo]);
 
-  // Remplacements acceptés pour les absences du mois (passées/à venir)
+  // Remplacements acceptÃ©s pour les absences du mois (passÃ©es/Ã  venir)
   const loadMonthAcceptedRepl = useCallback(async () => {
     const ids = [
       ...(monthAbsences || []).map(a => a.id),
@@ -428,7 +428,7 @@ export default function AdminPage() {
     setMonthAcceptedRepl(map);
   }, [monthAbsences, monthUpcomingAbsences]);
 
-  // Déclencheurs init
+  // DÃ©clencheurs init
   useEffect(() => { loadPendingLeaves(); loadLatestLeave(); loadApprovedLeaves(); }, [todayIso, loadPendingLeaves, loadLatestLeave, loadApprovedLeaves]);
   useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, loadMonthAbsences, loadMonthUpcomingAbsences]);
   useEffect(() => { loadMonthAcceptedRepl(); }, [loadMonthAcceptedRepl]);
@@ -470,7 +470,7 @@ export default function AdminPage() {
         await loadApprovedLeaves();
       }).subscribe();
 
-    // Nouveau : bannière quand une absence est supprimée par une vendeuse
+    // Nouveau : banniÃ¨re quand une absence est supprimÃ©e par une vendeuse
     const chCancel = supabase
       .channel("absences_delete_banner")
       .on("postgres_changes", { event: "DELETE", schema: "public", table: "absences" }, async (payload) => {
@@ -497,7 +497,7 @@ export default function AdminPage() {
     const { error } = await supabase.rpc("admin_upsert_shift", { p_date: iso, p_code: code, p_seller: seller_id || null });
     if (error) {
       console.error("admin_upsert_shift error:", error);
-      alert(error.message || "Échec de sauvegarde du planning");
+      alert(error.message || "Ã‰chec de sauvegarde du planning");
       return;
     }
     setRefreshKey((k) => k + 1);
@@ -505,7 +505,7 @@ export default function AdminPage() {
 
   /* Copier la semaine -> semaine suivante */
   const copyWeekToNext = useCallback(async () => {
-    if (!window.confirm("Copier le planning de la semaine affichée vers la semaine prochaine ? Cela remplacera les affectations déjà présentes la semaine suivante.")) return;
+    if (!window.confirm("Copier le planning de la semaine affichÃ©e vers la semaine prochaine ? Cela remplacera les affectations dÃ©jÃ  prÃ©sentes la semaine suivante.")) return;
     const shiftCodes = ["MORNING", "MIDDAY", "EVENING", "SUNDAY_EXTRA"];
     const rows = [];
     days.forEach((d) => {
@@ -516,12 +516,12 @@ export default function AdminPage() {
         if (sellerId) rows.push({ date: nextIso, shift_code: code, seller_id: sellerId });
       });
     });
-    if (rows.length === 0) { alert("Aucune affectation à copier cette semaine."); return; }
+    if (rows.length === 0) { alert("Aucune affectation Ã  copier cette semaine."); return; }
     const { error } = await supabase.from("shifts").upsert(rows, { onConflict: "date,shift_code" }).select("date");
-    if (error) { console.error(error); alert("La copie a échoué."); return; }
+    if (error) { console.error(error); alert("La copie a Ã©chouÃ©."); return; }
     setMonday(addDays(monday, 7));
     setRefreshKey((k) => k + 1);
-    alert("Planning copié vers la semaine prochaine.");
+    alert("Planning copiÃ© vers la semaine prochaine.");
   }, [days, assign, monday]);
 
   /* Actions absence */
@@ -540,22 +540,22 @@ export default function AdminPage() {
   /* Attribuer / Refuser volontaire */
   const assignVolunteer = useCallback(async (repl) => {
     const shift = selectedShift[repl.id];
-    if (!shift) { alert("Choisis d’abord un créneau."); return; }
+    if (!shift) { alert("Choisis dâ€™abord un crÃ©neau."); return; }
 
     // 1) Mettre la volontaire dans le planning
     const { error: errUpsert } = await supabase
       .from("shifts")
       .upsert({ date: repl.date, shift_code: shift, seller_id: repl.volunteer_id }, { onConflict: "date,shift_code" })
       .select("date");
-    if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
+    if (errUpsert) { console.error(errUpsert); alert("Ã‰chec dâ€™attribution (RLS ?)"); return; }
 
-    // 2) Marquer cette proposition comme acceptée + stocker le créneau accepté
+    // 2) Marquer cette proposition comme acceptÃ©e + stocker le crÃ©neau acceptÃ©
     await supabase.from("replacement_interest").update({ status: "accepted", accepted_shift_code: shift }).eq("id", repl.id);
 
     // 3) Les autres propositions deviennent 'declined'
     await supabase.from("replacement_interest").update({ status: "declined" }).eq("absence_id", repl.absence_id).neq("id", repl.id);
 
-    // 4) IMPORTANT : si l’absence est encore 'pending', l’approuver automatiquement
+    // 4) IMPORTANT : si lâ€™absence est encore 'pending', lâ€™approuver automatiquement
     const { data: absRow } = await supabase.from("absences").select("status").eq("id", repl.absence_id).single();
     if (absRow?.status !== "approved") {
       await supabase.from("absences").update({ status: "approved" }).eq("id", repl.absence_id);
@@ -563,10 +563,10 @@ export default function AdminPage() {
 
     if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
 
-    // 5) Rafraîchir
+    // 5) RafraÃ®chir
     setRefreshKey((k) => k + 1);
     await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences(), loadMonthAcceptedRepl()]);
-    alert("Volontaire attribuée et absence approuvée.");
+    alert("Volontaire attribuÃ©e et absence approuvÃ©e.");
   }, [selectedShift, latestRepl, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl]);
 
   const declineVolunteer = useCallback(async (replId) => {
@@ -599,7 +599,7 @@ export default function AdminPage() {
     if (!sellerId) return;
     const { error } = await supabase
       .from("absences")
-      .upsert({ date: isoDate, seller_id: sellerId, status: "approved", reason: "Absence non déclarée (admin)" }, { onConflict: "date,seller_id" });
+      .upsert({ date: isoDate, seller_id: sellerId, status: "approved", reason: "Absence non dÃ©clarÃ©e (admin)" }, { onConflict: "date,seller_id" });
     if (error) { console.error("upsert absence error:", error); alert("Impossible d'enregistrer l'absence."); return; }
     setAbsencesByDate((prev) => {
       const arr = new Set([...(prev[isoDate] || []), sellerId]);
@@ -617,7 +617,7 @@ export default function AdminPage() {
     });
   }, []);
 
-  /* 🔔 BADGE + REFRESH AUTO */
+  /* ðŸ”” BADGE + REFRESH AUTO */
   useEffect(() => {
     const count =
       (pendingAbs?.length || 0) +
@@ -663,7 +663,7 @@ export default function AdminPage() {
   // Initial load
   useEffect(() => { if (!loading && session) reloadAll(); }, [loading, session, reloadAll]);
 
-  // Recharge quand l’app revient au premier plan
+  // Recharge quand lâ€™app revient au premier plan
   useEffect(() => {
     const onWake = () => setTimeout(() => reloadAll(), 50);
     window.addEventListener('focus', onWake, { passive: true });
@@ -674,7 +674,7 @@ export default function AdminPage() {
     };
   }, [reloadAll]);
 
-  // SW push → reload
+  // SW push â†’ reload
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
     const handler = (e) => { if (e?.data?.type === 'push') reloadAll(); };
@@ -686,7 +686,7 @@ export default function AdminPage() {
   return (
     <>
       <Head>
-        <title>Admin • {BUILD_TAG}</title>
+        <title>Admin â€¢ {BUILD_TAG}</title>
       </Head>
       <div style={{padding:'8px',background:'#111',color:'#fff',fontWeight:700}}>{BUILD_TAG}</div>
 
@@ -694,10 +694,10 @@ export default function AdminPage() {
         <div className="flex items-center justify-between">
           <div className="hdr">Compte: {profile?.full_name || "-"} <span className="sub">(admin)</span></div>
           <div className="flex items-center gap-2">
-            <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
-            <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
+            <Link href="/admin/sellers" legacyBehavior><a className="btn">ðŸ‘¥ Gerer les vendeuses</a></Link>
+            <Link href="/push-setup" legacyBehavior><a className="btn">ðŸ”” Activer les notifications</a></Link>
             <button type="button" className="btn" onClick={handleSignOut} disabled={signingOut}>
-              {signingOut ? "Déconnexion…" : "Se déconnecter"}
+              {signingOut ? "DÃ©connexionâ€¦" : "Se dÃ©connecter"}
             </button>
           </div>
         </div>
@@ -705,7 +705,7 @@ export default function AdminPage() {
         {latestCancel && (
           <div className="border rounded-2xl p-3 flex items-start justify-between gap-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
             <div className="text-sm">
-              <span className="font-medium">{latestCancel.name}</span> a annulé son absence du <span className="font-medium">{latestCancel.date}</span>.
+              <span className="font-medium">{latestCancel.name}</span> a annulÃ© son absence du <span className="font-medium">{latestCancel.date}</span>.
             </div>
           </div>
         )}
@@ -714,7 +714,7 @@ export default function AdminPage() {
           <div className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
               style={{ backgroundColor: "#fef3c7", borderColor: "#fcd34d" }}>
             <div className="text-sm">
-              <span className="font-medium">{latestLeave.seller_name}</span> demande un congé du{" "}
+              <span className="font-medium">{latestLeave.seller_name}</span> demande un congÃ© du{" "}
               <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
               {latestLeave.reason ? <><span> - </span><span>{latestLeave.reason}</span></> : null}.
             </div>
@@ -740,17 +740,17 @@ export default function AdminPage() {
         )}
 
         <div className="card">
-          <div className="hdr mb-2">Absences aujourd’hui</div>
-          {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourd’hui</div> : (
+          <div className="hdr mb-2">Absences aujourdâ€™hui</div>
+          {absencesToday.length === 0 ? <div className="text-sm">Aucune absence aujourdâ€™hui</div> : (
             <ul className="list-disc pl-6 space-y-1">
               {absencesToday.map((a) => (
                 <li key={a.id}>
                   <Chip name={nameFromId(a.seller_id)} /> - {a.status}
-                  {a.reason ? <><span> · </span>{a.reason}</> : ""}
+                  {a.reason ? <><span> Â· </span>{a.reason}</> : ""}
                   {a.replacement ? (
                     <>
-                      {" · "}
-                      <span>Remplacement accepté : </span>
+                      {" Â· "}
+                      <span>Remplacement acceptÃ© : </span>
                       <Chip name={a.replacement.volunteer_name} />
                     </>
                   ) : null}
@@ -761,14 +761,14 @@ export default function AdminPage() {
         </div>
 
         <div className="card">
-          <div className="hdr mb-2">Demandes d’absence - en attente (à venir)</div>
+          <div className="hdr mb-2">Demandes dâ€™absence - en attente (Ã  venir)</div>
           {pendingAbs.length === 0 ? <div className="text-sm text-gray-600">Aucune demande en attente.</div> : (
             <div className="space-y-2">
               {pendingAbs.map((a) => {
                 const name = nameFromId(a.seller_id);
                 return (
                   <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                    <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date}{a.reason ? <><span> · </span>{a.reason}</> : ""}</div></div>
+                    <div><div className="font-medium">{name}</div><div className="text-sm text-gray-600">{a.date}{a.reason ? <><span> Â· </span>{a.reason}</> : ""}</div></div>
                     <div className="flex gap-2"><ApproveBtn onClick={() => approveAbs(a.id)} /><RejectBtn onClick={() => rejectAbs(a.id)} /></div>
                   </div>
                 );
@@ -778,8 +778,8 @@ export default function AdminPage() {
         </div>
 
         <div className="card">
-          <div className="hdr mb-2">Demandes de congé - en attente</div>
-          {pendingLeaves.length === 0 ? <div className="text-sm text-gray-600">Aucune demande de congé en attente.</div> : (
+          <div className="hdr mb-2">Demandes de congÃ© - en attente</div>
+          {pendingLeaves.length === 0 ? <div className="text-sm text-gray-600">Aucune demande de congÃ© en attente.</div> : (
             <div className="space-y-2">
               {pendingLeaves.map((l) => {
                 const name = nameFromId(l.seller_id);
@@ -787,7 +787,7 @@ export default function AdminPage() {
                   <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                     <div>
                       <div className="font-medium">{name}</div>
-                      <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}{l.reason ? <><span> · </span>{l.reason}</> : ""}</div>
+                      <div className="text-sm text-gray-600">Du {l.start_date} au {l.end_date}{l.reason ? <><span> Â· </span>{l.reason}</> : ""}</div>
                     </div>
                     <div className="flex gap-2">
                       <ApproveBtn onClick={() => approveLeave(l.id)} />
@@ -801,15 +801,15 @@ export default function AdminPage() {
         </div>
 
         <div className="card">
-          <div className="hdr mb-2">Congés approuvés - en cours ou à venir</div>
+          <div className="hdr mb-2">CongÃ©s approuvÃ©s - en cours ou Ã  venir</div>
           {approvedLeaves.length === 0 ? (
-            <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
+            <div className="text-sm text-gray-600">Aucun congÃ© approuvÃ© Ã  venir.</div>
           ) : (
             <div className="space-y-2">
               {approvedLeaves.map((l) => {
                 const name = nameFromId(l.seller_id);
                 const isOngoing = betweenIso(todayIso, l.start_date, l.end_date);
-                const tag = isOngoing ? "En cours" : "À venir";
+                const tag = isOngoing ? "En cours" : "Ã€ venir";
                 const tagBg = isOngoing ? "#16a34a" : "#2563eb";
                 return (
                   <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
@@ -822,7 +822,7 @@ export default function AdminPage() {
                       {!isOngoing && l.start_date > todayIso ? (
                         <button type="button" className="btn" onClick={() => cancelFutureLeave(l.id)}
                           style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
-                          Annuler le congé
+                          Annuler le congÃ©
                         </button>
                       ) : null}
                     </div>
@@ -869,14 +869,14 @@ export default function AdminPage() {
                   <div className="space-y-1">
                     <div className="text-sm font-medium">Absents</div>
                     <div className="flex flex-wrap gap-2">
-                      {currentAbs.length === 0 ? <span className="text-sm text-gray-500">—</span> : null}
+                      {currentAbs.length === 0 ? <span className="text-sm text-gray-500">â€”</span> : null}
                       {currentAbs.map((sid) => {
                         const name = nameFromId(sid);
                         return (
                           <span key={sid} className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs" style={{ background:"#f5f5f5", border:"1px solid #e0e0e0" }}>
                             <span className="inline-block w-2 h-2 rounded-full" style={{ background: colorForName(name) }} />
                             {name}
-                            <button className="ml-1 text-[11px] opacity-70 hover:opacity-100" onClick={() => removeSellerAbsent(iso, sid)} title="Supprimer">✕</button>
+                            <button className="ml-1 text-[11px] opacity-70 hover:opacity-100" onClick={() => removeSellerAbsent(iso, sid)} title="Supprimer">âœ-</button>
                           </span>
                         );
                       })}
@@ -888,7 +888,7 @@ export default function AdminPage() {
                     >
                       <option value="" disabled>Marquer "Absent"</option>
                       {sellers.length === 0 && (
-                        <option value="" disabled>(Aucune vendeuse — vérifier droits/RPC)</option>
+                        <option value="" disabled>(Aucune vendeuse â€” vÃ©rifier droits/RPC)</option>
                       )}
                       {sellers.filter((s) => !currentAbs.includes(s.user_id)).map((s) => (
                         <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
@@ -933,7 +933,7 @@ export default function AdminPage() {
         </div>
 
         <div className="card">
-          <div className="hdr mb-2">Choisir le mois pour “Total heures (mois)”</div>
+          <div className="hdr mb-2">Choisir le mois pour â€œTotal heures (mois)â€</div>
           <div className="grid sm:grid-cols-3 gap-3 items-center">
             <div className="sm:col-span-2">
               <div className="text-sm mb-1">Mois</div>
@@ -948,7 +948,7 @@ export default function AdminPage() {
               />
             </div>
             <div className="text-sm text-gray-600">
-              Mois sélectionné : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>
+              Mois sÃ©lectionnÃ© : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>
             </div>
           </div>
         </div>
@@ -964,10 +964,10 @@ export default function AdminPage() {
         />
 
         <div className="card">
-          <div className="hdr mb-2">Absences approuvées - mois : {labelMonthFR(selectedMonth)}</div>
+          <div className="hdr mb-2">Absences approuvÃ©es - mois : {labelMonthFR(selectedMonth)}</div>
           {(() => {
             if (!monthAbsences || monthAbsences.length === 0) {
-              return <div className="text-sm text-gray-600">Aucune absence (passée/aujourd’hui) sur ce mois.</div>;
+              return <div className="text-sm text-gray-600">Aucune absence (passÃ©e/aujourdâ€™hui) sur ce mois.</div>;
             }
             const bySeller = {};
             monthAbsences.forEach((a) => {
@@ -1009,10 +1009,10 @@ export default function AdminPage() {
         </div>
 
         <div className="card">
-          <div className="hdr mb-2">Absences approuvées à venir - mois : {labelMonthFR(selectedMonth)}</div>
+          <div className="hdr mb-2">Absences approuvÃ©es Ã  venir - mois : {labelMonthFR(selectedMonth)}</div>
           {(() => {
             if (!monthUpcomingAbsences || monthUpcomingAbsences.length === 0) {
-              return <div className="text-sm text-gray-600">Aucune absence à venir sur ce mois.</div>;
+              return <div className="text-sm text-gray-600">Aucune absence Ã  venir sur ce mois.</div>;
             }
             const bySeller = {};
             monthUpcomingAbsences.forEach((a) => {
@@ -1041,7 +1041,7 @@ export default function AdminPage() {
                                   {repl.shift ? <> (<span>{shiftHumanLabel(repl.shift)}</span>)</> : null}
                                 </>
                               ) : (
-                                <> - <span className="text-gray-500">pas de volontaire accepté</span></>
+                                <> - <span className="text-gray-500">pas de volontaire acceptÃ©</span></>
                               )}
                             </li>
                           );
@@ -1071,7 +1071,7 @@ function ShiftSelect({ dateStr, value, onChange }) {
   ];
   return (
     <select className="select" value={value} onChange={(e) => onChange(e.target.value)}>
-      <option value="">- Choisir un créneau -</option>
+      <option value="">- Choisir un crÃ©neau -</option>
       {options.map((op) => (
         <option key={op.code} value={op.code}>
           {op.label}
@@ -1114,7 +1114,7 @@ function ShiftRow({ label, iso, code, value, onChange, sellers, chipName }) {
       <select className="select" value={value} onChange={(e) => onChange(iso, code, e.target.value || null)}>
         <option value="">- Choisir vendeuse -</option>
         {sellers.length === 0 && (
-          <option value="" disabled>(Aucune vendeuse — vérifier droits/RPC)</option>
+          <option value="" disabled>(Aucune vendeuse â€” vÃ©rifier droits/RPC)</option>
         )}
         {sellers.map((s) => (
           <option key={s.user_id} value={s.user_id}>{s.full_name}</option>
@@ -1139,7 +1139,7 @@ function TotalsGrid({
   const [annualLeaveDays, setAnnualLeaveDays] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // Heures semaine - depuis la DB, **semaine en cours** et **uniquement les jours passés** (date < aujourd’hui)
+  // Heures semaine - depuis la DB, **semaine en cours** et **uniquement les jours passÃ©s** (date < aujourdâ€™hui)
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -1151,7 +1151,7 @@ function TotalsGrid({
           .from("shifts")
           .select("date, shift_code, seller_id")
           .gte("date", weekStart)
-          .lt("date", todayIso); // exclut aujourd’hui et futurs
+          .lt("date", todayIso); // exclut aujourdâ€™hui et futurs
 
         const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
         (data || []).forEach((r) => {
@@ -1168,7 +1168,7 @@ function TotalsGrid({
     return () => { cancelled = true; };
   }, [sellers, refreshKey]);
 
-  // Heures mois (dédupliqué + sans jours futurs si mois courant)
+  // Heures mois (dÃ©dupliquÃ© + sans jours futurs si mois courant)
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -1207,7 +1207,7 @@ function TotalsGrid({
     return () => { cancelled = true; };
   }, [sellers, monthFrom, monthTo, refreshKey]);
 
-  // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd’hui inclus)
+  // Jours de congÃ© pris sur l'annÃ©e en cours (approved, jusquâ€™Ã  aujourdâ€™hui inclus)
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -1240,7 +1240,7 @@ function TotalsGrid({
     return () => { cancelled = true; };
   }, [sellers, refreshKey]);
 
-  // Compteur d'absences du mois (approved, passées + à venir)
+  // Compteur d'absences du mois (approved, passÃ©es + Ã  venir)
   const absencesCount = useMemo(() => {
     const all = [...(monthAbsences || []), ...(monthUpcomingAbsences || [])];
     const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
@@ -1254,14 +1254,14 @@ function TotalsGrid({
     return (
       <div className="card">
         <div className="hdr mb-2">Total heures vendeuses</div>
-        <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
+        <div className="text-sm text-gray-600">Aucune vendeuse enregistrÃ©e.</div>
       </div>
     );
 
   return (
     <div className="card">
-      <div className="hdr mb-1">Total heures - semaine en cours (jusqu’à hier) & mois : {monthLabel}</div>
-      {loading && <div className="text-sm text-gray-500 mb-3">Calcul en cours…</div>}
+      <div className="hdr mb-1">Total heures - semaine en cours (jusquâ€™Ã  hier) & mois : {monthLabel}</div>
+      {loading && <div className="text-sm text-gray-500 mb-3">Calcul en coursâ€¦</div>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {sellers.map((s) => {
           const week = weekTotals[s.user_id] || 0;
@@ -1273,13 +1273,13 @@ function TotalsGrid({
               <div className="flex items-center justify-between">
                 <Chip name={s.full_name} />
               </div>
-              <div className="text-sm text-gray-600">Semaine (jusqu’à hier)</div>
+              <div className="text-sm text-gray-600">Semaine (jusquâ€™Ã  hier)</div>
               <div className="text-2xl font-semibold">{week}</div>
               <div className="text-sm text-gray-600 mt-2">Mois ({monthLabel})</div>
               <div className="text-2xl font-semibold">{month}</div>
               <div className="text-sm text-gray-600 mt-2">Absences (mois)</div>
               <div className="text-2xl font-semibold">{absCount}</div>
-              <div className="text-sm text-gray-600 mt-2">Congés pris (année)</div>
+              <div className="text-sm text-gray-600 mt-2">CongÃ©s pris (annÃ©e)</div>
               <div className="text-2xl font-semibold">{leaveDays}</div>
             </div>
           );
@@ -1292,3 +1292,4 @@ function TotalsGrid({
 =======
 }
 >>>>>>> 38dd7c4 (admin: unified structure v-admin-2025-10-11-unified)
+
