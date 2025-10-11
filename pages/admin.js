@@ -259,12 +259,24 @@ export default function AdminPage() {
   /* Volontaires (absences approuvées) */
   const loadReplacements = useCallback(async () => {
     const { data: rows, error } = await supabase
-      .from("replacement_interest")
-      .select("id, status, volunteer_id, absence_id, absences(id, date, seller_id, status)")
-      .eq("status", "pending")
-      .eq("absences.status", "approved")
-      .gte("absences.date", todayIso)
-      .order("absences.date", { ascending: true });
+  .from("replacement_interest")
+  .select(`
+    id,
+    status,
+    volunteer_id,
+    absence_id,
+    absences:absences!replacement_interest_absence_id_fkey(
+      id,
+      date,
+      seller_id,
+      status
+    )
+  `)
+  .eq("status", "pending")
+  .eq("absences.status", "approved")
+  .gte("absences.date", todayIso)
+  .order("absences.date", { ascending: true });
+
     if (error) console.error("replacement list error:", error);
 
     const ids = new Set();
@@ -349,44 +361,88 @@ export default function AdminPage() {
 
   /* ======= ABSENCES DU MOIS (APPROUVÉES) ======= */
   const loadMonthAbsences = useCallback(async () => {
-    const tIso = fmtISODate(new Date());
-    const { data, error } = await supabase
-      .from("absences")
-      .select("id, seller_id, date, status")
-      .eq("status", "approved")
-      .gte("date", monthFrom)
-      .lte("date", monthTo)
-      .lte("date", tIso); // passées/aujourd’hui
-    if (error) console.error("month absences error:", error);
+  const tIso = fmtISODate(new Date());
+  // 1) RPC admin — récupère TOUTE la plage du mois, on filtre côté client
+  try {
+    const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: monthFrom, p_to: monthTo });
+    if (!error && Array.isArray(data)) {
+      const seen = new Set();
+      const pastOrToday = [];
+      (data || [])
+        .filter(r => r.status === "approved" && r.date <= tIso)
+        .forEach(r => {
+          const key = `${r.seller_id}|${r.date}`;
+          if (!seen.has(key)) { seen.add(key); pastOrToday.push(r); }
+        });
+      setMonthAbsences(pastOrToday);
+      return;
+    }
+    console.warn("admin_absences_by_range (month) KO -> fallback", error);
+  } catch (e) {
+    console.warn("admin_absences_by_range (month) threw -> fallback", e);
+  }
 
-    const seen = new Set();
-    const uniq = [];
-    (data || []).forEach(r => {
-      const key = `${r.seller_id}|${r.date}`;
-      if (!seen.has(key)) { seen.add(key); uniq.push(r); }
-    });
-    setMonthAbsences(uniq);
-  }, [monthFrom, monthTo]);
+  // 2) Fallback direct
+  const { data, error } = await supabase
+    .from("absences")
+    .select("id, seller_id, date, status")
+    .eq("status", "approved")
+    .gte("date", monthFrom)
+    .lte("date", monthTo)
+    .lte("date", tIso);
+  if (error) console.error("month absences error:", error);
+
+  const seen = new Set();
+  const uniq = [];
+  (data || []).forEach(r => {
+    const key = `${r.seller_id}|${r.date}`;
+    if (!seen.has(key)) { seen.add(key); uniq.push(r); }
+  });
+  setMonthAbsences(uniq);
+}, [monthFrom, monthTo]);
+
 
   const loadMonthUpcomingAbsences = useCallback(async () => {
-    const tIso = fmtISODate(new Date());
-    const { data, error } = await supabase
-      .from("absences")
-      .select("id, seller_id, date, status")
-      .eq("status", "approved")
-      .gte("date", monthFrom)
-      .lte("date", monthTo)
-      .gt("date", tIso); // futures
-    if (error) console.error("month upcoming absences error:", error);
+  const tIso = fmtISODate(new Date());
+  // 1) RPC admin
+  try {
+    const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: monthFrom, p_to: monthTo });
+    if (!error && Array.isArray(data)) {
+      const seen = new Set();
+      const future = [];
+      (data || [])
+        .filter(r => r.status === "approved" && r.date > tIso)
+        .forEach(r => {
+          const key = `${r.seller_id}|${r.date}`;
+          if (!seen.has(key)) { seen.add(key); future.push(r); }
+        });
+      setMonthUpcomingAbsences(future);
+      return;
+    }
+    console.warn("admin_absences_by_range (upcoming) KO -> fallback", error);
+  } catch (e) {
+    console.warn("admin_absences_by_range (upcoming) threw -> fallback", e);
+  }
 
-    const seen = new Set();
-    const uniq = [];
-    (data || []).forEach(r => {
-      const key = `${r.seller_id}|${r.date}`;
-      if (!seen.has(key)) { seen.add(key); uniq.push(r); }
-    });
-    setMonthUpcomingAbsences(uniq);
-  }, [monthFrom, monthTo]);
+  // 2) Fallback direct
+  const { data, error } = await supabase
+    .from("absences")
+    .select("id, seller_id, date, status")
+    .eq("status", "approved")
+    .gte("date", monthFrom)
+    .lte("date", monthTo)
+    .gt("date", tIso);
+  if (error) console.error("month upcoming absences error:", error);
+
+  const seen = new Set();
+  const uniq = [];
+  (data || []).forEach(r => {
+    const key = `${r.seller_id}|${r.date}`;
+    if (!seen.has(key)) { seen.add(key); uniq.push(r); }
+  });
+  setMonthUpcomingAbsences(uniq);
+}, [monthFrom, monthTo]);
+
 
   // Remplacements acceptés pour les absences du mois (passées/à venir)
   const loadMonthAcceptedRepl = useCallback(async () => {
@@ -577,22 +633,42 @@ export default function AdminPage() {
 
   /* Inline ABSENCES (admin) pour chaque jour de la semaine */
   const loadWeekAbsences = useCallback(async () => {
-    const from = fmtISODate(days[0]);
-    const to = fmtISODate(days[6]);
-    const { data, error } = await supabase
-      .from("absences")
-      .select("date, seller_id, status")
-      .gte("date", from)
-      .lte("date", to)
-      .in("status", ["approved", "pending"]);
-    if (error) { console.error("loadWeekAbsences error:", error); return; }
-    const grouped = {};
-    (data || []).forEach((r) => {
-      if (!grouped[r.date]) grouped[r.date] = [];
-      if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
-    });
-    setAbsencesByDate(grouped);
-  }, [days]);
+  const from = fmtISODate(days[0]);
+  const to   = fmtISODate(days[6]);
+
+  // 1) Essai RPC admin (bypass RLS)
+  try {
+    const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: from, p_to: to });
+    if (!error && Array.isArray(data)) {
+      const grouped = {};
+      (data || []).forEach((r) => {
+        if (!grouped[r.date]) grouped[r.date] = [];
+        if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
+      });
+      setAbsencesByDate(grouped);
+      return;
+    }
+    console.warn("admin_absences_by_range KO -> fallback", error);
+  } catch (e) {
+    console.warn("admin_absences_by_range threw -> fallback", e);
+  }
+
+  // 2) Fallback (si jamais)
+  const { data, error } = await supabase
+    .from("absences")
+    .select("date, seller_id, status")
+    .gte("date", from)
+    .lte("date", to)
+    .in("status", ["approved", "pending"]);
+  if (error) { console.error("loadWeekAbsences error:", error); return; }
+  const grouped = {};
+  (data || []).forEach((r) => {
+    if (!grouped[r.date]) grouped[r.date] = [];
+    if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
+  });
+  setAbsencesByDate(grouped);
+}, [days]);
+
 
   // Était: upsert direct sur absences → remplace par l'RPC
 const setSellerAbsent = useCallback(async (isoDate, sellerId) => {
