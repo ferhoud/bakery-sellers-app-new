@@ -493,15 +493,21 @@ if (session && !profile) {
 
   /* Sauvegarde d'une affectation */
   const save = useCallback(async (iso, code, seller_id) => {
-    const key = `${iso}|${code}`;
-    setAssign((prev) => ({ ...prev, [key]: seller_id || null }));
-    const { error } = await supabase
-      .from("shifts")
-      .upsert({ date: iso, shift_code: code, seller_id: seller_id || null }, { onConflict: "date,shift_code" })
-      .select("date");
-    if (error) { console.error("UPSERT shifts error:", error); alert("Échec de sauvegarde du planning (RLS ?)"); return; }
-    setRefreshKey((k) => k + 1);
-  }, []);
+   const key = `${iso}|${code}`;
+   // Optimistic UI
+   setAssign((prev) => ({ ...prev, [key]: seller_id || null }));
+   const { error } = await supabase.rpc("admin_upsert_shift", {
+     p_date: iso,
+     p_code: code,
+     p_seller: seller_id || null,
+   });
+   if (error) {
+     console.error("admin_upsert_shift error:", error);
+     alert(error.message || "Échec de sauvegarde du planning");
+     return;
+   }
+   setRefreshKey((k) => k + 1);
+ }, []);
 
   /* Copier la semaine -> semaine suivante */
   const copyWeekToNext = useCallback(async () => {
