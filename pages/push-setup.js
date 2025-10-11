@@ -7,7 +7,8 @@ const isBrowser = () => typeof window !== 'undefined';
 
 export default function PushSetup() {
   // 'checking' (détection en cours), 'enabled' (ok), 'disabled' (pas encore activé), 'unsupported' (navigateur)
-  const [status, setStatus] = useState('checking');
+  const [status, setStatus] = useState('disabled'); // pas "checking" par défaut
+
   const [checking, setChecking] = useState(false);
   const [log, setLog] = useState('');
   const [error, setError] = useState('');
