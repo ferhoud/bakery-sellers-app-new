@@ -58,6 +58,17 @@ function Chip({ name }) {
 export default function Admin() {
   const { session, profile, loading } = useAuth();
   const r = useRouter();
+  // juste après: const { session, profile, loading } = useAuth();
+
+if (loading) {
+  return <div className="p-4">Chargement…</div>;
+}
+
+// Optionnel : si tu dépends fortement de profile.role
+if (session && !profile) {
+  return <div className="p-4">Chargement du profil…</div>;
+}
+
 
   // Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
