@@ -1,10 +1,9 @@
-// pages/login.js — Connexion + redirection par rôle (admin → /admin, sinon → /app)
-// Garde le mode diagnostic (erreurs visibles + bloc Debug + test OTP)
 /* eslint-disable react/no-unescaped-entities */
 import { useState, useEffect } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
+import { isAdminEmail } from "@/lib/admin";
 
 export default function LoginPage() {
   const r = useRouter();
@@ -15,22 +14,27 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [lastResp, setLastResp] = useState(null);
-  const [deciding, setDeciding] = useState(false); // évite le flicker pendant la décision de route
+  const [deciding, setDeciding] = useState(false);
 
-  // Décide la route quand une session existe déjà (ex: retour sur /login connecté)
+  // Si déjà connecté, décide la cible (profil.role ou fallback email admin)
   useEffect(() => {
     const decide = async () => {
-      if (loading) return;
-      if (!session?.user?.id) return;
+      if (loading || !session?.user?.id) return;
       setDeciding(true);
       try {
         let next = r.query.next ? String(r.query.next) : "/app";
-        const { data: prof, error: e } = await supabase
+
+        // 1) profil.role si dispo
+        const { data: prof } = await supabase
           .from("profiles")
           .select("role")
           .eq("user_id", session.user.id)
           .maybeSingle();
-        if (!e && prof?.role === "admin") next = "/admin";
+
+        // 2) fallback: email dans liste admin
+        const emailIsAdmin = isAdminEmail(session.user.email);
+
+        if (prof?.role === "admin" || emailIsAdmin) next = "/admin";
         r.replace(next);
       } finally {
         setDeciding(false);
@@ -40,16 +44,28 @@ export default function LoginPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.user?.id, loading]);
 
-  const redirectByRole = async (userId) => {
+  const redirectByRoleOrEmail = async (user) => {
     let next = r.query.next ? String(r.query.next) : "/app";
-    if (userId) {
+
+    // profil.role si possible
+    if (user?.id) {
       const { data: prof } = await supabase
         .from("profiles")
         .select("role")
-        .eq("user_id", userId)
+        .eq("user_id", user.id)
         .maybeSingle();
-      if (prof?.role === "admin") next = "/admin";
+      if (prof?.role === "admin") {
+        r.replace("/admin");
+        return;
+      }
     }
+
+    // fallback: email dans liste admin
+    if (isAdminEmail(user?.email)) {
+      r.replace("/admin");
+      return;
+    }
+
     r.replace(next);
   };
 
@@ -64,8 +80,7 @@ export default function LoginPage() {
       setLastResp({ data, err: serializeErr(err) });
       if (err) throw err;
 
-      // Décider la destination selon le rôle
-      await redirectByRole(data?.user?.id);
+      await redirectByRoleOrEmail(data?.user);
     } catch (e2) {
       console.error("[login] error:", e2);
       setError(formatErr(e2));
@@ -73,7 +88,6 @@ export default function LoginPage() {
     }
   };
 
-  // Option de secours: tester l'OTP (lien magique)
   const onSendOtp = async () => {
     setError(null);
     setSubmitting(true);
@@ -94,7 +108,6 @@ export default function LoginPage() {
     }
   };
 
-  // Logs env vars (utile si la page est buildée sans ces vars)
   useEffect(() => {
     if (typeof window !== "undefined") {
       console.log("[env] NEXT_PUBLIC_SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL ? "ok" : "manquant");
