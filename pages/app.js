@@ -157,16 +157,94 @@ if (session && !profile) {
   };
 
   /* ----------------- Congé (form) ----------------- */
-  const submitLeave = async () => {
-    setMsgLeave("");
-    if (!leaveStart || !leaveEnd) { setMsgLeave("Merci de choisir une période complète."); return; }
-    if (leaveEnd < leaveStart)    { setMsgLeave("La date de retour doit être après la date de départ."); return; }
-    const { error } = await supabase.from("leaves").insert({
-      seller_id: session.user.id, start_date: leaveStart, end_date: leaveEnd, reason: leaveReason || null, status: "pending",
-    });
-    if (error) { console.error(error); setMsgLeave("Échec de l’envoi du congé."); return; }
-    setMsgLeave("Demande de congé envoyée. En attente de validation."); setLeaveReason("");
+ // components/LeaveRequestForm.js
+import { useState, useMemo } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import { fmtISODate } from "@/lib/date";
+
+export default function LeaveRequestForm() {
+  const todayIso = useMemo(() => fmtISODate(new Date()), []);
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [reason, setReason] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const invalid = !start || !end || end < start || start < todayIso;
+
+  const onSubmit = async (e) => {
+    e.preventDefault();
+    if (invalid) return;
+    setSubmitting(true);
+    try {
+      const { error } = await supabase.from("leaves").insert({
+        start_date: start,
+        end_date: end,
+        reason,
+        status: "pending",
+      });
+      if (error) alert(error.message || "Échec de la demande de congé.");
+      else {
+        setReason(""); setStart(""); setEnd("");
+        alert("Demande envoyée.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-3">
+      <div>
+        <div className="text-sm mb-1">Début</div>
+        <input
+          type="date"
+          className="input"
+          value={start}
+          min={todayIso}
+          onChange={(e) => {
+            const v = e.target.value;
+            setStart(v);
+            if (end && end < v) setEnd(v); // réaligne fin si besoin
+          }}
+          required
+        />
+      </div>
+
+      <div>
+        <div className="text-sm mb-1">Fin</div>
+        <input
+          type="date"
+          className="input"
+          value={end}
+          min={start || todayIso}
+          onChange={(e) => setEnd(e.target.value)}
+          required
+        />
+      </div>
+
+      <div>
+        <div className="text-sm mb-1">Motif (optionnel)</div>
+        <input
+          type="text"
+          className="input"
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="Ex: vacances"
+        />
+      </div>
+
+      <button className="btn" type="submit" disabled={submitting || invalid}>
+        {submitting ? "Envoi…" : "Demander un congé"}
+      </button>
+
+      {invalid && (start || end) ? (
+        <div className="text-xs text-red-600">
+          Dates invalides : pas de dates passées, et la fin doit être après (ou égale à) la date de début.
+        </div>
+      ) : null}
+    </form>
+  );
+}
+
 
   /* ----------------- “Remplacer ?” (pending/approved) ----------------- */
   const shouldPrompt = async (absence) => {
