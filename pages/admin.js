@@ -681,34 +681,40 @@ export default function AdminPage() {
   }, [pendingAbs?.length, pendingLeaves?.length, replList?.length]);
 
   const reloadAll = useCallback(async () => {
-    await Promise.all([
-      loadSellers(),
-      loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
-      loadWeekAbsences(),
-      loadPendingAbs?.(),
-      loadAbsencesToday?.(),
-      loadReplacements?.(),
-      loadPendingLeaves?.(),
-      loadApprovedLeaves?.(),
-      loadMonthAbsences?.(),
-      loadMonthUpcomingAbsences?.(),
-      loadMonthAcceptedRepl?.(),
-    ]);
-    setRefreshKey((k) => k + 1);
-  }, [
-    days,
-    loadSellers,
-    loadWeekAssignments,
-    loadWeekAbsences,
-    loadPendingAbs,
-    loadAbsencesToday,
-    loadReplacements,
-    loadPendingLeaves,
-    loadApprovedLeaves,
-    loadMonthAbsences,
-    loadMonthUpcomingAbsences,
-    loadMonthAcceptedRepl,
+  // 1) D'abord les vendeuses — c'est la clé pour les totaux
+  await loadSellers();
+
+  // 2) Ensuite le reste, en parallèle
+  await Promise.all([
+    loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
+    loadWeekAbsences(),
+    loadPendingAbs?.(),
+    loadAbsencesToday?.(),
+    loadReplacements?.(),
+    loadPendingLeaves?.(),
+    loadApprovedLeaves?.(),
+    loadMonthAbsences?.(),
+    loadMonthUpcomingAbsences?.(),
+    loadMonthAcceptedRepl?.(),
   ]);
+
+  // 3) Enfin : déclenche le recalcul des totaux
+  setRefreshKey((k) => k + 1);
+}, [
+  days,
+  loadSellers,
+  loadWeekAssignments,
+  loadWeekAbsences,
+  loadPendingAbs,
+  loadAbsencesToday,
+  loadReplacements,
+  loadPendingLeaves,
+  loadApprovedLeaves,
+  loadMonthAbsences,
+  loadMonthUpcomingAbsences,
+  loadMonthAcceptedRepl,
+]);
+
 
   // Initial load
   useEffect(() => { if (!loading && session) reloadAll(); }, [loading, session, reloadAll]);
@@ -1197,6 +1203,8 @@ function TotalsGrid({
   const [annualLeaveDays, setAnnualLeaveDays] = useState({});
   const [loading, setLoading] = useState(false);
 
+  const todayIso = fmtISODate(new Date());
+
   // Agrégateur simple côté client
   function aggregateFromRows(rows, sellersList) {
     const dict = Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
@@ -1207,24 +1215,29 @@ function TotalsGrid({
     return dict;
   }
 
-  // Heures par RPC d’abord, fallback shifts
+  // Heures sur une plage : tente l'RPC admin, puis fallback table shifts
   async function fetchHoursRange(fromIso, toIso, sellersList) {
-    // 1) RPC admin_hours_by_range (SECURITY DEFINER recommandé côté DB)
+    // 1) RPC (bypass RLS si la fonction est SECURITY DEFINER)
     try {
       const { data, error } = await supabase.rpc("admin_hours_by_range", { p_from: fromIso, p_to: toIso });
       if (!error && Array.isArray(data)) {
         const dict = Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
-        (data || []).forEach(r => { dict[r.seller_id] = Number(r.hours) || 0; });
+        data.forEach(r => { if (r?.seller_id) dict[r.seller_id] = Number(r.hours) || 0; });
         return dict;
       }
-    } catch {}
-    // 2) Fallback direct (sujet à RLS)
+      console.warn("RPC admin_hours_by_range KO -> fallback", error);
+    } catch (e) {
+      console.warn("RPC admin_hours_by_range threw -> fallback", e);
+    }
+
+    // 2) Fallback direct sur shifts
     try {
-      const { data: rows } = await supabase
+      const { data: rows, error } = await supabase
         .from("shifts")
         .select("seller_id, date, shift_code")
         .gte("date", fromIso)
         .lte("date", toIso);
+      if (error) throw error;
       return aggregateFromRows(rows, sellersList);
     } catch (e) {
       console.error("hours fallback error:", e);
@@ -1232,29 +1245,26 @@ function TotalsGrid({
     }
   }
 
-  // Heures semaine — jusqu’à HIER (exclut aujourd’hui)
+  // Heures semaine — du lundi de la semaine courante jusqu’à AUJOURD’HUI (inclus)
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!sellers || sellers.length === 0) { setWeekTotals({}); return; }
       const weekStartIso = fmtISODate(startOfWeek(new Date()));
-      const yesterdayIso = fmtISODate(addDays(new Date(), -1));
-      if (yesterdayIso < weekStartIso) { setWeekTotals({}); return; }
-      const dict = await fetchHoursRange(weekStartIso, yesterdayIso, sellers);
+      const dict = await fetchHoursRange(weekStartIso, todayIso, sellers);
       if (!cancelled) setWeekTotals(dict);
     })();
     return () => { cancelled = true; };
-  }, [sellers, refreshKey]);
+  }, [sellers, refreshKey, todayIso]);
 
-  // Heures mois — jusqu’à HIER si mois courant, sinon fin du mois sélectionné
+  // Heures mois — jusqu’à AUJOURD’HUI si mois courant, sinon jusqu’à fin du mois sélectionné
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!sellers || sellers.length === 0) { setMonthTotals({}); return; }
       setLoading(true);
       try {
-        const yesterdayIso = fmtISODate(addDays(new Date(), -1));
-        const upper = (yesterdayIso < monthTo) ? yesterdayIso : monthTo;
+        const upper = (todayIso < monthTo) ? todayIso : monthTo;
         if (upper < monthFrom) { setMonthTotals({}); return; }
         const dict = await fetchHoursRange(monthFrom, upper, sellers);
         if (!cancelled) setMonthTotals(dict);
@@ -1263,9 +1273,9 @@ function TotalsGrid({
       }
     })();
     return () => { cancelled = true; };
-  }, [sellers, monthFrom, monthTo, refreshKey]);
+  }, [sellers, monthFrom, monthTo, refreshKey, todayIso]);
 
-  // Jours de congé pris sur l'année (approved, jusqu’à aujourd’hui inclus)
+  // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd’hui inclus)
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1273,7 +1283,6 @@ function TotalsGrid({
       const now = new Date();
       const yearStart = `${now.getFullYear()}-01-01`;
       const yearEnd   = `${now.getFullYear()}-12-31`;
-      const todayIso  = fmtISODate(now);
 
       const { data } = await supabase
         .from("leaves")
@@ -1295,15 +1304,13 @@ function TotalsGrid({
       if (!cancelled) setAnnualLeaveDays(dict);
     })();
     return () => { cancelled = true; };
-  }, [sellers, refreshKey]);
+  }, [sellers, refreshKey, todayIso]);
 
-  // Compteur d'absences du mois
+  // Compteur d'absences du mois (approved, passées + à venir)
   const absencesCount = useMemo(() => {
     const all = [...(monthAbsences || []), ...(monthUpcomingAbsences || [])];
     const dict = Object.fromEntries((sellers || []).map((s) => [s.user_id, 0]));
-    all.forEach(a => {
-      if (a?.seller_id) dict[a.seller_id] = (dict[a.seller_id] || 0) + 1;
-    });
+    all.forEach(a => { if (a?.seller_id) dict[a.seller_id] = (dict[a.seller_id] || 0) + 1; });
     return dict;
   }, [sellers, monthAbsences, monthUpcomingAbsences]);
 
@@ -1318,7 +1325,7 @@ function TotalsGrid({
 
   return (
     <div className="card">
-      <div className="hdr mb-1">Total heures - semaine en cours (jusqu’à hier) & mois : {monthLabel}</div>
+      <div className="hdr mb-1">Total heures - semaine en cours (jusqu’à aujourd’hui) & mois : {monthLabel}</div>
       {loading && <div className="text-sm text-gray-500 mb-3">Calcul en cours…</div>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {sellers.map((s) => {
@@ -1331,7 +1338,7 @@ function TotalsGrid({
               <div className="flex items-center justify-between">
                 <Chip name={s.full_name} />
               </div>
-              <div className="text-sm text-gray-600">Semaine (jusqu’à hier)</div>
+              <div className="text-sm text-gray-600">Semaine (jusqu’à aujourd’hui)</div>
               <div className="text-2xl font-semibold">{Number(week).toFixed(1)} h</div>
               <div className="text-sm text-gray-600 mt-2">Mois ({monthLabel})</div>
               <div className="text-2xl font-semibold">{Number(month).toFixed(1)} h</div>
@@ -1346,4 +1353,3 @@ function TotalsGrid({
     </div>
   );
 }
-
