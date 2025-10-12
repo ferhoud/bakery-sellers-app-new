@@ -18,7 +18,7 @@ import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from ".
 
 /* ---------- CONSTANTES / UTILS GLOBAUX (SANS HOOKS) ---------- */
 
-const BUILD_TAG = "ADMIN - 12/10/2025 01:40";
+const BUILD_TAG = "ADMIN - 12/10/2025 02:45";
 
 // Heures par créneau (inclut le dimanche spécial)
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
@@ -74,11 +74,6 @@ function shiftHumanLabel(code) { return SHIFT_LABELS[code] || code || "-"; }
 export default function AdminPage() {
   const r = useRouter();
   const { session, profile, loading } = useAuth();
-// On ne requête la base QUE si l’admin est vraiment authentifié
-const canQuery =
-  !!session &&
-  (isAdminEmail(session.user?.email) || profile?.role === "admin");
-
 
   // Kill-switch (utile si besoin de couper la page en prod)
   const PANIC = process.env.NEXT_PUBLIC_ADMIN_PANIC === "1";
@@ -206,13 +201,11 @@ const canQuery =
     setAssign(next);
   }, []);
   useEffect(() => {
-  if (!canQuery) return;
-  const from = fmtISODate(days[0]);
-  const to = fmtISODate(days[6]);
-  loadWeekAssignments(from, to);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [monday, canQuery]);
-
+    const from = fmtISODate(days[0]);
+    const to = fmtISODate(days[6]);
+    loadWeekAssignments(from, to);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monday]);
 
   /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
   const loadAbsencesToday = useCallback(async () => {
@@ -295,53 +288,45 @@ const canQuery =
     }
   }, [todayIso]);
 
-  /* ======= CONGÉS ======= */
-  const loadPendingLeaves = useCallback(async () => {
+  /* ======= CONGÉS — un seul fetch ======= */
+  const loadLeavesUnified = useCallback(async () => {
     const { data, error } = await supabase
       .from("leaves")
       .select("id, seller_id, start_date, end_date, reason, status, created_at")
-      .eq("status", "pending")
       .gte("end_date", todayIso)
       .order("created_at", { ascending: false });
-    if (error) console.error("pending leaves error:", error);
-    setPendingLeaves(data || []);
-  }, [todayIso]);
 
-  const loadLatestLeave = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("leaves")
-      .select("id, seller_id, start_date, end_date, reason, status, created_at")
-      .eq("status", "pending")
-      .gte("end_date", todayIso)
-      .order("created_at", { ascending: false })
-      .limit(1);
-    if (error) console.error("latest leave error:", error);
-    setLatestLeave(data && data.length ? data[0] : null); // plus de fetch profile
-  }, [todayIso]);
+    if (error) {
+      console.error("leaves unified error:", error);
+      setPendingLeaves([]);
+      setApprovedLeaves([]);
+      setLatestLeave(null);
+      return;
+    }
 
-  const loadApprovedLeaves = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("leaves")
-      .select("id, seller_id, start_date, end_date, reason, status")
-      .eq("status", "approved")
-      .gte("end_date", todayIso)
-      .order("start_date", { ascending: true });
-    if (error) console.error("approved leaves error:", error);
-    setApprovedLeaves(data || []);
+    const pending = [];
+    const approved = [];
+    for (const l of data || []) {
+      if (l.status === "pending") pending.push(l);
+      else if (l.status === "approved") approved.push(l);
+    }
+    setPendingLeaves(pending);
+    setApprovedLeaves(approved);
+    setLatestLeave(pending.length ? pending[0] : null);
   }, [todayIso]);
 
   // Actions congés
   const approveLeave = useCallback(async (id) => {
     const { error } = await supabase.from("leaves").update({ status: "approved" }).eq("id", id);
     if (error) { alert("Impossible d'approuver (RLS ?)"); return; }
-    await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
-  }, [loadPendingLeaves, loadApprovedLeaves, loadLatestLeave]);
+    await loadLeavesUnified();
+  }, [loadLeavesUnified]);
 
   const rejectLeave = useCallback(async (id) => {
     const { error } = await supabase.from("leaves").update({ status: "rejected" }).eq("id", id);
     if (error) { alert("Impossible de rejeter (RLS ?)"); return; }
-    await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
-  }, [loadPendingLeaves, loadApprovedLeaves, loadLatestLeave]);
+    await loadLeavesUnified();
+  }, [loadLeavesUnified]);
 
   const cancelFutureLeave = useCallback(async (id) => {
     const { data: leave } = await supabase.from("leaves").select("start_date,status").eq("id", id).single();
@@ -353,9 +338,9 @@ const canQuery =
     const { error } = await supabase.from("leaves").delete().eq("id", id);
     if (error) { console.error(error); alert("Échec de l’annulation du congé."); return; }
 
-    await loadPendingLeaves(); await loadApprovedLeaves(); await loadLatestLeave();
+    await loadLeavesUnified();
     alert("Congé à venir annulé. La vendeuse peut refaire une demande.");
-  }, [loadPendingLeaves, loadApprovedLeaves, loadLatestLeave]);
+  }, [loadLeavesUnified]);
 
   /* ======= ABSENCES DU MOIS (APPROUVÉES) ======= */
   const loadMonthAbsences = useCallback(async () => {
@@ -463,79 +448,63 @@ const canQuery =
   }, [monthAbsences, monthUpcomingAbsences]);
 
   // Déclencheurs init
-  useEffect(() => {
-if (!canQuery) return;
- loadPendingLeaves(); loadLatestLeave(); loadApprovedLeaves(); }, [todayIso, loadPendingLeaves, loadLatestLeave, loadApprovedLeaves]);
-  useEffect(() => {
-if (!canQuery) return;
- loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, loadMonthAbsences, loadMonthUpcomingAbsences]);
+  useEffect(() => { loadLeavesUnified(); }, [todayIso, loadLeavesUnified]);
+  useEffect(() => { loadMonthAbsences(); loadMonthUpcomingAbsences(); }, [monthFrom, monthTo, loadMonthAbsences, loadMonthUpcomingAbsences]);
   useEffect(() => { loadMonthAcceptedRepl(); }, [loadMonthAcceptedRepl]);
 
   /* Realtime : absences + replacement + leaves (sans fetch profiles) */
   useEffect(() => {
-  if (!canQuery) return; // ⬅️ important : pas d’abonnements sans auth
+    const chAbs = supabase
+      .channel("absences_rt_admin")
+      .on("postgres_changes", { event: "*", schema: "public", table: "absences" }, () => {
+        loadPendingAbs();
+        loadAbsencesToday();
+        loadMonthAbsences();
+        loadMonthUpcomingAbsences();
+      }).subscribe();
 
-  const chAbs = supabase
-    .channel("absences_rt_admin")
-    .on("postgres_changes", { event: "*", schema: "public", table: "absences" }, () => {
-      loadPendingAbs();
-      loadAbsencesToday();
-      loadMonthAbsences();
-      loadMonthUpcomingAbsences();
-    }).subscribe();
+    const chRepl = supabase
+      .channel("replacement_rt_admin")
+      .on("postgres_changes", { event: "*", schema: "public", table: "replacement_interest" }, async (payload) => {
+        if (payload.eventType === "INSERT") {
+          const r = payload.new;
+          const { data: abs } = await supabase.from("absences").select("date, seller_id").eq("id", r.absence_id).single();
+          setLatestRepl({
+            id: r.id,
+            volunteer_id: r.volunteer_id,
+            absence_id: r.absence_id,
+            date: abs?.date,
+            absent_id: abs?.seller_id,
+            status: r.status,
+          });
+        }
+        loadReplacements(); loadMonthAcceptedRepl();
+      }).subscribe();
 
-  const chRepl = supabase
-    .channel("replacement_rt_admin")
-    .on("postgres_changes", { event: "*", schema: "public", table: "replacement_interest" }, async (payload) => {
-      if (payload.eventType === "INSERT") {
-        const r = payload.new;
-        const { data: abs } = await supabase.from("absences").select("date, seller_id").eq("id", r.absence_id).single();
-        const [vol, absName] = await Promise.all([
-          supabase.from("profiles").select("full_name").eq("user_id", r.volunteer_id).single(),
-          supabase.from("profiles").select("full_name").eq("user_id", abs?.seller_id).single(),
-        ]);
-        setLatestRepl({
-          id: r.id, volunteer_id: r.volunteer_id, volunteer_name: vol.data?.full_name || "-",
-          absence_id: r.absence_id, date: abs?.date, absent_id: abs?.seller_id,
-          absent_name: absName.data?.full_name || "-", status: r.status,
-        });
-      }
-      loadReplacements(); loadMonthAcceptedRepl();
-    }).subscribe();
+    const chLeaves = supabase
+      .channel("leaves_rt_admin")
+      .on("postgres_changes", { event: "*", schema: "public", table: "leaves" }, async () => {
+        await loadLeavesUnified();
+      }).subscribe();
 
-  const chLeaves = supabase
-    .channel("leaves_rt_admin")
-    .on("postgres_changes", { event: "*", schema: "public", table: "leaves" }, async () => {
-      await loadPendingLeaves();
-      await loadApprovedLeaves();
-    }).subscribe();
+    // Bannière quand une absence est supprimée par une vendeuse
+    const chCancel = supabase
+      .channel("absences_delete_banner")
+      .on("postgres_changes", { event: "DELETE", schema: "public", table: "absences" }, async (payload) => {
+        const old = payload?.old;
+        if (!old?.seller_id || !old?.date) return;
+        setLatestCancel({ seller_id: old.seller_id, date: old.date }); // plus de fetch profile
+        setTimeout(() => setLatestCancel(null), 5000);
+      })
+      .subscribe();
 
-  const chCancel = supabase
-    .channel("absences_delete_banner")
-    .on("postgres_changes", { event: "DELETE", schema: "public", table: "absences" }, async (payload) => {
-      const old = payload?.old;
-      if (!old?.seller_id || !old?.date) return;
-      const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", old.seller_id).single();
-      setLatestCancel({ name: prof?.full_name || "-", date: old.date });
-      setTimeout(() => setLatestCancel(null), 5000);
-    })
-    .subscribe();
-
-  return () => {
-    supabase.removeChannel(chAbs);
-    supabase.removeChannel(chRepl);
-    supabase.removeChannel(chLeaves);
-    supabase.removeChannel(chCancel);
-  };
-}, [
-  canQuery,
-  todayIso,
-  loadPendingAbs, loadAbsencesToday,
-  loadPendingLeaves, loadApprovedLeaves,
-  loadMonthAbsences, loadMonthUpcomingAbsences,
-  loadMonthAcceptedRepl, loadReplacements
-]);
-
+    return () => {
+      supabase.removeChannel(chAbs);
+      supabase.removeChannel(chRepl);
+      supabase.removeChannel(chLeaves);
+      supabase.removeChannel(chCancel);
+    };
+  }, [todayIso, loadPendingAbs, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl, loadReplacements, loadLeavesUnified]);
 
   /* Sauvegarde d'une affectation */
   const save = useCallback(async (iso, code, seller_id) => {
@@ -702,106 +671,75 @@ if (!canQuery) return;
     else if (nav?.clearAppBadge) nav.clearAppBadge().catch(() => {});
   }, [pendingAbs?.length, pendingLeaves?.length, replList?.length]);
 
+  /* ---- RELOAD ALL (central) ---- */
   const reloadAll = useCallback(async () => {
-  if (!canQuery) return; // ⬅️ garde-fou
+    // 1) D'abord les vendeuses — c'est la clé pour les totaux
+    await loadSellers();
 
-  // 1) D'abord les vendeuses
-  await loadSellers();
+    // 2) Ensuite le reste, en parallèle
+    await Promise.all([
+      loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
+      loadWeekAbsences(),
+      loadPendingAbs?.(),
+      loadAbsencesToday?.(),
+      loadReplacements?.(),
+      loadLeavesUnified?.(),
+      loadMonthAbsences?.(),
+      loadMonthUpcomingAbsences?.(),
+      loadMonthAcceptedRepl?.(),
+    ]);
 
-  // 2) Puis le reste en parallèle
-  await Promise.all([
-    loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
-    loadWeekAbsences(),
-    loadPendingAbs?.(),
-    loadAbsencesToday?.(),
-    loadReplacements?.(),
-    loadPendingLeaves?.(),
-    loadApprovedLeaves?.(),
-    loadMonthAbsences?.(),
-    loadMonthUpcomingAbsences?.(),
-    loadMonthAcceptedRepl?.(),
+    // 3) Enfin : déclenche le recalcul des totaux
+    setRefreshKey((k) => k + 1);
+  }, [
+    days,
+    loadSellers,
+    loadWeekAssignments,
+    loadWeekAbsences,
+    loadPendingAbs,
+    loadAbsencesToday,
+    loadReplacements,
+    loadLeavesUnified,
+    loadMonthAbsences,
+    loadMonthUpcomingAbsences,
+    loadMonthAcceptedRepl,
   ]);
-
-  setRefreshKey((k) => k + 1);
-}, [
-  canQuery,
-  days,
-  loadSellers,
-  loadWeekAssignments,
-  loadWeekAbsences,
-  loadPendingAbs,
-  loadAbsencesToday,
-  loadReplacements,
-  loadPendingLeaves,
-  loadApprovedLeaves,
-  loadMonthAbsences,
-  loadMonthUpcomingAbsences,
-  loadMonthAcceptedRepl,
-]);
-
-
-
-  // 3) Enfin : déclenche le recalcul des totaux
-  setRefreshKey((k) => k + 1);
-}, [
-  days,
-  loadSellers,
-  loadWeekAssignments,
-  loadWeekAbsences,
-  loadPendingAbs,
-  loadAbsencesToday,
-  loadReplacements,
-  loadPendingLeaves,
-  loadApprovedLeaves,
-  loadMonthAbsences,
-  loadMonthUpcomingAbsences,
-  loadMonthAcceptedRepl,
-]);
-
 
   // Initial load
   useEffect(() => { if (!loading && session) reloadAll(); }, [loading, session, reloadAll]);
 
   // Recharge quand l’app revient au premier plan
   useEffect(() => {
-  const onWake = () => canQuery && setTimeout(() => reloadAll(), 50);
-  window.addEventListener('focus', onWake, { passive: true });
-  document.addEventListener('visibilitychange', onWake, { passive: true });
-  return () => {
-    window.removeEventListener('focus', onWake);
-    document.removeEventListener('visibilitychange', onWake);
-  };
-}, [reloadAll, canQuery]);
-
+    const onWake = () => setTimeout(() => reloadAll(), 50);
+    window.addEventListener('focus', onWake, { passive: true });
+    document.addEventListener('visibilitychange', onWake, { passive: true });
+    return () => {
+      window.removeEventListener('focus', onWake);
+      document.removeEventListener('visibilitychange', onWake);
+    };
+  }, [reloadAll]);
 
   // SW push → reload
   useEffect(() => {
-  if (!('serviceWorker' in navigator)) return;
-  const handler = (e) => { if (e?.data?.type === 'push' && canQuery) reloadAll(); };
-  navigator.serviceWorker.addEventListener('message', handler);
-  return () => navigator.serviceWorker.removeEventListener('message', handler);
-}, [reloadAll, canQuery]);
+    if (!('serviceWorker' in navigator)) return;
+    const handler = (e) => { if (e?.data?.type === 'push') reloadAll(); };
+    navigator.serviceWorker.addEventListener('message', handler);
+    return () => navigator.serviceWorker.removeEventListener('message', handler);
+  }, [reloadAll]);
 
-
-  /* ---------- GUARDE AUTH (APRÈS TOUS LES HOOKS) ---------- */
- // ——— Recalc & refresh when "days" or data loaders change
-useEffect(() => {
-  let isMounted = true;
-
-  const run = async () => {
-    // 1) recharge les données nécessaires (si c’est ton intention ici)
-    await Promise.all([loadSellers(), loadWeekAssignments()]);
-    // 3) Enfin : déclenche le recalcul des totaux
-    if (isMounted) setRefreshKey((k) => k + 1);
-  };
-
-  run();
-
-  return () => {
-    isMounted = false;
-  };
-}, [days, loadSellers, loadWeekAssignments]);
-
+  // ——— Recalc & refresh when "days" or data loaders change (pass from/to)
+  useEffect(() => {
+    let isMounted = true;
+    const run = async () => {
+      await Promise.all([
+        loadSellers(),
+        loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
+      ]);
+      if (isMounted) setRefreshKey((k) => k + 1);
+    };
+    run();
+    return () => { isMounted = false; };
+  }, [days, loadSellers, loadWeekAssignments]);
 
   /* ---------- RENDER ---------- */
   return (
@@ -1072,18 +1010,15 @@ useEffect(() => {
           </div>
         </div>
 
-        {canQuery && sellers.length > 0 && (
-  <TotalsGrid
-    sellers={sellers}
-    monthFrom={monthFrom}
-    monthTo={monthTo}
-    monthLabel={labelMonthFR(selectedMonth)}
-    refreshKey={refreshKey}
-    monthAbsences={monthAbsences}
-    monthUpcomingAbsences={monthUpcomingAbsences}
-  />
-)}
-
+        <TotalsGrid
+          sellers={sellers}
+          monthFrom={monthFrom}
+          monthTo={monthTo}
+          monthLabel={labelMonthFR(selectedMonth)}
+          refreshKey={refreshKey}
+          monthAbsences={monthAbsences}
+          monthUpcomingAbsences={monthUpcomingAbsences}
+        />
 
         <div className="card">
           <div className="hdr mb-2">Absences approuvées - mois : {labelMonthFR(selectedMonth)}</div>
@@ -1256,12 +1191,11 @@ function TotalsGrid({
   monthAbsences = [],
   monthUpcomingAbsences = [],
 }) {
-  const [weekTotals, setWeekTotals] = useState(null);   // null = pas encore calculé
-  const [monthTotals, setMonthTotals] = useState(null); // null = pas encore calculé
-  const [annualLeaveDays, setAnnualLeaveDays] = useState(null);
+  const [weekTotals, setWeekTotals] = useState({});
+  const [monthTotals, setMonthTotals] = useState({});
+  const [annualLeaveDays, setAnnualLeaveDays] = useState({});
   const [loading, setLoading] = useState(false);
 
-  // util local
   const todayIso = fmtISODate(new Date());
 
   // Agrégateur simple côté client
@@ -1274,61 +1208,71 @@ function TotalsGrid({
     return dict;
   }
 
-  // Lecture des heures depuis shifts (sans RPC)
+  // Heures sur une plage : tente l'RPC admin, puis fallback table shifts
   async function fetchHoursRange(fromIso, toIso, sellersList) {
-  try {
-    const { data: rows, error } = await supabase
-      .from("shifts")
-      .select("seller_id, date, shift_code")
-      .gte("date", fromIso)
-      .lte("date", toIso);
-    if (error) throw error;
-    return aggregateFromRows(rows, sellersList);
-  } catch (e) {
-    console.error("hours fetch error:", e);
-    // ⬇️ Important : renvoyer un dictionnaire de zéros si souci
-    return Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
+    // 1) RPC (bypass RLS si la fonction est SECURITY DEFINER)
+    try {
+      const { data, error } = await supabase.rpc("admin_hours_by_range", { p_from: fromIso, p_to: toIso });
+      if (!error && Array.isArray(data)) {
+        const dict = Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
+        data.forEach(r => { if (r?.seller_id) dict[r.seller_id] = Number(r.hours) || 0; });
+        return dict;
+      }
+      console.warn("RPC admin_hours_by_range KO -> fallback", error);
+    } catch (e) {
+      console.warn("RPC admin_hours_by_range threw -> fallback", e);
+    }
+
+    // 2) Fallback direct sur shifts
+    try {
+      const { data: rows, error } = await supabase
+        .from("shifts")
+        .select("seller_id, date, shift_code")
+        .gte("date", fromIso)
+        .lte("date", toIso);
+      if (error) throw error;
+      return aggregateFromRows(rows, sellersList);
+    } catch (e) {
+      console.error("hours fallback error:", e);
+      return Object.fromEntries((sellersList || []).map(s => [s.user_id, 0]));
+    }
   }
-}
 
-
-  // Heures semaine — du lundi de la semaine courante jusqu’à HIER (si lundi, résultat = 0)
+  // Heures semaine — du lundi de la semaine courante jusqu’à AUJOURD’HUI (inclus)
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!sellers || sellers.length === 0) return;
+      if (!sellers || sellers.length === 0) { setWeekTotals({}); return; }
       const weekStartIso = fmtISODate(startOfWeek(new Date()));
-      const yesterdayIso = fmtISODate(addDays(new Date(), -1));
-      if (yesterdayIso < weekStartIso) { if (!cancelled) setWeekTotals(Object.fromEntries(sellers.map(s=>[s.user_id,0]))); return; }
-      const dict = await fetchHoursRange(weekStartIso, yesterdayIso, sellers);
-      if (!cancelled && dict) setWeekTotals(dict);
+      const dict = await fetchHoursRange(weekStartIso, todayIso, sellers);
+      if (!cancelled) setWeekTotals(dict);
     })();
     return () => { cancelled = true; };
-  }, [sellers, refreshKey]);
+  }, [sellers, refreshKey, todayIso]);
 
-  // Heures mois — **jusqu’à AUJOURD’HUI inclus** (si on est avant le début de mois sélectionné, 0)
+  // Heures mois — jusqu’à AUJOURD’HUI si mois courant, sinon jusqu’à fin du mois sélectionné
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!sellers || sellers.length === 0) return;
+      if (!sellers || sellers.length === 0) { setMonthTotals({}); return; }
       setLoading(true);
       try {
         const upper = (todayIso < monthTo) ? todayIso : monthTo;
-        if (upper < monthFrom) { if (!cancelled) setMonthTotals(Object.fromEntries(sellers.map(s=>[s.user_id,0]))); return; }
+        if (upper < monthFrom) { setMonthTotals({}); return; }
         const dict = await fetchHoursRange(monthFrom, upper, sellers);
-        if (!cancelled && dict) setMonthTotals(dict);
+        if (!cancelled) setMonthTotals(dict);
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [sellers, monthFrom, monthTo, refreshKey]);
+  }, [sellers, monthFrom, monthTo, refreshKey, todayIso]);
 
   // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd’hui inclus)
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!sellers || sellers.length === 0) return;
+      if (!sellers || sellers.length === 0) { setAnnualLeaveDays({}); return; }
       const now = new Date();
       const yearStart = `${now.getFullYear()}-01-01`;
       const yearEnd   = `${now.getFullYear()}-12-31`;
@@ -1353,46 +1297,28 @@ function TotalsGrid({
       if (!cancelled) setAnnualLeaveDays(dict);
     })();
     return () => { cancelled = true; };
-  }, [sellers, refreshKey]);
+  }, [sellers, refreshKey, todayIso]);
 
   // Compteur d'absences du mois (approved, passées + à venir)
   const absencesCount = useMemo(() => {
-    if (!sellers) return {};
     const all = [...(monthAbsences || []), ...(monthUpcomingAbsences || [])];
-    const dict = Object.fromEntries(sellers.map((s) => [s.user_id, 0]));
-    all.forEach(a => {
-      if (a?.seller_id) dict[a.seller_id] = (dict[a.seller_id] || 0) + 1;
-    });
+    const dict = Object.fromEntries((sellers || []).map((s) => [s.user_id, 0]));
+    all.forEach(a => { if (a?.seller_id) dict[a.seller_id] = (dict[a.seller_id] || 0) + 1; });
     return dict;
   }, [sellers, monthAbsences, monthUpcomingAbsences]);
 
-  // États d’attente lisibles
-  const sellersReady = sellers && sellers.length > 0;
-  const weekReady    = weekTotals !== null;
-  const monthReady   = monthTotals !== null;
-  const leavesReady  = annualLeaveDays !== null;
-
-  if (!sellersReady) {
+  if (!sellers || sellers.length === 0) {
     return (
       <div className="card">
         <div className="hdr mb-2">Total heures vendeuses</div>
-        <div className="text-sm text-gray-600">Chargement des vendeuses…</div>
-      </div>
-    );
-  }
-
-  if (!weekReady || !monthReady || !leavesReady) {
-    return (
-      <div className="card">
-        <div className="hdr mb-1">Total heures - semaine & mois : {monthLabel}</div>
-        <div className="text-sm text-gray-500">Calcul en cours…</div>
+        <div className="text-sm text-gray-600">Aucune vendeuse enregistrée.</div>
       </div>
     );
   }
 
   return (
     <div className="card">
-      <div className="hdr mb-1">Total heures - semaine en cours (jusqu’à hier) & mois : {monthLabel}</div>
+      <div className="hdr mb-1">Total heures - semaine en cours (jusqu’à aujourd’hui) & mois : {monthLabel}</div>
       {loading && <div className="text-sm text-gray-500 mb-3">Calcul en cours…</div>}
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
         {sellers.map((s) => {
@@ -1405,7 +1331,7 @@ function TotalsGrid({
               <div className="flex items-center justify-between">
                 <Chip name={s.full_name} />
               </div>
-              <div className="text-sm text-gray-600">Semaine (jusqu’à hier)</div>
+              <div className="text-sm text-gray-600">Semaine (jusqu’à aujourd’hui)</div>
               <div className="text-2xl font-semibold">{Number(week).toFixed(1)} h</div>
               <div className="text-sm text-gray-600 mt-2">Mois ({monthLabel})</div>
               <div className="text-2xl font-semibold">{Number(month).toFixed(1)} h</div>

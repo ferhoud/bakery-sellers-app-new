@@ -1,4 +1,6 @@
-// public/sw.js — SW robuste (push + focus + broadcast)
+// public/sw.js — SW robuste (push + focus + broadcast + version + purge cache)
+// Bump la version à chaque release pour invalider immédiatement l’ancienne version.
+const SW_VERSION = "2025-10-12-02";
 
 // Activer immédiatement la nouvelle version
 self.addEventListener("install", (event) => {
@@ -6,7 +8,19 @@ self.addEventListener("install", (event) => {
 });
 
 self.addEventListener("activate", (event) => {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil((async () => {
+    // Purge tous les caches pour éviter l’ancienne version (PWA/Next)
+    try {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    } catch (e) {
+      // ignore
+    }
+    // Prend le contrôle tout de suite
+    await self.clients.claim();
+    // Informe les pages (utile pour forcer reloadAll côté app)
+    try { await broadcast({ type: "sw-activated", version: SW_VERSION }); } catch {}
+  })());
 });
 
 // Utilitaire : envoyer un message à toutes les fenêtres clientes
@@ -79,4 +93,4 @@ self.addEventListener("notificationclose", () => {
   // noop
 });
 
-// Pas de stratégie cache ici => on laisse Next/Vercel gérer. Si tu veux un cache offline, je t’ajoute Workbox plus tard.
+// Pas de stratégie cache ici => on laisse Next/Vercel gérer. Si tu veux un cache offline, on ajoutera Workbox.
