@@ -8,7 +8,7 @@
 import Head from "next/head";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
@@ -18,7 +18,8 @@ import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from ".
 
 /* ---------- CONSTANTES / UTILS GLOBAUX (SANS HOOKS) ---------- */
 
-const BUILD_TAG = "ADMIN - 12/10/2025 02:45";
+import { BUILD_TAG } from "@/lib/version";
+if (typeof window !== "undefined") console.log("BUILD_TAG:", BUILD_TAG);
 
 // Heures par créneau (inclut le dimanche spécial)
 const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
@@ -132,6 +133,10 @@ export default function AdminPage() {
   const today = new Date();
   const todayIso = fmtISODate(today);
 
+  // Refs pour contrôler les reloads
+  const reloadInFlight = useRef(false);
+  const lastWakeRef = useRef(0);
+
   // Déconnexion robuste
   const [signingOut, setSigningOut] = useState(false);
   const handleSignOut = useCallback(async () => {
@@ -166,6 +171,10 @@ export default function AdminPage() {
           rows = profs.map(({ user_id, full_name }) => ({ user_id, full_name }));
         }
       } catch {}
+    }
+    // Tri stable par nom pour éviter le "shuffle" visuel
+    if (rows && rows.length) {
+      rows.sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "fr", { sensitivity: "base" }));
     }
     setSellers(rows || []);
   }, []);
@@ -206,6 +215,42 @@ export default function AdminPage() {
     loadWeekAssignments(from, to);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monday]);
+
+  /* ✅ Inline ABSENCES (admin) pour chaque jour de la semaine — DÉPLACÉ AVANT setSellerAbsent (TDZ) */
+  const loadWeekAbsences = useCallback(async () => {
+    const from = fmtISODate(days[0]);
+    const to   = fmtISODate(days[6]);
+
+    try {
+      const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: from, p_to: to });
+      if (!error && Array.isArray(data)) {
+        const grouped = {};
+        (data || []).forEach((r) => {
+          if (!grouped[r.date]) grouped[r.date] = [];
+          if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
+        });
+        setAbsencesByDate(grouped);
+        return;
+      }
+      console.warn("admin_absences_by_range KO -> fallback", error);
+    } catch (e) {
+      console.warn("admin_absences_by_range threw -> fallback", e);
+    }
+
+    const { data, error } = await supabase
+      .from("absences")
+      .select("date, seller_id, status")
+      .gte("date", from)
+      .lte("date", to)
+      .in("status", ["approved", "pending"]);
+    if (error) { console.error("loadWeekAbsences error:", error); return; }
+    const grouped = {};
+    (data || []).forEach((r) => {
+      if (!grouped[r.date]) grouped[r.date] = [];
+      if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
+    });
+    setAbsencesByDate(grouped);
+  }, [days]);
 
   /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
   const loadAbsencesToday = useCallback(async () => {
@@ -553,116 +598,99 @@ export default function AdminPage() {
     await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
   }, [loadPendingAbs, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl]);
 
-  /* Attribuer / Refuser volontaire */
-  const assignVolunteer = useCallback(async (repl) => {
-    const shift = selectedShift[repl.id];
-    if (!shift) { alert("Choisis d’abord un créneau."); return; }
-
-    // 1) Mettre la volontaire dans le planning
-    const { error: errUpsert } = await supabase
-      .from("shifts")
-      .upsert({ date: repl.date, shift_code: shift, seller_id: repl.volunteer_id }, { onConflict: "date,shift_code" })
-      .select("date");
-    if (errUpsert) { console.error(errUpsert); alert("Échec d’attribution (RLS ?)"); return; }
-
-    // 2) Marquer cette proposition comme acceptée + stocker le créneau accepté
-    await supabase.from("replacement_interest").update({ status: "accepted", accepted_shift_code: shift }).eq("id", repl.id);
-
-    // 3) Les autres propositions deviennent 'declined'
-    await supabase.from("replacement_interest").update({ status: "declined" }).eq("absence_id", repl.absence_id).neq("id", repl.id);
-
-    // 4) Si l’absence est encore 'pending', l’approuver automatiquement
-    const { data: absRow } = await supabase.from("absences").select("status").eq("id", repl.absence_id).single();
-    if (absRow?.status !== "approved") {
-      await supabase.from("absences").update({ status: "approved" }).eq("id", repl.absence_id);
-    }
-
-    if (latestRepl && latestRepl.id === repl.id) setLatestRepl(null);
-
-    // 5) Rafraîchir
-    setRefreshKey((k) => k + 1);
-    await Promise.all([loadReplacements(), loadMonthAbsences(), loadMonthUpcomingAbsences(), loadMonthAcceptedRepl()]);
-    alert("Volontaire attribuée et absence approuvée.");
-  }, [selectedShift, latestRepl, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl]);
-
-  const declineVolunteer = useCallback(async (replId) => {
-    const { error } = await supabase.from("replacement_interest").update({ status: "declined" }).eq("id", replId);
-    if (error) { console.error(error); alert("Impossible de refuser ce volontaire."); return; }
-    if (latestRepl && latestRepl.id === replId) setLatestRepl(null);
-    await loadReplacements(); await loadMonthAcceptedRepl();
-  }, [latestRepl, loadReplacements, loadMonthAcceptedRepl]);
-
-  /* Inline ABSENCES (admin) pour chaque jour de la semaine */
-  const loadWeekAbsences = useCallback(async () => {
-    const from = fmtISODate(days[0]);
-    const to   = fmtISODate(days[6]);
-
+  /* ✅ Admin: marquer une vendeuse "absente" pour un jour donné */
+  const setSellerAbsent = useCallback(async (iso, sellerId) => {
     try {
-      const { data, error } = await supabase.rpc("admin_absences_by_range", { p_from: from, p_to: to });
-      if (!error && Array.isArray(data)) {
-        const grouped = {};
-        (data || []).forEach((r) => {
-          if (!grouped[r.date]) grouped[r.date] = [];
-          if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
-        });
-        setAbsencesByDate(grouped);
+      // 1) Vérifie s'il existe déjà une absence (pending/approved) pour ce jour
+      const { data: existing, error: checkErr } = await supabase
+        .from("absences")
+        .select("id, status")
+        .eq("seller_id", sellerId)
+        .eq("date", iso)
+        .in("status", ["pending", "approved"]);
+      if (checkErr) {
+        console.error("check absence error:", checkErr);
+        alert("Erreur lors de la vérification de l'absence.");
         return;
       }
-      console.warn("admin_absences_by_range KO -> fallback", error);
+
+      if (existing && existing.length > 0) {
+        const row = existing[0];
+        if (row.status === "pending") {
+          const { error: updErr } = await supabase.from("absences").update({ status: "approved" }).eq("id", row.id);
+          if (updErr) { console.error(updErr); alert("Impossible de valider l'absence existante."); return; }
+        }
+        // si déjà 'approved', rien à faire
+      } else {
+        // 2) Insère une nouvelle absence approuvée
+        const { error: insErr } = await supabase
+          .from("absences")
+          .insert({
+            seller_id: sellerId,
+            date: iso,
+            status: "approved",
+            reason: "Marquée absente par l’admin",
+            source: "ADMIN_MARK",
+          });
+        if (insErr) {
+          console.error("insert absence error:", insErr);
+          alert("Impossible d’enregistrer l’absence.");
+          return;
+        }
+      }
+
+      // 3) Refresh des vues liées
+      await Promise.all([
+        loadWeekAbsences(),
+        loadAbsencesToday(),
+        loadMonthAbsences(),
+        loadMonthUpcomingAbsences(),
+      ]);
+      setRefreshKey((k) => k + 1);
     } catch (e) {
-      console.warn("admin_absences_by_range threw -> fallback", e);
+      console.error("setSellerAbsent exception:", e);
+      alert("Erreur lors de l’enregistrement de l’absence.");
     }
+  }, [loadWeekAbsences, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
-    const { data, error } = await supabase
-      .from("absences")
-      .select("date, seller_id, status")
-      .gte("date", from)
-      .lte("date", to)
-      .in("status", ["approved", "pending"]);
-    if (error) { console.error("loadWeekAbsences error:", error); return; }
-    const grouped = {};
-    (data || []).forEach((r) => {
-      if (!grouped[r.date]) grouped[r.date] = [];
-      if (!grouped[r.date].includes(r.seller_id)) grouped[r.date].push(r.seller_id);
-    });
-    setAbsencesByDate(grouped);
-  }, [days]);
+  /* ✅ Admin: supprimer l'état "absent" d'une vendeuse pour un jour donné */
+  const removeSellerAbsent = useCallback(async (iso, sellerId) => {
+    try {
+      // 1) Récupère les absences ciblées
+      const { data: rows, error } = await supabase
+        .from("absences")
+        .select("id")
+        .eq("seller_id", sellerId)
+        .eq("date", iso)
+        .in("status", ["pending", "approved"]);
+      if (error) { console.error(error); alert("Impossible de récupérer l’absence."); return; }
 
-  // Était: upsert direct sur absences → remplace par l'RPC
-  const setSellerAbsent = useCallback(async (isoDate, sellerId) => {
-    if (!sellerId) return;
-    const { error } = await supabase.rpc("admin_upsert_absence", {
-      p_date: isoDate,
-      p_seller: sellerId,
-      p_reason: "Absence non déclarée (admin)",
-    });
-    if (error) {
-      console.error("admin_upsert_absence error:", error);
-      alert("Impossible d'enregistrer l'absence.");
-      return;
+      const ids = (rows || []).map((r) => r.id).filter(Boolean);
+      if (ids.length === 0) return;
+
+      // 2) Nettoie d’abord les volontariats associés (au cas où pas de cascade)
+      await supabase.from("replacement_interest").delete().in("absence_id", ids).catch(() => {});
+
+      // 3) Supprime les absences
+      const { error: delErr } = await supabase.from("absences").delete().in("id", ids);
+      if (delErr) { console.error(delErr); alert("Suppression impossible."); return; }
+
+      // 4) Refresh
+      await Promise.all([
+        loadWeekAbsences(),
+        loadAbsencesToday(),
+        loadReplacements(),
+        loadMonthAbsences(),
+        loadMonthUpcomingAbsences(),
+      ]);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      console.error("removeSellerAbsent exception:", e);
+      alert("Erreur lors de la suppression de l’absence.");
     }
-    setAbsencesByDate((prev) => {
-      const arr = new Set([...(prev[isoDate] || []), sellerId]);
-      return { ...prev, [isoDate]: Array.from(arr) };
-    });
-  }, []);
+  }, [loadWeekAbsences, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
-  // Était: delete() direct → remplace par l'RPC
-  const removeSellerAbsent = useCallback(async (isoDate, sellerId) => {
-    const { error } = await supabase.rpc("admin_delete_absence", { p_date: isoDate, p_seller: sellerId });
-    if (error) {
-      console.error("admin_delete_absence error:", error);
-      alert("Impossible de supprimer l'absence.");
-      return;
-    }
-    setAbsencesByDate((prev) => {
-      const set = new Set(prev[isoDate] || []);
-      set.delete(sellerId);
-      return { ...prev, [isoDate]: Array.from(set) };
-    });
-  }, []);
-
-  /* 🔔 BADGE + REFRESH AUTO */
+  /* 🔔 BADGE + REFRESH AUTO (badge seulement) */
   useEffect(() => {
     const count = (pendingAbs?.length || 0) + (pendingLeaves?.length || 0) + (replList?.length || 0);
     const nav = typeof navigator !== 'undefined' ? navigator : null;
@@ -673,24 +701,27 @@ export default function AdminPage() {
 
   /* ---- RELOAD ALL (central) ---- */
   const reloadAll = useCallback(async () => {
-    // 1) D'abord les vendeuses — c'est la clé pour les totaux
-    await loadSellers();
-
-    // 2) Ensuite le reste, en parallèle
-    await Promise.all([
-      loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
-      loadWeekAbsences(),
-      loadPendingAbs?.(),
-      loadAbsencesToday?.(),
-      loadReplacements?.(),
-      loadLeavesUnified?.(),
-      loadMonthAbsences?.(),
-      loadMonthUpcomingAbsences?.(),
-      loadMonthAcceptedRepl?.(),
-    ]);
-
-    // 3) Enfin : déclenche le recalcul des totaux
-    setRefreshKey((k) => k + 1);
+    if (reloadInFlight.current) return;
+    reloadInFlight.current = true;
+    try {
+      // 1) D'abord les vendeuses — c'est la clé pour les totaux
+      await loadSellers();
+      // 2) Ensuite le reste, en parallèle
+      await Promise.all([
+        loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
+        loadWeekAbsences(),
+        loadPendingAbs?.(),
+        loadAbsencesToday?.(),
+        loadReplacements?.(),
+        loadLeavesUnified?.(),
+        loadMonthAbsences?.(),
+        loadMonthUpcomingAbsences?.(),
+        loadMonthAcceptedRepl?.(),
+      ]);
+      // PAS de setRefreshKey ici → évite les recalculs inutiles
+    } finally {
+      reloadInFlight.current = false;
+    }
   }, [
     days,
     loadSellers,
@@ -708,9 +739,14 @@ export default function AdminPage() {
   // Initial load
   useEffect(() => { if (!loading && session) reloadAll(); }, [loading, session, reloadAll]);
 
-  // Recharge quand l’app revient au premier plan
+  // Recharge quand l’app revient au premier plan (throttle)
   useEffect(() => {
-    const onWake = () => setTimeout(() => reloadAll(), 50);
+    const onWake = () => {
+      const now = Date.now();
+      if (now - lastWakeRef.current < 1000) return; // ignore réveils multiples dans 1s
+      lastWakeRef.current = now;
+      setTimeout(() => reloadAll(), 80);
+    };
     window.addEventListener('focus', onWake, { passive: true });
     document.addEventListener('visibilitychange', onWake, { passive: true });
     return () => {
