@@ -739,14 +739,24 @@ export default function AdminPage() {
   }, [reloadAll]);
 
   /* ---------- GUARDE AUTH (APRÈS TOUS LES HOOKS) ---------- */
-  if (loading || !session) {
-    return (
-      <>
-        <Head><title>Connexion…</title></Head>
-        <div className="p-4">Chargement…</div>
-      </>
-    );
-  }
+ // ——— Recalc & refresh when "days" or data loaders change
+useEffect(() => {
+  let isMounted = true;
+
+  const run = async () => {
+    // 1) recharge les données nécessaires (si c’est ton intention ici)
+    await Promise.all([loadSellers(), loadWeekAssignments()]);
+    // 3) Enfin : déclenche le recalcul des totaux
+    if (isMounted) setRefreshKey((k) => k + 1);
+  };
+
+  run();
+
+  return () => {
+    isMounted = false;
+  };
+}, [days, loadSellers, loadWeekAssignments]);
+
 
   /* ---------- RENDER ---------- */
   return (
