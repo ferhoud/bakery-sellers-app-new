@@ -1,4 +1,4 @@
-﻿import { createClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 
 // serveur uniquement
 const supabaseAdmin = createClient(
@@ -57,9 +57,14 @@ export default async function handler(req, res) {
   }
 
   const { data: absRows, error: selErr } = await supabaseAdmin
-    .from('absences').select('id')
+    .from('absences').select('id, admin_forced')
     .eq('seller_id', user.id).eq('date', date);
   if (selErr) return res.status(500).json({ error: selErr.message });
+
+  // ⛔ Garde-fou serveur : pas d’annulation si admin_forced = true
+  if ((absRows || []).some(r => r.admin_forced)) {
+    return res.status(403).json({ error: "Cette absence a été définie par l’admin et ne peut pas être annulée." });
+  }
 
   const ids = (absRows || []).map(r => r.id);
   if (!ids.length) {
@@ -92,4 +97,3 @@ export default async function handler(req, res) {
     replacementsDeleted: replCount ?? 0
   });
 }
-
