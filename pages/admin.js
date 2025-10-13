@@ -26,40 +26,49 @@ const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
 // Libellés + créneau dimanche (doit exister dans shift_types)
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
-// Couleurs fixes par vendeuse
-const SELLER_COLORS = {
-  Antonia: "#e57373",
-  Olivia: "#64b5f6",
-  Colleen: "#81c784",
-  Ibtissam: "#ba68c8",
-  Charlene: "#f59e0b"
-};
-/ Générateur de couleur stable pour tout nouveau nom
-function hashStr(str) {
+// Couleurs vendeuses — fixes + auto (jamais gris)
+// N.B. : clés normalisées (minuscules, sans accents)
+const SELLER_FIXED = new Map([
+  ["antonia",  "#e57373"],
+  ["olivia",   "#64b5f6"],
+  ["colleen",  "#81c784"],
+  ["ibtissam", "#ba68c8"],
+  ["charlene", "#f59e0b"], // orange réservé à Charlene/Charlène
+]);
+
+function normalizeName(s) {
+  return String(s || "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, ""); // retire les accents (ex: “Charlène” -> “charlene”)
+}
+
+// Palette de couleurs vives (on enlève celles déjà utilisées en fixe)
+const BASE_PALETTE = [
+  "#ef4444", "#f97316", "#eab308", "#22c55e",
+  "#10b981", "#06b6d4", "#3b82f6", "#6366f1",
+  "#8b5cf6", "#a855f7", "#ec4899", "#f43f5e",
+  "#14b8a6", "#84cc16", "#0ea5e9", "#d946ef",
+  "#fb7185", "#34d399", "#60a5fa", "#f43f5e",
+];
+const FIXED_VALUES = new Set([...SELLER_FIXED.values()]);
+const SELLER_PALETTE = BASE_PALETTE.filter(c => !FIXED_VALUES.has(c));
+
+function hashString(s) {
   let h = 0;
-  for (let i = 0; i < str.length; i++) {
-    h = (h << 5) - h + str.charCodeAt(i);
-    h |= 0;
-  }
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
   return Math.abs(h);
 }
-function hslToHex(h, s, l) {
-  s /= 100; l /= 100;
-  const a = s * Math.min(l, 1 - l);
-  const f = (n) => {
-    const k = (n + h / 30) % 12;
-    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-    return Math.round(255 * c).toString(16).padStart(2, "0");
-  };
-  return `#${f(0)}${f(8)}${f(4)}`;
+
+function colorForName(name) {
+  const key = normalizeName(name);
+  if (!key) return "#9ca3af";                 // gris seulement si nom vide
+  const fixed = SELLER_FIXED.get(key);
+  if (fixed) return fixed;                     // couleurs “historiques”
+  const idx = hashString(key) % SELLER_PALETTE.length;
+  return SELLER_PALETTE[idx];                  // auto, stable, non-gris
 }
-function autoColor(name) {
-  if (!name) return "#9e9e9e";
-  const hue = hashStr(name) % 360;   // 0..359
-  return hslToHex(hue, 65, 50);      // saturé, lisible
-}
-const colorForName = (name) => SELLER_COLORS[name] || autoColor(name);
-const colorForName = (name) => SELLER_COLORS[name] || "#9e9e9e";
 
 // Utils date / libellés
 function firstDayOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1); }
