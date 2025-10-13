@@ -26,48 +26,48 @@ const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
 // Libellés + créneau dimanche (doit exister dans shift_types)
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
-// Couleurs vendeuses — fixes + auto (jamais gris)
-// N.B. : clés normalisées (minuscules, sans accents)
-const SELLER_FIXED = new Map([
-  ["antonia",  "#e57373"],
-  ["olivia",   "#64b5f6"],
-  ["colleen",  "#81c784"],
-  ["ibtissam", "#ba68c8"],
-  ["charlene", "#f59e0b"], // orange réservé à Charlene/Charlène
-]);
+/* Couleurs (fixes + auto pour nouvelles vendeuses) */
+const SELLER_COLOR_OVERRIDES = {
+  antonia:  "#e57373",
+  olivia:   "#64b5f6",
+  colleen:  "#81c784",
+  ibtissam: "#ba68c8",
+  charlene: "#f59e0b", // 🟧 Charlene reste orange
+};
 
-function normalizeName(s) {
-  return String(s || "")
-    .trim()
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, ""); // retire les accents (ex: “Charlène” -> “charlene”)
+const normalize = (s) => String(s || "").trim().toLowerCase();
+
+// Hash stable (sur le nom) → teinte HSL
+function hashStr(str) {
+  let h = 2166136261; // FNV-like
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = (h * 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * c).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
 }
 
-// Palette de couleurs vives (on enlève celles déjà utilisées en fixe)
-const BASE_PALETTE = [
-  "#ef4444", "#f97316", "#eab308", "#22c55e",
-  "#10b981", "#06b6d4", "#3b82f6", "#6366f1",
-  "#8b5cf6", "#a855f7", "#ec4899", "#f43f5e",
-  "#14b8a6", "#84cc16", "#0ea5e9", "#d946ef",
-  "#fb7185", "#34d399", "#60a5fa", "#f43f5e",
-];
-const FIXED_VALUES = new Set([...SELLER_FIXED.values()]);
-const SELLER_PALETTE = BASE_PALETTE.filter(c => !FIXED_VALUES.has(c));
-
-function hashString(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  return Math.abs(h);
+function autoColorFromName(name) {
+  const key = normalize(name);
+  const hue = hashStr(key) % 360;   // 0..359
+  return hslToHex(hue, 65, 50);     // saturé, lisible
 }
 
+/** Couleur finale pour affichage */
 function colorForName(name) {
-  const key = normalizeName(name);
-  if (!key) return "#9ca3af";                 // gris seulement si nom vide
-  const fixed = SELLER_FIXED.get(key);
-  if (fixed) return fixed;                     // couleurs “historiques”
-  const idx = hashString(key) % SELLER_PALETTE.length;
-  return SELLER_PALETTE[idx];                  // auto, stable, non-gris
+  if (!name || name === "-") return "#9e9e9e"; // placeholder vide → gris
+  const ovr = SELLER_COLOR_OVERRIDES[normalize(name)];
+  return ovr || autoColorFromName(name);
 }
 
 // Utils date / libellés
