@@ -625,56 +625,33 @@ const setSellerAbsent = useCallback(async (iso, sellerId) => {
   }
 }, [loadWeekAbsences, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
-      // 3) Refresh des vues liées
-      await Promise.all([
-        loadWeekAbsences(),
-        loadAbsencesToday(),
-        loadMonthAbsences(),
-        loadMonthUpcomingAbsences(),
-      ]);
-      setRefreshKey((k) => k + 1);
-    } catch (e) {
-      console.error("setSellerAbsent exception:", e);
-      alert("Erreur lors de l’enregistrement de l’absence.");
+/* ✅ Admin: supprimer l'état "absent" d'une vendeuse pour un jour donné — via RPC */
+const removeSellerAbsent = useCallback(async (iso, sellerId) => {
+  try {
+    const { error } = await supabase.rpc("admin_unmark_absent", {
+      p_seller: sellerId,
+      p_date: iso,
+    });
+    if (error) {
+      console.error("admin_unmark_absent error:", error);
+      alert("Suppression impossible.");
+      return;
     }
-  }, [loadWeekAbsences, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences]);
+    await Promise.all([
+      loadWeekAbsences(),
+      loadAbsencesToday(),
+      loadReplacements(),
+      loadMonthAbsences(),
+      loadMonthUpcomingAbsences(),
+    ]);
+    setRefreshKey((k) => k + 1);
+  } catch (e) {
+    console.error("removeSellerAbsent exception:", e);
+    alert("Suppression impossible.");
+  }
+}, [loadWeekAbsences, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
-  /* ✅ Admin: supprimer l'état "absent" d'une vendeuse pour un jour donné */
-  const removeSellerAbsent = useCallback(async (iso, sellerId) => {
-    try {
-      // 1) Récupère les absences ciblées
-      const { data: rows, error } = await supabase
-        .from("absences")
-        .select("id")
-        .eq("seller_id", sellerId)
-        .eq("date", iso)
-        .in("status", ["pending", "approved"]);
-      if (error) { console.error(error); alert("Impossible de récupérer l’absence."); return; }
 
-      const ids = (rows || []).map((r) => r.id).filter(Boolean);
-      if (ids.length === 0) return;
-
-      // 2) Nettoie d’abord les volontariats associés (au cas où pas de cascade)
-      await supabase.from("replacement_interest").delete().in("absence_id", ids).catch(() => {});
-
-      // 3) Supprime les absences
-      const { error: delErr } = await supabase.from("absences").delete().in("id", ids);
-      if (delErr) { console.error(delErr); alert("Suppression impossible."); return; }
-
-      // 4) Refresh
-      await Promise.all([
-        loadWeekAbsences(),
-        loadAbsencesToday(),
-        loadReplacements(),
-        loadMonthAbsences(),
-        loadMonthUpcomingAbsences(),
-      ]);
-      setRefreshKey((k) => k + 1);
-    } catch (e) {
-      console.error("removeSellerAbsent exception:", e);
-      alert("Erreur lors de la suppression de l’absence.");
-    }
-  }, [loadWeekAbsences, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
   /* 🔔 BADGE + REFRESH AUTO (badge seulement) */
   useEffect(() => {
