@@ -598,46 +598,32 @@ export default function AdminPage() {
     await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
   }, [loadPendingAbs, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl]);
 
-  /* ✅ Admin: marquer une vendeuse "absente" pour un jour donné */
-  const setSellerAbsent = useCallback(async (iso, sellerId) => {
-    try {
-      // 1) Vérifie s'il existe déjà une absence (pending/approved) pour ce jour
-      const { data: existing, error: checkErr } = await supabase
-        .from("absences")
-        .select("id, status")
-        .eq("seller_id", sellerId)
-        .eq("date", iso)
-        .in("status", ["pending", "approved"]);
-      if (checkErr) {
-        console.error("check absence error:", checkErr);
-        alert("Erreur lors de la vérification de l'absence.");
-        return;
-      }
+/* ✅ Admin: marquer une vendeuse "absente" pour un jour donné — via RPC */
+const setSellerAbsent = useCallback(async (iso, sellerId) => {
+  try {
+    const { error } = await supabase.rpc("admin_mark_absent", {
+      p_seller: sellerId,
+      p_date: iso,
+      p_reason: "Marquée absente par l’admin",
+    });
+    if (error) {
+      console.error("admin_mark_absent error:", error);
+      alert("Impossible d’indiquer l’absence.");
+      return;
+    }
 
-      if (existing && existing.length > 0) {
-        const row = existing[0];
-        if (row.status === "pending") {
-          const { error: updErr } = await supabase.from("absences").update({ status: "approved" }).eq("id", row.id);
-          if (updErr) { console.error(updErr); alert("Impossible de valider l'absence existante."); return; }
-        }
-        // si déjà 'approved', rien à faire
-      } else {
-        // 2) Insère une nouvelle absence approuvée
-        const { error: insErr } = await supabase
-          .from("absences")
-          .insert({
-            seller_id: sellerId,
-            date: iso,
-            status: "approved",
-            reason: "Marquée absente par l’admin",
-            source: "ADMIN_MARK",
-          });
-        if (insErr) {
-          console.error("insert absence error:", insErr);
-          alert("Impossible d’enregistrer l’absence.");
-          return;
-        }
-      }
+    await Promise.all([
+      loadWeekAbsences(),
+      loadAbsencesToday(),
+      loadMonthAbsences(),
+      loadMonthUpcomingAbsences(),
+    ]);
+    setRefreshKey((k) => k + 1);
+  } catch (e) {
+    console.error("setSellerAbsent exception:", e);
+    alert("Impossible d’indiquer l’absence.");
+  }
+}, [loadWeekAbsences, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
       // 3) Refresh des vues liées
       await Promise.all([
