@@ -92,15 +92,37 @@ function Chip({ name }) {
     </span>
   );
 }
-const ApproveBtn = ({ onClick, children = "Approuver" }) => (
-  <button type="button" className="btn" onClick={onClick}
-    style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>
+const ApproveBtn = ({ onClick, disabled = false, children = "Approuver" }) => (
+  <button
+    type="button"
+    className="btn"
+    onClick={onClick}
+    disabled={disabled}
+    style={{
+      backgroundColor: disabled ? "#9ca3af" : "#16a34a",
+      color: "#fff",
+      borderColor: "transparent",
+      opacity: disabled ? 0.7 : 1,
+      cursor: disabled ? "not-allowed" : "pointer",
+    }}
+  >
     {children}
   </button>
 );
-const RejectBtn  = ({ onClick, children = "Rejeter" }) => (
-  <button type="button" className="btn" onClick={onClick}
-    style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}>
+const RejectBtn = ({ onClick, disabled = false, children = "Refuser" }) => (
+  <button
+    type="button"
+    className="btn"
+    onClick={onClick}
+    disabled={disabled}
+    style={{
+      backgroundColor: disabled ? "#9ca3af" : "#dc2626",
+      color: "#fff",
+      borderColor: "transparent",
+      opacity: disabled ? 0.7 : 1,
+      cursor: disabled ? "not-allowed" : "pointer",
+    }}
+  >
     {children}
   </button>
 );
@@ -633,60 +655,82 @@ export default function AdminPage() {
     await loadPendingAbs(); await loadAbsencesToday(); await loadMonthAbsences(); await loadMonthUpcomingAbsences(); await loadMonthAcceptedRepl();
   }, [loadPendingAbs, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences, loadMonthAcceptedRepl]);
 
-/* ✅ Admin: marquer une vendeuse "absente" pour un jour donné — via RPC */
-const setSellerAbsent = useCallback(async (iso, sellerId) => {
-  try {
-    const { error } = await supabase.rpc("admin_mark_absent", {
-      p_seller: sellerId,
-      p_date: iso,
-      p_reason: "Marquée absente par l’admin",
-    });
-    if (error) {
-      console.error("admin_mark_absent error:", error);
+  /* ✅ Admin: marquer une vendeuse "absente" pour un jour donné — via RPC */
+  const setSellerAbsent = useCallback(async (iso, sellerId) => {
+    try {
+      const { error } = await supabase.rpc("admin_mark_absent", {
+        p_seller: sellerId,
+        p_date: iso,
+        p_reason: "Marquée absente par l’admin",
+      });
+      if (error) {
+        console.error("admin_mark_absent error:", error);
+        alert("Impossible d’indiquer l’absence.");
+        return;
+      }
+
+      await Promise.all([
+        loadWeekAbsences(),
+        loadAbsencesToday(),
+        loadMonthAbsences(),
+        loadMonthUpcomingAbsences(),
+      ]);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      console.error("setSellerAbsent exception:", e);
       alert("Impossible d’indiquer l’absence.");
-      return;
     }
+  }, [loadWeekAbsences, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
-    await Promise.all([
-      loadWeekAbsences(),
-      loadAbsencesToday(),
-      loadMonthAbsences(),
-      loadMonthUpcomingAbsences(),
-    ]);
-    setRefreshKey((k) => k + 1);
-  } catch (e) {
-    console.error("setSellerAbsent exception:", e);
-    alert("Impossible d’indiquer l’absence.");
-  }
-}, [loadWeekAbsences, loadAbsencesToday, loadMonthAbsences, loadMonthUpcomingAbsences]);
-
-/* ✅ Admin: supprimer l'état "absent" d'une vendeuse pour un jour donné — via RPC */
-const removeSellerAbsent = useCallback(async (iso, sellerId) => {
-  try {
-    const { error } = await supabase.rpc("admin_unmark_absent", {
-      p_seller: sellerId,
-      p_date: iso,
-    });
-    if (error) {
-      console.error("admin_unmark_absent error:", error);
+  /* ✅ Admin: supprimer l'état "absent" d'une vendeuse pour un jour donné — via RPC */
+  const removeSellerAbsent = useCallback(async (iso, sellerId) => {
+    try {
+      const { error } = await supabase.rpc("admin_unmark_absent", {
+        p_seller: sellerId,
+        p_date: iso,
+      });
+      if (error) {
+        console.error("admin_unmark_absent error:", error);
+        alert("Suppression impossible.");
+        return;
+      }
+      await Promise.all([
+        loadWeekAbsences(),
+        loadAbsencesToday(),
+        loadReplacements(),
+        loadMonthAbsences(),
+        loadMonthUpcomingAbsences(),
+      ]);
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      console.error("removeSellerAbsent exception:", e);
       alert("Suppression impossible.");
-      return;
     }
-    await Promise.all([
-      loadWeekAbsences(),
-      loadAbsencesToday(),
-      loadReplacements(),
-      loadMonthAbsences(),
-      loadMonthUpcomingAbsences(),
-    ]);
-    setRefreshKey((k) => k + 1);
-  } catch (e) {
-    console.error("removeSellerAbsent exception:", e);
-    alert("Suppression impossible.");
-  }
-}, [loadWeekAbsences, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences]);
+  }, [loadWeekAbsences, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
+  /* ✅ Volontaires: approuver/refuser (corrige fonctions manquantes) */
+  const assignVolunteer = useCallback(async (item) => {
+    // item: { id, volunteer_id, absence_id, date, absent_id, status }
+    const shiftCode = selectedShift[item.id] || null; // optionnel
+    const { error } = await supabase
+      .from("replacement_interest")
+      .update({ status: "accepted", accepted_shift_code: shiftCode })
+      .eq("id", item.id);
+    if (error) { alert("Échec d’approbation du remplacement."); return; }
+    setSelectedShift((prev) => { const n = { ...prev }; delete n[item.id]; return n; });
+    setLatestRepl(null);
+    await Promise.all([loadReplacements(), loadAbsencesToday(), loadMonthAcceptedRepl()]);
+  }, [selectedShift, loadReplacements, loadAbsencesToday, loadMonthAcceptedRepl]);
 
+  const declineVolunteer = useCallback(async (id) => {
+    const { error } = await supabase
+      .from("replacement_interest")
+      .update({ status: "rejected", accepted_shift_code: null })
+      .eq("id", id);
+    if (error) { alert("Échec du refus."); return; }
+    setSelectedShift((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    await loadReplacements();
+  }, [loadReplacements]);
 
   /* 🔔 BADGE + REFRESH AUTO (badge seulement) */
   useEffect(() => {
