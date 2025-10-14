@@ -570,7 +570,15 @@ export default function AdminPage() {
       .on("postgres_changes", { event: "*", schema: "public", table: "replacement_interest" }, async (payload) => {
         if (payload.eventType === "INSERT") {
           const r = payload.new;
-          const { data: abs } = await supabase.from("absences").select("date, seller_id").eq("id", r.absence_id).single();
+          const { data: abs } = await supabase
+            .from("absences")
+            .select("date, seller_id, status")
+            .eq("id", r.absence_id)
+            .single();
+          // ✅ Ne pas notifier si l'absence n'est pas APPROUVÉE
+          if (!abs || abs.status !== "approved") {
+            return;
+          }
           setLatestRepl({
             id: r.id,
             volunteer_id: r.volunteer_id,
@@ -580,7 +588,8 @@ export default function AdminPage() {
             status: r.status,
           });
         }
-        loadReplacements(); loadMonthAcceptedRepl();
+        loadReplacements();
+        loadMonthAcceptedRepl();
       }).subscribe();
 
     const chLeaves = supabase
@@ -708,7 +717,7 @@ export default function AdminPage() {
     }
   }, [loadWeekAbsences, loadAbsencesToday, loadReplacements, loadMonthAbsences, loadMonthUpcomingAbsences]);
 
-  /* ✅ Volontaires: approuver/refuser (corrige fonctions manquantes) */
+  /* ✅ Volontaires: approuver/refuser */
   const assignVolunteer = useCallback(async (item) => {
     // item: { id, volunteer_id, absence_id, date, absent_id, status }
     const shiftCode = selectedShift[item.id] || null; // optionnel
@@ -973,7 +982,7 @@ export default function AdminPage() {
         <div className="card">
           <div className="hdr mb-4">Planning de la semaine</div>
 
-          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-3">
+        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between mb-3">
             <WeekNav
               monday={monday}
               onPrev={() => setMonday(addDays(monday, -7))}
@@ -1346,7 +1355,7 @@ function TotalsGrid({
     return () => { cancelled = true; };
   }, [sellers, monthFrom, monthTo, refreshKey, todayIso]);
 
-  // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd’hui inclus)
+  // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd'hui inclus)
   useEffect(() => {
     let cancelled = false;
     (async () => {
