@@ -249,7 +249,7 @@ useEffect(() => {
     const tIso = fmtISODate(new Date());
     if (absence.seller_id === me) return false;  // ne pas prévenir l’absente
     if (absence.date < tIso) return false;       // seulement futur
-    if (!["pending", "approved"].includes(absence.status)) return false;
+if (absence.status !== "approved") return false;
     if (absence.admin_forced) return false;      // 🚫 pas de prompt si absence posée par l’admin
     const { data: mine } = await supabase
       .from("replacement_interest").select("id")
@@ -288,7 +288,7 @@ useEffect(() => {
       const tIso = fmtISODate(new Date());
       const { data: abs, error } = await supabase
         .from("absences").select("id, date, seller_id, status, admin_forced")
-        .in("status", ["pending", "approved"]).gte("date", tIso)
+.eq("status", "approved").gte("date", tIso)
         .eq("admin_forced", false)  // 🚫 exclure absences admin
         .order("date", { ascending: true });
       if (error || !abs || abs.length === 0) return;
@@ -430,7 +430,7 @@ useEffect(() => {
       .select('id, status, volunteer_id, accepted_shift_code, absence_id, absences(id, seller_id, date)')
       .eq('status', 'accepted')
       .eq('absences.seller_id', session.user.id)
-      .gte('absences.date', tIso)
+      //.gte('absences.date', tIso)
       .order('id', { ascending: true });
     if (error) { setAcceptedByAbsence({}); return; }
 
@@ -455,42 +455,43 @@ useEffect(() => {
   };
 
   /* ----------------- Mes remplacements à venir (je suis la volontaire acceptée) ----------------- */
-  const loadMyUpcomingRepl = useCallback(async () => {
-    if (!session?.user?.id) return;
-    const tIso = fmtISODate(new Date());
-    const { data: myReplRows } = await supabase
-      .from("replacement_interest")
-      .select("absence_id, volunteer_id, status, accepted_shift_code, absences(id, seller_id, date)")
-      .eq("volunteer_id", session.user.id)
-      .eq("status", "accepted")
-      .gte("absences.date", tIso)
-      .order("absences.date", { ascending: true });
+ const loadMyUpcomingRepl = useCallback(async () => {
+  if (!session?.user?.id) return;
+  const tIso = fmtISODate(new Date());
 
-    const absentIds = (myReplRows || [])
-      .map((r) => r.absences?.seller_id)
-      .filter(Boolean);
+  // 1) Mes remplacements acceptés → récupère les absence_id
+  const { data: riRows, error: e1 } = await supabase
+    .from("replacement_interest")
+    .select("absence_id, accepted_shift_code")
+    .eq("volunteer_id", session.user.id)
+    .eq("status", "accepted");
+  if (e1) { console.error(e1); setMyUpcomingRepl([]); return; }
 
-    if (absentIds.length) {
-      const { data: profs } = await supabase
-        .from("profiles")
-        .select("user_id, full_name")
-        .in("user_id",(Array.from(new Set(absentIds))));
-      const map = {};
-      (profs || []).forEach((p) => (map[p.user_id] = p.full_name));
-      setNames((prev) => ({ ...prev, ...map }));
-    }
+  const ids = Array.from(new Set((riRows || []).map(r => r.absence_id).filter(Boolean)));
+  if (ids.length === 0) { setMyUpcomingRepl([]); return; }
 
-    setMyUpcomingRepl(
-      (myReplRows || []).map((r) => (
-        {
-          absence_id: r.absence_id,
-          date: r.absences?.date,
-          absent_id: r.absences?.seller_id,
-          accepted_shift_code: r.accepted_shift_code,
-        }
-      ))
-    );
-  }, [session?.user?.id]);
+  // 2) On lit les absences correspondantes (date future) et on trie côté serveur sur la colonne locale
+  const { data: absRows, error: e2 } = await supabase
+    .from("absences")
+    .select("id, seller_id, date")
+    .in("id", ids)
+    
+  if (e2) { console.error(e2); setMyUpcomingRepl([]); return; }
+
+  // 3) Join en mémoire pour reconstruire la liste
+  const byId = new Map((riRows || []).map(r => [r.absence_id, r.accepted_shift_code || null]));
+  const list = (absRows || []).map(a => ({
+    absence_id: a.id,
+    date: a.date,
+    absent_id: a.seller_id,
+    accepted_shift_code: byId.get(a.id) || null,
+  }));
+
+  setMyUpcomingRepl(list);
+
+  // (le reste de ta fonction qui charge les noms peut rester inchangé)
+}, [session?.user?.id]);
+
 
   useEffect(() => {
     loadMyMonthAbs();
