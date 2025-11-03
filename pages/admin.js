@@ -22,7 +22,8 @@ import { BUILD_TAG } from "@/lib/version";
 if (typeof window !== "undefined") console.log("BUILD_TAG:", BUILD_TAG);
 
 // Heures par créneau (inclut le dimanche spécial)
-const SHIFT_HOURS = { MORNING: 7, MIDDAY: 6, EVENING: 7, SUNDAY_EXTRA: 4.5 };
+// ⬇️ PATCH: MIDDAY passe à 7h (avant 6h)
+const SHIFT_HOURS = { MORNING: 7, MIDDAY: 7, EVENING: 7, SUNDAY_EXTRA: 4.5 };
 // Libellés + créneau dimanche (doit exister dans shift_types)
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 
@@ -831,7 +832,14 @@ export default function AdminPage() {
   /* ---------- RENDER ---------- */
   return (
     <>
-      <Head><title>Admin - {BUILD_TAG}</title></Head>
+<Head>
+  <title>Admin - {BUILD_TAG}</title>
+  <link rel="manifest" href="/admin.webmanifest" />
+  {/* iOS */}
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Admin" />
+  <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+</Head>
       <div style={{padding:'8px',background:'#111',color:'#fff',fontWeight:700}}>{BUILD_TAG}</div>
 
       <div className="p-4 max-w-6xl mx-auto space-y-6">
@@ -1044,13 +1052,15 @@ export default function AdminPage() {
                   <ShiftRow label="Matin (6h30-13h30)" iso={iso} code="MORNING" value={assign[`${iso}|MORNING`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MORNING`])} />
 
                   {!sunday ? (
-                    <ShiftRow label="Midi (7h-13h)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
+                    // ⬇️ PATCH: libellé MIDDAY aligné sur 6h30–13h30
+                    <ShiftRow label="Midi (6h30-13h30)" iso={iso} code="MIDDAY" value={assign[`${iso}|MIDDAY`] || ""} onChange={save} sellers={sellers} chipName={nameFromId(assign[`${iso}|MIDDAY`])} />
                   ) : (
                     <div className="space-y-1">
                       <div className="text-sm">Midi - deux postes</div>
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <div className="text-xs mb-1">7h-13h</div>
+                          {/* ⬇️ PATCH: dimanche, premier poste passe aussi à 6h30–13h30 */}
+                          <div className="text-xs mb-1">6h30-13h30</div>
                           <select className="select" value={assign[`${iso}|MIDDAY`] || ""} onChange={(e) => save(iso, "MIDDAY", e.target.value || null)}>
                             <option value="">- Choisir vendeuse -</option>
                             {sellers.map((s) => (<option key={s.user_id} value={s.user_id}>{s.full_name}</option>))}
@@ -1209,7 +1219,8 @@ function ShiftSelect({ dateStr, value, onChange }) {
   const sunday = isSunday(new Date(dateStr));
   const options = [
     { code: "MORNING", label: "Matin (6h30-13h30)" },
-    { code: "MIDDAY", label: "Midi (7h-13h)" },
+    // ⬇️ PATCH: label MIDDAY aligné 6h30–13h30
+    { code: "MIDDAY", label: "Midi (6h30-13h30)" },
     ...(sunday ? [{ code: "SUNDAY_EXTRA", label: "9h-13h30" }] : []),
     { code: "EVENING", label: "Soir (13h30-20h30)" },
   ];
