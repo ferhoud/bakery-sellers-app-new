@@ -50,13 +50,19 @@ function autoColorFromName(name) {
   return hslToHex(hue, 65, 50);     // saturé, lisible
 }
 
-/** Couleur finale pour affichage */
-function colorForName(name) {
-  if (!name || name === "-") return "#9e9e9e"; // placeholder vide → gris
-  const ovr = SELLER_COLOR_OVERRIDES[normalize(name)];
-  return ovr || autoColorFromName(name);
+/** Placeholder (nom manquant) */
+function isNamePlaceholder(name) {
+  const n = String(name || "").trim();
+  return !n || n === "-" || n === "—";
 }
 
+/** Couleur finale (stable) : priorité override par nom, sinon hash (nom → seller_id) */
+function colorForSeller(sellerId, name) {
+  const ovr = SELLER_COLOR_OVERRIDES[normalize(name)];
+  if (ovr) return ovr;
+  const key = isNamePlaceholder(name) ? String(sellerId || "unknown") : String(name);
+  return autoColorFromName(key);
+}
 
 const isSunday = (d) => d.getDay() === 0;
 const weekdayFR = (d) => d.toLocaleDateString("fr-FR", { weekday: "long" });
@@ -110,21 +116,20 @@ export default function AppSeller() {
     (session?.user?.email ? session.user.email.split("@")[0] : "—");
 
   // Sécurité / redirections
- // 🔒 Redirection selon auth/role — UN SEUL useEffect
-useEffect(() => {
-  if (loading) return;
-  if (!session) { r.replace("/login"); return; }
+  // 🔒 Redirection selon auth/role — UN SEUL useEffect
+  useEffect(() => {
+    if (loading) return;
+    if (!session) { r.replace("/login"); return; }
 
-  const role =
-    profile?.role
-    ?? profileFallback?.role
-    ?? "seller";
+    const role =
+      profile?.role
+      ?? profileFallback?.role
+      ?? "seller";
 
-  if (role === "admin") {
-    r.replace("/admin");
-  }
-}, [session, profile, profileFallback, loading, r]);
-
+    if (role === "admin") {
+      r.replace("/admin");
+    }
+  }, [session, profile, profileFallback, loading, r]);
 
   // Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
@@ -168,6 +173,43 @@ useEffect(() => {
   const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
   const [names, setNames] = useState({}); // user_id -> full_name
 
+  // 📛 Noms des vendeuses (planning / remplacements)
+  // IMPORTANT : nécessite soit une policy SELECT sur profiles (vendeuses), soit la RPC "list_active_seller_names".
+  const loadSellerNames = useCallback(async () => {
+    try {
+      // 1) On tente d'abord une RPC dédiée (recommandé pour ne pas ouvrir toute la table profiles)
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("list_active_seller_names");
+
+      let rows = null;
+      if (!rpcErr && Array.isArray(rpcData)) {
+        rows = rpcData;
+      } else {
+        // 2) Fallback direct (marche si RLS le permet)
+        const { data: profs, error } = await supabase
+          .from("profiles")
+          .select("user_id, full_name")
+          .eq("role", "seller")
+          .eq("active", true);
+
+        if (error) throw error;
+        rows = profs;
+      }
+
+      const map = {};
+      (rows || []).forEach((p) => {
+        if (p?.user_id) map[p.user_id] = p.full_name || "";
+      });
+      setNames(map);
+    } catch (e) {
+      console.warn("loadSellerNames failed (RLS ?):", e?.message || e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    loadSellerNames();
+  }, [session?.user?.id, loadSellerNames]);
+
   // ✅ DÉRIVÉ : bannière "Absente aujourd'hui" (pour la vendeuse connectée)
   const absentToday = useMemo(() => {
     const entry = (myMonthUpcomingAbs || []).find((a) => a.date === todayIso);
@@ -205,7 +247,7 @@ useEffect(() => {
       if (error) { console.error("view_week_assignments error:", error); return; }
       const next = {};
       (data || []).forEach((row) => {
-        next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: row.full_name || "—" };
+        next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: row.full_name || null };
       });
       setAssign(next);
     };
@@ -249,7 +291,7 @@ useEffect(() => {
     const tIso = fmtISODate(new Date());
     if (absence.seller_id === me) return false;  // ne pas prévenir l’absente
     if (absence.date < tIso) return false;       // seulement futur
-if (absence.status !== "approved") return false;
+    if (absence.status !== "approved") return false;
     if (absence.admin_forced) return false;      // 🚫 pas de prompt si absence posée par l’admin
     const { data: mine } = await supabase
       .from("replacement_interest").select("id")
@@ -288,7 +330,7 @@ if (absence.status !== "approved") return false;
       const tIso = fmtISODate(new Date());
       const { data: abs, error } = await supabase
         .from("absences").select("id, date, seller_id, status, admin_forced")
-.eq("status", "approved").gte("date", tIso)
+        .eq("status", "approved").gte("date", tIso)
         .eq("admin_forced", false)  // 🚫 exclure absences admin
         .order("date", { ascending: true });
       if (error || !abs || abs.length === 0) return;
@@ -424,13 +466,11 @@ if (absence.status !== "approved") return false;
   /* ----------------- Remplacements ACCEPTÉS pour MES absences ----------------- */
   const reloadAccepted = async () => {
     if (!session?.user?.id) return;
-    const tIso = fmtISODate(new Date());
     const { data: rows, error } = await supabase
       .from('replacement_interest')
       .select('id, status, volunteer_id, accepted_shift_code, absence_id, absences(id, seller_id, date)')
       .eq('status', 'accepted')
       .eq('absences.seller_id', session.user.id)
-      //.gte('absences.date', tIso)
       .order('id', { ascending: true });
     if (error) { setAcceptedByAbsence({}); return; }
 
@@ -455,43 +495,39 @@ if (absence.status !== "approved") return false;
   };
 
   /* ----------------- Mes remplacements à venir (je suis la volontaire acceptée) ----------------- */
- const loadMyUpcomingRepl = useCallback(async () => {
-  if (!session?.user?.id) return;
-  const tIso = fmtISODate(new Date());
+  const loadMyUpcomingRepl = useCallback(async () => {
+    if (!session?.user?.id) return;
 
-  // 1) Mes remplacements acceptés → récupère les absence_id
-  const { data: riRows, error: e1 } = await supabase
-    .from("replacement_interest")
-    .select("absence_id, accepted_shift_code")
-    .eq("volunteer_id", session.user.id)
-    .eq("status", "accepted");
-  if (e1) { console.error(e1); setMyUpcomingRepl([]); return; }
+    // 1) Mes remplacements acceptés → récupère les absence_id
+    const { data: riRows, error: e1 } = await supabase
+      .from("replacement_interest")
+      .select("absence_id, accepted_shift_code")
+      .eq("volunteer_id", session.user.id)
+      .eq("status", "accepted");
+    if (e1) { console.error(e1); setMyUpcomingRepl([]); return; }
 
-  const ids = Array.from(new Set((riRows || []).map(r => r.absence_id).filter(Boolean)));
-  if (ids.length === 0) { setMyUpcomingRepl([]); return; }
+    const ids = Array.from(new Set((riRows || []).map(r => r.absence_id).filter(Boolean)));
+    if (ids.length === 0) { setMyUpcomingRepl([]); return; }
 
-  // 2) On lit les absences correspondantes (date future) et on trie côté serveur sur la colonne locale
-  const { data: absRows, error: e2 } = await supabase
-    .from("absences")
-    .select("id, seller_id, date")
-    .in("id", ids)
-    
-  if (e2) { console.error(e2); setMyUpcomingRepl([]); return; }
+    // 2) On lit les absences correspondantes
+    const { data: absRows, error: e2 } = await supabase
+      .from("absences")
+      .select("id, seller_id, date")
+      .in("id", ids);
 
-  // 3) Join en mémoire pour reconstruire la liste
-  const byId = new Map((riRows || []).map(r => [r.absence_id, r.accepted_shift_code || null]));
-  const list = (absRows || []).map(a => ({
-    absence_id: a.id,
-    date: a.date,
-    absent_id: a.seller_id,
-    accepted_shift_code: byId.get(a.id) || null,
-  }));
+    if (e2) { console.error(e2); setMyUpcomingRepl([]); return; }
 
-  setMyUpcomingRepl(list);
+    // 3) Join en mémoire pour reconstruire la liste
+    const byId = new Map((riRows || []).map(r => [r.absence_id, r.accepted_shift_code || null]));
+    const list = (absRows || []).map(a => ({
+      absence_id: a.id,
+      date: a.date,
+      absent_id: a.seller_id,
+      accepted_shift_code: byId.get(a.id) || null,
+    }));
 
-  // (le reste de ta fonction qui charge les noms peut rester inchangé)
-}, [session?.user?.id]);
-
+    setMyUpcomingRepl(list);
+  }, [session?.user?.id]);
 
   useEffect(() => {
     loadMyMonthAbs();
@@ -651,7 +687,7 @@ if (absence.status !== "approved") return false;
           <ul className="list-disc pl-6 space-y-1 text-sm">
             {myUpcomingRepl.map((r) => (
               <li key={r.absence_id}>
-                Tu remplaces <b>{names[r.absent_id] || "—"}</b> le <b>{r.date}</b>
+                Tu remplaces <b>{names[r.absent_id] || "Vendeuse"}</b> le <b>{r.date}</b>
                 {r.accepted_shift_code ? <> — <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(r.accepted_shift_code)}</span></> : null}
               </li>
             ))}
@@ -660,7 +696,7 @@ if (absence.status !== "approved") return false;
       )}
 
       {/* Planning de la semaine */}
-      <WeekView days={days} assign={assign} todayIso={todayIso} />
+      <WeekView days={days} assign={assign} todayIso={todayIso} names={names} />
 
       {/* CONGÉS APPROUVÉS */}
       <div className="card">
@@ -805,7 +841,7 @@ if (absence.status !== "approved") return false;
   );
 
   /* --- composant interne pour la semaine (lecture seule) --- */
-  function WeekView({ days, assign, todayIso }) {
+  function WeekView({ days, assign, todayIso, names }) {
     return (
       <div className="card">
         <div className="hdr mb-4">Planning de la semaine</div>
@@ -831,15 +867,21 @@ if (absence.status !== "approved") return false;
                 {["MORNING", "MIDDAY", ...(sunday ? ["SUNDAY_EXTRA"] : []), "EVENING"].map((code) => {
                   const label = SHIFT_LABELS[code];
                   const rec = assign[`${iso}|${code}`];
-                  const name = rec?.full_name || "—";
                   const assigned = rec?.seller_id;
-                  const bg = assigned ? colorForName(name) : "#f3f4f6";
+
+                  // ⚠️ Dans certains setups RLS, `view_week_assignments.full_name` peut arriver vide côté vendeuse.
+                  // On retombe alors sur notre cache `names[user_id]`.
+                  const raw = rec?.full_name;
+                  const name = (!isNamePlaceholder(raw) ? raw : (assigned ? (names?.[assigned] || "") : ""));
+                  const shownName = assigned ? (name || "Vendeuse") : "—";
+
+                  const bg = assigned ? colorForSeller(assigned, name || shownName) : "#f3f4f6";
                   const fg = assigned ? "#fff" : "#6b7280";
                   const border = assigned ? "transparent" : "#e5e7eb";
                   return (
                     <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
                       <div className="text-sm">{label}</div>
-                      <div className="mt-1 text-sm">{name}</div>
+                      <div className="mt-1 text-sm">{shownName}</div>
                     </div>
                   );
                 })}
