@@ -64,6 +64,7 @@ function colorForSeller(sellerId, name) {
   return autoColorFromName(key);
 }
 
+
 const isSunday = (d) => d.getDay() === 0;
 const weekdayFR = (d) => d.toLocaleDateString("fr-FR", { weekday: "long" });
 const capFirst = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
@@ -109,6 +110,34 @@ export default function AppSeller() {
     run();
   }, [session, profile, profileTried]);
 
+  // 👤 Accès "planificatrice" (table planner_access)
+  const [isPlanner, setIsPlanner] = useState(false);
+  const [plannerChecked, setPlannerChecked] = useState(false);
+
+  useEffect(() => {
+    const run = async () => {
+      if (!session?.user?.id) return;
+      try {
+        const { data, error } = await supabase
+          .from("planner_access")
+          .select("user_id")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (!error && data) setIsPlanner(true);
+      } catch (e) {
+        // ignore
+      } finally {
+        setPlannerChecked(true);
+      }
+    };
+    run();
+  }, [session?.user?.id]);
+
+  // ✏️ Mode édition planning (visible uniquement si accès planificatrice)
+  const [editPlanning, setEditPlanning] = useState(false);
+
+
+
   const displayName =
     profile?.full_name ||
     profileFallback?.full_name ||
@@ -116,22 +145,24 @@ export default function AppSeller() {
     (session?.user?.email ? session.user.email.split("@")[0] : "—");
 
   // Sécurité / redirections
-  // 🔒 Redirection selon auth/role — UN SEUL useEffect
+ // 🔒 Redirection selon auth/role — UN SEUL useEffect
   useEffect(() => {
     if (loading) return;
     if (!session) { r.replace("/login"); return; }
+    if (!plannerChecked) return;
 
     const role =
       profile?.role
       ?? profileFallback?.role
       ?? "seller";
 
+    // Admin -> /admin, tout le reste reste sur /app (vendeuses + planificatrice)
     if (role === "admin") {
       r.replace("/admin");
+      return;
     }
-  }, [session, profile, profileFallback, loading, r]);
-
-  // Semaine affichée
+  }, [session, profile, profileFallback, plannerChecked, loading, r]);
+// Semaine affichée
   const [monday, setMonday] = useState(startOfWeek(new Date()));
   const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)), [monday]);
 
@@ -210,6 +241,7 @@ export default function AppSeller() {
     loadSellerNames();
   }, [session?.user?.id, loadSellerNames]);
 
+
   // ✅ DÉRIVÉ : bannière "Absente aujourd'hui" (pour la vendeuse connectée)
   const absentToday = useMemo(() => {
     const entry = (myMonthUpcomingAbs || []).find((a) => a.date === todayIso);
@@ -233,28 +265,160 @@ export default function AppSeller() {
     };
   }, [myMonthUpcomingAbs, acceptedByAbsence, todayIso]);
 
-  // Charger le planning de la semaine (lecture seule)
-  useEffect(() => {
-    if (!session) return; // ne rien faire tant qu’on n’a pas de session
-    const load = async () => {
-      const from = fmtISODate(days[0]);
-      const to = fmtISODate(days[6]);
-      const { data, error } = await supabase
-        .from("view_week_assignments")
-        .select("date, shift_code, seller_id, full_name")
-        .gte("date", from)
-        .lte("date", to);
-      if (error) { console.error("view_week_assignments error:", error); return; }
+  // Charger le planning de la semaine (lecture pour toutes, édition possible pour planificatrice)
+  const loadWeekPlanning = useCallback(async () => {
+    if (!session) return;
+    const from = fmtISODate(days[0]);
+    const to = fmtISODate(days[6]);
+
+    // 1) Vue (si dispo)
+    const { data: vw, error: e1 } = await supabase
+      .from("view_week_assignments")
+      .select("date, shift_code, seller_id, full_name")
+      .gte("date", from)
+      .lte("date", to);
+
+    // ⚠️ Certaines RLS peuvent renvoyer 0 lignes sans erreur → on fallback sur shifts
+    if (!e1 && Array.isArray(vw) && vw.length > 0) {
       const next = {};
-      (data || []).forEach((row) => {
+      vw.forEach((row) => {
         next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: row.full_name || null };
       });
       setAssign(next);
-    };
-    load();
-  }, [monday, session, days]);
+      return;
+    }
 
-  /* ----------------- Absence (form) ----------------- */
+    // 2) Fallback direct: table shifts
+    const { data: sh, error: e2 } = await supabase
+      .from("shifts")
+      .select("date, shift_code, seller_id")
+      .gte("date", from)
+      .lte("date", to);
+
+    if (e2) { console.error("loadWeekPlanning shifts error:", e2); return; }
+
+    const next = {};
+    (sh || []).forEach((row) => {
+      next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: null };
+    });
+    setAssign(next);
+  }, [session, days]);
+
+  useEffect(() => {
+    loadWeekPlanning();
+  }, [monday, session, days, loadWeekPlanning]);
+
+  // Planning du jour (panel dédié, indépendamment de la semaine affichée)
+  const [todayPlan, setTodayPlan] = useState({}); // { [shift_code]: { seller_id, full_name } }
+
+  const loadTodayPlan = useCallback(async () => {
+    if (!session) return;
+
+    // 1) Vue
+    const { data: vw, error: e1 } = await supabase
+      .from("view_week_assignments")
+      .select("date, shift_code, seller_id, full_name")
+      .eq("date", todayIso);
+
+    if (!e1 && Array.isArray(vw) && vw.length > 0) {
+      const next = {};
+      vw.forEach((row) => {
+        next[row.shift_code] = { seller_id: row.seller_id, full_name: row.full_name || null };
+      });
+      setTodayPlan(next);
+      return;
+    }
+
+    // 2) Fallback shifts
+    const { data: sh, error: e2 } = await supabase
+      .from("shifts")
+      .select("shift_code, seller_id")
+      .eq("date", todayIso);
+
+    if (e2) { console.error("loadTodayPlan shifts error:", e2); return; }
+
+    const next = {};
+    (sh || []).forEach((row) => {
+      next[row.shift_code] = { seller_id: row.seller_id, full_name: null };
+    });
+    setTodayPlan(next);
+  }, [session, todayIso]);
+
+  useEffect(() => {
+    loadTodayPlan();
+  }, [session, loadTodayPlan]);
+
+
+// 🔁 Realtime: si le planning change (admin ou planificatrice), on recharge automatiquement
+  useEffect(() => {
+    if (!session?.user?.id) return;
+    const ch = supabase
+      .channel("shifts_rt_app")
+      .on("postgres_changes", { event: "*", schema: "public", table: "shifts" }, async () => {
+        await loadWeekPlanning();
+        await loadTodayPlan();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [session?.user?.id, loadWeekPlanning, loadTodayPlan]);
+
+
+    // Liste vendeuses (pour les select en mode édition)
+  const sellerOptions = useMemo(() => {
+    const entries = Object.entries(names || {}).map(([user_id, full_name]) => ({
+      user_id,
+      full_name: (full_name || "").trim(),
+    }));
+
+    // Ajoute aussi les seller_id présents dans le planning même s'ils ne sont pas dans names (cas rare)
+    const inPlanning = new Set();
+    Object.values(assign || {}).forEach((rec) => {
+      if (rec?.seller_id) inPlanning.add(rec.seller_id);
+    });
+    inPlanning.forEach((id) => {
+      if (!entries.find((e) => e.user_id === id)) entries.push({ user_id: id, full_name: "" });
+    });
+
+    return entries.sort((a, b) => (a.full_name || a.user_id).localeCompare(b.full_name || b.user_id, "fr"));
+  }, [names, assign]);
+
+  // Sauvegarde d'un créneau (réservé planificatrice/admin via RPC)
+  const saveShift = useCallback(async (iso, code, seller_id) => {
+    if (!isPlanner) return;
+
+    const key = `${iso}|${code}`;
+    const resolvedName = seller_id ? (names?.[seller_id] || null) : null;
+
+    // Optimistic UI
+    setAssign((prev) => ({
+      ...prev,
+      [key]: { seller_id: seller_id || null, full_name: resolvedName },
+    }));
+
+    const { error } = await supabase.rpc("planner_upsert_shift", {
+      p_date: iso,
+      p_code: code,
+      p_seller: seller_id || null,
+    });
+
+    if (error) {
+      console.error("planner_upsert_shift error:", error);
+      alert(error.message || "Échec de sauvegarde du planning");
+      // rollback: reload
+      await loadWeekPlanning();
+      await loadTodayPlan();
+      return;
+    }
+
+    // refresh read models
+    await loadWeekPlanning();
+    await loadTodayPlan();
+  }, [isPlanner, names, loadWeekPlanning, loadTodayPlan]);
+
+/* ----------------- Absence (form) ----------------- */
   const submitAbs = async () => {
     setMsgAbs("");
 
@@ -291,7 +455,7 @@ export default function AppSeller() {
     const tIso = fmtISODate(new Date());
     if (absence.seller_id === me) return false;  // ne pas prévenir l’absente
     if (absence.date < tIso) return false;       // seulement futur
-    if (absence.status !== "approved") return false;
+if (absence.status !== "approved") return false;
     if (absence.admin_forced) return false;      // 🚫 pas de prompt si absence posée par l’admin
     const { data: mine } = await supabase
       .from("replacement_interest").select("id")
@@ -330,7 +494,7 @@ export default function AppSeller() {
       const tIso = fmtISODate(new Date());
       const { data: abs, error } = await supabase
         .from("absences").select("id, date, seller_id, status, admin_forced")
-        .eq("status", "approved").gte("date", tIso)
+.eq("status", "approved").gte("date", tIso)
         .eq("admin_forced", false)  // 🚫 exclure absences admin
         .order("date", { ascending: true });
       if (error || !abs || abs.length === 0) return;
@@ -466,11 +630,13 @@ export default function AppSeller() {
   /* ----------------- Remplacements ACCEPTÉS pour MES absences ----------------- */
   const reloadAccepted = async () => {
     if (!session?.user?.id) return;
+    const tIso = fmtISODate(new Date());
     const { data: rows, error } = await supabase
       .from('replacement_interest')
       .select('id, status, volunteer_id, accepted_shift_code, absence_id, absences(id, seller_id, date)')
       .eq('status', 'accepted')
       .eq('absences.seller_id', session.user.id)
+      //.gte('absences.date', tIso)
       .order('id', { ascending: true });
     if (error) { setAcceptedByAbsence({}); return; }
 
@@ -495,39 +661,43 @@ export default function AppSeller() {
   };
 
   /* ----------------- Mes remplacements à venir (je suis la volontaire acceptée) ----------------- */
-  const loadMyUpcomingRepl = useCallback(async () => {
-    if (!session?.user?.id) return;
+ const loadMyUpcomingRepl = useCallback(async () => {
+  if (!session?.user?.id) return;
+  const tIso = fmtISODate(new Date());
 
-    // 1) Mes remplacements acceptés → récupère les absence_id
-    const { data: riRows, error: e1 } = await supabase
-      .from("replacement_interest")
-      .select("absence_id, accepted_shift_code")
-      .eq("volunteer_id", session.user.id)
-      .eq("status", "accepted");
-    if (e1) { console.error(e1); setMyUpcomingRepl([]); return; }
+  // 1) Mes remplacements acceptés → récupère les absence_id
+  const { data: riRows, error: e1 } = await supabase
+    .from("replacement_interest")
+    .select("absence_id, accepted_shift_code")
+    .eq("volunteer_id", session.user.id)
+    .eq("status", "accepted");
+  if (e1) { console.error(e1); setMyUpcomingRepl([]); return; }
 
-    const ids = Array.from(new Set((riRows || []).map(r => r.absence_id).filter(Boolean)));
-    if (ids.length === 0) { setMyUpcomingRepl([]); return; }
+  const ids = Array.from(new Set((riRows || []).map(r => r.absence_id).filter(Boolean)));
+  if (ids.length === 0) { setMyUpcomingRepl([]); return; }
 
-    // 2) On lit les absences correspondantes
-    const { data: absRows, error: e2 } = await supabase
-      .from("absences")
-      .select("id, seller_id, date")
-      .in("id", ids);
+  // 2) On lit les absences correspondantes (date future) et on trie côté serveur sur la colonne locale
+  const { data: absRows, error: e2 } = await supabase
+    .from("absences")
+    .select("id, seller_id, date")
+    .in("id", ids)
+    
+  if (e2) { console.error(e2); setMyUpcomingRepl([]); return; }
 
-    if (e2) { console.error(e2); setMyUpcomingRepl([]); return; }
+  // 3) Join en mémoire pour reconstruire la liste
+  const byId = new Map((riRows || []).map(r => [r.absence_id, r.accepted_shift_code || null]));
+  const list = (absRows || []).map(a => ({
+    absence_id: a.id,
+    date: a.date,
+    absent_id: a.seller_id,
+    accepted_shift_code: byId.get(a.id) || null,
+  }));
 
-    // 3) Join en mémoire pour reconstruire la liste
-    const byId = new Map((riRows || []).map(r => [r.absence_id, r.accepted_shift_code || null]));
-    const list = (absRows || []).map(a => ({
-      absence_id: a.id,
-      date: a.date,
-      absent_id: a.seller_id,
-      accepted_shift_code: byId.get(a.id) || null,
-    }));
+  setMyUpcomingRepl(list);
 
-    setMyUpcomingRepl(list);
-  }, [session?.user?.id]);
+  // (le reste de ta fonction qui charge les noms peut rester inchangé)
+}, [session?.user?.id]);
+
 
   useEffect(() => {
     loadMyMonthAbs();
@@ -599,15 +769,310 @@ export default function AppSeller() {
     return () => navigator.serviceWorker.removeEventListener('message', handler);
   }, []);
 
+
+  // ===========================
+  // ✅ Validation des heures mensuelles (fin de mois)
+  // ===========================
+  const monthStartPrev = useMemo(() => {
+    const now = new Date();
+    const firstThis = new Date(now.getFullYear(), now.getMonth(), 1);
+    const prev = new Date(firstThis);
+    prev.setMonth(prev.getMonth() - 1);
+    return fmtISODate(prev);
+  }, []);
+
+  const monthLabel = useMemo(() => {
+    const d = new Date(monthStartPrev + "T00:00:00");
+    // ex: "décembre 2025"
+    return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  }, [monthStartPrev]);
+
+  const [monthlyRow, setMonthlyRow] = useState(null);
+  const [monthlyLoading, setMonthlyLoading] = useState(false);
+  const [monthlyErr, setMonthlyErr] = useState("");
+  const [corrHours, setCorrHours] = useState("");
+  const [corrNote, setCorrNote] = useState("");
+  const [monthlyFlash, setMonthlyFlash] = useState("");
+
+  const ensureMonthlyRow = useCallback(async () => {
+    if (!session?.user?.id) return;
+    setMonthlyErr("");
+    setMonthlyLoading(true);
+    try {
+      const { data, error } = await supabase.rpc("ensure_monthly_hours_row", { p_month_start: monthStartPrev });
+      if (error) throw error;
+      setMonthlyRow(data || null);
+
+      // Pre-fill si déjà en correction
+      if (data?.seller_status === "disputed") setCorrHours(String(data?.seller_correction_hours ?? ""));
+      if (data?.seller_comment) setCorrNote(data.seller_comment);
+    } catch (e) {
+      console.warn("ensure_monthly_hours_row failed:", e?.message || e);
+      setMonthlyErr(e?.message || "Impossible de charger la validation mensuelle.");
+    } finally {
+      setMonthlyLoading(false);
+    }
+  }, [session?.user?.id, monthStartPrev]);
+
+  useEffect(() => {
+    ensureMonthlyRow();
+  }, [ensureMonthlyRow]);
+
+  // Realtime: si admin valide/refuse, la vendeuse le voit sans refresh
+  useEffect(() => {
+    if (!session?.user?.id) return;
+
+    const ch = supabase
+      .channel("monthly_hours_seller_" + session.user.id)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "monthly_hours_attestations", filter: `seller_id=eq.${session.user.id}` },
+        (payload) => {
+          const row = payload?.new;
+          if (!row) return;
+          if (row.month_start !== monthStartPrev) return;
+
+          setMonthlyRow(row);
+
+          if (payload.eventType === "UPDATE" && row.admin_status && row.admin_status !== "pending") {
+            setMonthlyFlash(row.admin_status === "approved"
+              ? "Tes heures ont été validées par l'admin ✅"
+              : "L'admin a refusé la correction ❌"
+            );
+            setTimeout(() => setMonthlyFlash(""), 5000);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [session?.user?.id, monthStartPrev]);
+
+  const sellerAcceptMonthly = useCallback(async () => {
+    if (!session?.user?.id) return;
+    setMonthlyErr("");
+
+    const { data, error } = await supabase.rpc("seller_monthly_hours_submit", {
+      p_month_start: monthStartPrev,
+      p_mode: "accept",
+      p_corrected: null,
+      p_comment: null,
+    });
+
+    if (error) {
+      console.error("seller_monthly_hours_submit accept error:", error);
+      setMonthlyErr(error.message || "Échec de validation");
+      return;
+    }
+    setMonthlyRow(data || null);
+  }, [session?.user?.id, monthStartPrev]);
+
+  const sellerCorrectMonthly = useCallback(async () => {
+    if (!session?.user?.id) return;
+    setMonthlyErr("");
+
+    const val = Number(String(corrHours || "").replace(",", "."));
+    if (!Number.isFinite(val) || val <= 0) {
+      setMonthlyErr("Indique un total d'heures valide (ex: 151.5).");
+      return;
+    }
+
+    const { data, error } = await supabase.rpc("seller_monthly_hours_submit", {
+      p_month_start: monthStartPrev,
+      p_mode: "correct",
+      p_corrected: val,
+      p_comment: (corrNote || "").trim() || null,
+    });
+
+    if (error) {
+      console.error("seller_monthly_hours_submit correct error:", error);
+      setMonthlyErr(error.message || "Échec d'envoi de correction");
+      return;
+    }
+    setMonthlyRow(data || null);
+  }, [session?.user?.id, monthStartPrev, corrHours, corrNote]);
+
+
   // --- ÉTATS GÉNÉRAUX D'ACCÈS ---
-  if (loading) return <div className="p-4">Chargement…</div>;
+  if (loading || !plannerChecked) return <div className="p-4">Chargement…</div>;
   if (!session) return <div className="p-4">Connexion requise…</div>;
 
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div className="hdr">Bonjour {displayName}</div>
-        <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
+        <div className="flex items-center gap-2">
+          {isPlanner && (
+            <button
+              className="btn"
+              onClick={() => setEditPlanning((v) => !v)}
+              title="Activer/Désactiver la modification du planning"
+              style={{ backgroundColor: editPlanning ? "#111827" : undefined, color: editPlanning ? "#fff" : undefined }}
+            >
+              {editPlanning ? "Mode planning: ON" : "Modifier le planning"}
+            </button>
+          )}
+          <button className="btn" onClick={() => supabase.auth.signOut()}>Se déconnecter</button>
+        </div>
+      </div>
+
+
+      {/* Validation heures mensuelles (tout le monde) */}
+      {(monthlyLoading || monthlyRow) && (
+        <div className="card">
+          <div className="hdr mb-2">Validation des heures — {capFirst(monthLabel)}</div>
+
+          {monthlyFlash && (
+            <div className="text-sm mb-2 border rounded-xl p-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
+              {monthlyFlash}
+            </div>
+          )}
+
+          {monthlyErr && (
+            <div className="text-sm mb-2 border rounded-xl p-2" style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}>
+              {monthlyErr}
+            </div>
+          )}
+
+          {monthlyLoading && <div className="text-sm text-gray-600">Chargement…</div>}
+
+          {!monthlyLoading && monthlyRow && (
+            <>
+              <div className="text-sm">
+                Total calculé sur le planning :{" "}
+                <span className="font-semibold">{Number(monthlyRow.computed_hours || 0).toFixed(2)} h</span>
+              </div>
+
+              {/* Cas 1: la vendeuse n'a pas encore répondu */}
+              {monthlyRow.seller_status === "pending" && (
+                <div className="mt-3 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                    <button
+                      className="btn"
+                      onClick={sellerAcceptMonthly}
+                      style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}
+                    >
+                      Valider
+                    </button>
+                    <div className="text-xs text-gray-500">
+                      Si tu as échangé des créneaux sans que le planning ait été mis à jour, tu peux corriger ton total.
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <input
+                      className="input"
+                      value={corrHours}
+                      onChange={(e) => setCorrHours(e.target.value)}
+                      placeholder="Heures corrigées (ex: 151.5)"
+                      inputMode="decimal"
+                    />
+                    <input
+                      className="input"
+                      value={corrNote}
+                      onChange={(e) => setCorrNote(e.target.value)}
+                      placeholder="Commentaire (optionnel)"
+                    />
+                    <button
+                      className="btn"
+                      onClick={sellerCorrectMonthly}
+                      style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
+                    >
+                      Envoyer correction
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Cas 2: la vendeuse a répondu */}
+              {monthlyRow.seller_status !== "pending" && (
+                <div className="mt-3 border rounded-xl p-3" style={{ backgroundColor: "#f8fafc", borderColor: "#e2e8f0" }}>
+                  <div className="text-sm">
+                    {monthlyRow.seller_status === "accepted" ? (
+                      <>✅ Tu as validé ton total.</>
+                    ) : (
+                      <>
+                        ✍️ Correction envoyée :{" "}
+                        <span className="font-semibold">
+                          {Number(monthlyRow.seller_correction_hours || 0).toFixed(2)} h
+                        </span>
+                        {monthlyRow.seller_comment ? <span className="text-gray-600"> — {monthlyRow.seller_comment}</span> : null}
+                      </>
+                    )}
+                  </div>
+
+                  <div className="text-xs text-gray-600 mt-2">
+                    Statut admin :{" "}
+                    {monthlyRow.admin_status === "pending" && <span className="font-medium">en attente</span>}
+                    {monthlyRow.admin_status === "approved" && (
+                      <span className="font-medium">
+                        approuvé ✅ (heures retenues : {Number(monthlyRow.final_hours || 0).toFixed(2)} h)
+                      </span>
+                    )}
+                    {monthlyRow.admin_status === "rejected" && (
+                      <span className="font-medium">
+                        refusé ❌ (heures retenues : {Number(monthlyRow.final_hours || 0).toFixed(2)} h)
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
+
+      {/* Planning du jour (tout le monde) */}
+      <div className="card">
+        <div className="hdr mb-2">Planning du jour — {todayIso}</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+          {(() => {
+            const d = new Date(todayIso + "T00:00:00");
+            const codes = ["MORNING", "MIDDAY", ...(d.getDay() === 0 ? ["SUNDAY_EXTRA"] : []), "EVENING"];
+            return codes.map((code) => {
+              const rec = todayPlan?.[code] || {};
+              const assigned = rec?.seller_id || null;
+              const raw = rec?.full_name;
+              const name = (!isNamePlaceholder(raw) ? raw : (assigned ? (names?.[assigned] || "") : ""));
+              const shownName = assigned ? (name || "Vendeuse") : "—";
+              const bg = assigned ? colorForSeller(assigned, shownName) : "#f3f4f6";
+              const fg = assigned ? "#fff" : "#6b7280";
+              const border = assigned ? "transparent" : "#e5e7eb";
+
+              return (
+                <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
+                  <div className="text-sm">{SHIFT_LABELS[code] || code}</div>
+                  <div className="mt-1 text-sm">{shownName}</div>
+
+                  {isPlanner && editPlanning && (
+                    <div className="mt-3">
+                      <select
+                        className="input"
+                        value={assigned || ""}
+                        onChange={(e) => saveShift(todayIso, code, e.target.value || null)}
+                      >
+                        <option value="">— (aucune)</option>
+                        {sellerOptions.map((s) => (
+                          <option key={s.user_id} value={s.user_id}>
+                            {s.full_name || s.user_id.slice(0, 8)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              );
+            });
+          })()}
+        </div>
+        {isPlanner && editPlanning && (
+          <div className="text-xs text-gray-600 mt-3">
+            Mode planificatrice activé : vos modifications mettent à jour le planning pour tout le monde (admin + vendeuses).
+          </div>
+        )}
       </div>
 
       {/* 🟥 Bannière “Absente aujourd’hui” (pour la vendeuse connectée) */}
@@ -687,7 +1152,7 @@ export default function AppSeller() {
           <ul className="list-disc pl-6 space-y-1 text-sm">
             {myUpcomingRepl.map((r) => (
               <li key={r.absence_id}>
-                Tu remplaces <b>{names[r.absent_id] || "Vendeuse"}</b> le <b>{r.date}</b>
+                Tu remplaces <b>{names[r.absent_id] || "—"}</b> le <b>{r.date}</b>
                 {r.accepted_shift_code ? <> — <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(r.accepted_shift_code)}</span></> : null}
               </li>
             ))}
@@ -696,7 +1161,7 @@ export default function AppSeller() {
       )}
 
       {/* Planning de la semaine */}
-      <WeekView days={days} assign={assign} todayIso={todayIso} names={names} />
+      <WeekView days={days} assign={assign} todayIso={todayIso} names={names} isPlanner={isPlanner} editPlanning={editPlanning} sellerOptions={sellerOptions} saveShift={saveShift} />
 
       {/* CONGÉS APPROUVÉS */}
       <div className="card">
@@ -841,7 +1306,8 @@ export default function AppSeller() {
   );
 
   /* --- composant interne pour la semaine (lecture seule) --- */
-  function WeekView({ days, assign, todayIso, names }) {
+  /* --- composant interne pour la semaine (lecture seule + édition planificatrice) --- */
+  function WeekView({ days, assign, todayIso, names, isPlanner, editPlanning, sellerOptions, saveShift }) {
     return (
       <div className="card">
         <div className="hdr mb-4">Planning de la semaine</div>
@@ -851,26 +1317,30 @@ export default function AppSeller() {
           onToday={() => setMonday(startOfWeek(new Date()))}
           onNext={() => setMonday(addDays(monday, 7))}
         />
+
         <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
           {days.map((d) => {
             const iso = fmtISODate(d);
             const sunday = isSunday(d);
-            const isToday = iso === todayIso; // ✅ contour pour tout le jour courant
+            const isToday = iso === todayIso;
+
             return (
               <div
                 key={iso}
                 className="border rounded-2xl p-3 space-y-3"
-                style={isToday ? { borderColor: "#1976d2", boxShadow: "0 0 0 3px rgba(25,118,210,0.15)" } : {}}
+                style={{ borderWidth: isToday ? 2 : 1, borderColor: isToday ? "#2563eb" : "#e5e7eb" }}
               >
                 <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
                 <div className="font-semibold">{iso}</div>
-                {["MORNING", "MIDDAY", ...(sunday ? ["SUNDAY_EXTRA"] : []), "EVENING"].map((code) => {
-                  const label = SHIFT_LABELS[code];
-                  const rec = assign[`${iso}|${code}`];
-                  const assigned = rec?.seller_id;
 
-                  // ⚠️ Dans certains setups RLS, `view_week_assignments.full_name` peut arriver vide côté vendeuse.
-                  // On retombe alors sur notre cache `names[user_id]`.
+                {["MORNING", "MIDDAY", ...(sunday ? ["SUNDAY_EXTRA"] : []), "EVENING"].map((code) => {
+                  const key = `${iso}|${code}`;
+                  const label = SHIFT_LABELS[code] || code;
+
+                  const rec = assign?.[key];
+                  const assigned = rec?.seller_id || "";
+
+                  // ⚠️ `view_week_assignments.full_name` peut être vide côté vendeuse
                   const raw = rec?.full_name;
                   const name = (!isNamePlaceholder(raw) ? raw : (assigned ? (names?.[assigned] || "") : ""));
                   const shownName = assigned ? (name || "Vendeuse") : "—";
@@ -878,10 +1348,48 @@ export default function AppSeller() {
                   const bg = assigned ? colorForSeller(assigned, name || shownName) : "#f3f4f6";
                   const fg = assigned ? "#fff" : "#6b7280";
                   const border = assigned ? "transparent" : "#e5e7eb";
+
                   return (
-                    <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
-                      <div className="text-sm">{label}</div>
+                    <div
+                      key={code}
+                      className="rounded-2xl p-3"
+                      style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}
+                    >
+                      <div className="text-sm font-medium">{label}</div>
                       <div className="mt-1 text-sm">{shownName}</div>
+
+                      {isPlanner && editPlanning && (
+                        <div className="mt-3">
+                          <select
+                            className="input"
+                            style={{
+                              backgroundColor: "#fff",
+                              color: "#111827",
+                              border: "1px solid #e5e7eb",
+                              WebkitAppearance: "menulist",
+                              appearance: "menulist",
+                            }}
+                            value={assigned}
+                            onChange={(e) => saveShift(iso, code, e.target.value || null)}
+                          >
+                            <option value="">— (aucune)</option>
+                            {(sellerOptions || []).map((s) => {
+                              const label = (s.full_name || names?.[s.user_id] || "").trim() || s.user_id.slice(0, 8);
+                              return (
+                                <option key={s.user_id} value={s.user_id}>
+                                  {label}
+                                </option>
+                              );
+                            })}
+                          </select>
+
+                          {(!sellerOptions || sellerOptions.length === 0) && (
+                            <div className="text-xs text-gray-600 mt-2">
+                              Liste vendeuses indisponible. Vérifie la RPC <code>list_active_seller_names</code>.
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
