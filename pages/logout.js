@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-async function clearAuthStorageAndCaches() {
+async function hardClear() {
   try {
     Object.keys(localStorage)
       .filter((k) => k.startsWith("sb-") || k.includes("supabase"))
@@ -33,9 +33,14 @@ export default function LogoutPage() {
   useEffect(() => {
     (async () => {
       try {
+        setMsg("Fermeture de session…");
         await supabase.auth.signOut();
       } catch (_) {}
-      await clearAuthStorageAndCaches();
+
+      setMsg("Nettoyage du cache…");
+      await hardClear();
+
+      setMsg("Redirection…");
       window.location.replace("/login?ts=" + Date.now());
     })();
   }, []);
@@ -44,8 +49,13 @@ export default function LogoutPage() {
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="w-full max-w-sm border rounded-2xl p-6 space-y-3">
         <div className="text-xl font-semibold">{msg}</div>
-        <div className="text-sm opacity-80">Si ça reste bloqué, clique ci-dessous.</div>
-        <button className="btn w-full" onClick={() => window.location.replace("/login?ts=" + Date.now())}>
+        <div className="text-sm opacity-80">
+          Si ça reste bloqué, clique ci-dessous.
+        </div>
+        <button
+          className="btn w-full"
+          onClick={() => window.location.replace("/login?ts=" + Date.now())}
+        >
           Aller à /login
         </button>
       </div>
