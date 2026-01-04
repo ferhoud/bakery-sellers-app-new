@@ -1,4 +1,5 @@
 // pages/_app.js
+import "../styles/globals.css";
 import { useEffect } from "react";
 
 async function registerSWOnce() {
