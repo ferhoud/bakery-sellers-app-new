@@ -1,5 +1,5 @@
 /* eslint-disable react/no-unescaped-entities */
-import { useState, useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
@@ -24,7 +24,7 @@ async function clearAuthStorageAndCaches() {
     Object.keys(sessionStorage).forEach((k) => sessionStorage.removeItem(k));
   } catch (_) {}
 
-  // Best effort SW + caches (ça aide quand un vieux SW bloque des chunks)
+  // Best effort: SW + caches (quand un vieux SW garde des chunks)
   try {
     if ("serviceWorker" in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
@@ -50,21 +50,18 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [lastResp, setLastResp] = useState(null);
-  const [deciding, setDeciding] = useState(false);
 
-  // Fallback anti-stale-session
+  // Vérité Supabase (anti “session fantôme”)
   const [authChecked, setAuthChecked] = useState(false);
-  const [localSession, setLocalSession] = useState(null);
+  const [sbSession, setSbSession] = useState(null);
+
+  const [deciding, setDeciding] = useState(false);
+  const [info, setInfo] = useState(null);
 
   useEffect(() => {
     let alive = true;
 
-    // Watchdog: quoi qu’il arrive, on ne bloque jamais la page plus de 8s
-    const watchdog = setTimeout(() => {
-      if (!alive) return;
-      setAuthChecked(true);
-    }, 8000);
-
+    // 1) getSession au montage
     (async () => {
       try {
         const { data } = await withTimeout(
@@ -73,50 +70,56 @@ export default function LoginPage() {
           "getSession timeout"
         );
         if (!alive) return;
-        setLocalSession(data?.session ?? null);
+        setSbSession(data?.session ?? null);
       } catch (e) {
         console.error("[login] getSession error:", e);
       } finally {
         if (alive) setAuthChecked(true);
-        clearTimeout(watchdog);
       }
     })();
 
+    // 2) écoute les changements auth (logout/login)
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSbSession(session ?? null);
+      setAuthChecked(true);
+    });
+
     return () => {
       alive = false;
-      clearTimeout(watchdog);
+      try {
+        data?.subscription?.unsubscribe?.();
+      } catch (_) {}
     };
   }, []);
 
   // IMPORTANT:
-  // - Avant authChecked: on accepte hookSession (plus rapide)
-  // - Après authChecked: on considère localSession comme source de vérité
-  //   => si localSession est null, on ignore une hookSession stale
+  // - Après authChecked: on ignore hookSession (souvent stale)
+  // - Avant: on accepte hookSession pour être rapide
   const session = useMemo(() => {
-    if (!authChecked) return hookSession || localSession || null;
-    return localSession || null;
-  }, [authChecked, hookSession, localSession]);
+    if (!authChecked) return sbSession || hookSession || null;
+    return sbSession || null;
+  }, [authChecked, sbSession, hookSession]);
 
-  // Après authChecked, on ne doit plus jamais rester sur "Chargement…" juste à cause du hook
-  const loading = useMemo(() => {
-    if (!authChecked) return !!hookLoading;
-    return false;
-  }, [authChecked, hookLoading]);
+  // On n’affiche jamais un “Chargement…” infini.
+  // On met juste une bannière si on check encore.
+  const showCheckingBanner = !authChecked || hookLoading || deciding;
 
   useEffect(() => {
     const decide = async () => {
-      // On décide UNIQUEMENT après authChecked, pour éviter les boucles avec hookSession stale
       if (!authChecked) return;
       if (!session?.user?.id) return;
 
       setDeciding(true);
+      setInfo("Redirection…");
       try {
+        // Admin direct par email
         if (isAdminEmail(session.user.email)) {
           r.replace("/admin");
           return;
         }
 
-        const { data: prof, error: profErr } = await withTimeout(
+        // Sinon profil.role (timeout pour éviter blocage)
+        const resp = await withTimeout(
           supabase
             .from("profiles")
             .select("role")
@@ -126,9 +129,13 @@ export default function LoginPage() {
           "profiles role timeout"
         );
 
-        // Si erreur 401/permission, on ne boucle pas: on laisse la page login
+        const prof = resp?.data;
+        const profErr = resp?.error;
+
+        // Si erreur (401/permission), on ne boucle pas
         if (profErr) {
           console.warn("[login][decide] profiles error:", profErr);
+          setInfo(null);
           return;
         }
 
@@ -140,6 +147,7 @@ export default function LoginPage() {
         r.replace(r.query.next ? String(r.query.next) : "/app");
       } catch (e) {
         console.error("[login][decide] error:", e);
+        setInfo(null);
       } finally {
         setDeciding(false);
       }
@@ -157,7 +165,6 @@ export default function LoginPage() {
       6000,
       "profiles existing timeout"
     );
-
     if (exErr) throw exErr;
 
     if (!existing) {
@@ -175,7 +182,6 @@ export default function LoginPage() {
         6000,
         "profiles insert timeout"
       );
-
       if (insErr) throw insErr;
     }
   }
@@ -220,6 +226,10 @@ export default function LoginPage() {
       setLastResp({ data, err: serializeErr(err) });
       if (err) throw err;
 
+      // important: met à jour notre session locale immédiatement
+      if (data?.session) setSbSession(data.session);
+      setAuthChecked(true);
+
       await ensureProfile(data?.user);
       await redirectByRoleOrEmail(data?.user);
     } catch (e2) {
@@ -261,9 +271,9 @@ export default function LoginPage() {
 
   const onReset = async () => {
     setError(null);
+    setInfo("Nettoyage…");
     try {
-      // Force aussi un signOut côté lib (mémoire)
-      await supabase.auth.signOut();
+      await withTimeout(supabase.auth.signOut(), 5000, "signOut timeout");
     } catch (_) {}
     await clearAuthStorageAndCaches();
     window.location.href = "/login?clean=1&ts=" + Date.now();
@@ -271,31 +281,23 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
+      console.log("[login] authChecked:", authChecked);
+      console.log("[login] hookLoading:", hookLoading);
       console.log("[env] NEXT_PUBLIC_SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL ? "ok" : "manquant");
       console.log("[env] NEXT_PUBLIC_SUPABASE_ANON_KEY:", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "ok" : "manquant");
     }
-  }, []);
-
-  if (loading || deciding) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="w-full max-w-sm border rounded-2xl p-6 space-y-3">
-          <div className="text-xl font-semibold">Chargement…</div>
-          <div className="text-sm opacity-80">
-            Si ça reste bloqué, clique sur "Débloquer".
-          </div>
-          <button type="button" className="btn w-full" onClick={onReset}>
-            Débloquer (réinitialiser session)
-          </button>
-        </div>
-      </div>
-    );
-  }
+  }, [authChecked, hookLoading]);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="w-full max-w-sm border rounded-2xl p-6 space-y-4">
         <div className="text-xl font-semibold">Connexion</div>
+
+        {showCheckingBanner && (
+          <div className="text-sm p-2 rounded" style={{ background: "#f3f4f6" }}>
+            {info || "Vérification de session…"}
+          </div>
+        )}
 
         <button
           type="button"
