@@ -15,7 +15,6 @@ function withTimeout(promise, ms, label = "timeout") {
 
 async function clearAuthStorageAndCaches() {
   try {
-    // Supabase tokens (sb-*)
     Object.keys(localStorage)
       .filter((k) => k.startsWith("sb-") || k.includes("supabase"))
       .forEach((k) => localStorage.removeItem(k));
@@ -25,7 +24,7 @@ async function clearAuthStorageAndCaches() {
     Object.keys(sessionStorage).forEach((k) => sessionStorage.removeItem(k));
   } catch (_) {}
 
-  // Best-effort: service worker + caches
+  // Best effort SW + caches (ça aide quand un vieux SW bloque des chunks)
   try {
     if ("serviceWorker" in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
@@ -51,15 +50,21 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [lastResp, setLastResp] = useState(null);
-
   const [deciding, setDeciding] = useState(false);
 
-  // Fallback anti-blocage: on check nous-mêmes la session (au cas où useAuth reste bloqué)
+  // Fallback anti-stale-session
   const [authChecked, setAuthChecked] = useState(false);
   const [localSession, setLocalSession] = useState(null);
 
   useEffect(() => {
     let alive = true;
+
+    // Watchdog: quoi qu’il arrive, on ne bloque jamais la page plus de 8s
+    const watchdog = setTimeout(() => {
+      if (!alive) return;
+      setAuthChecked(true);
+    }, 8000);
+
     (async () => {
       try {
         const { data } = await withTimeout(
@@ -69,42 +74,49 @@ export default function LoginPage() {
         );
         if (!alive) return;
         setLocalSession(data?.session ?? null);
-      } catch (_) {
-        // même si ça échoue, on ne bloque pas l’UI
+      } catch (e) {
+        console.error("[login] getSession error:", e);
       } finally {
         if (alive) setAuthChecked(true);
+        clearTimeout(watchdog);
       }
     })();
+
     return () => {
       alive = false;
+      clearTimeout(watchdog);
     };
   }, []);
 
-  // Session effective: on prend celle du hook si dispo, sinon fallback local
-  const session = useMemo(() => hookSession || localSession || null, [hookSession, localSession]);
+  // IMPORTANT:
+  // - Avant authChecked: on accepte hookSession (plus rapide)
+  // - Après authChecked: on considère localSession comme source de vérité
+  //   => si localSession est null, on ignore une hookSession stale
+  const session = useMemo(() => {
+    if (!authChecked) return hookSession || localSession || null;
+    return localSession || null;
+  }, [authChecked, hookSession, localSession]);
 
-  // IMPORTANT: on ne bloque pas l’écran indéfiniment sur hookLoading
+  // Après authChecked, on ne doit plus jamais rester sur "Chargement…" juste à cause du hook
   const loading = useMemo(() => {
-    // Tant qu’on n’a pas fait notre check local, on accepte le loading du hook.
     if (!authChecked) return !!hookLoading;
-    // Après authChecked, on n’affiche plus jamais "Chargement…" uniquement à cause du hook
     return false;
   }, [authChecked, hookLoading]);
 
   useEffect(() => {
     const decide = async () => {
+      // On décide UNIQUEMENT après authChecked, pour éviter les boucles avec hookSession stale
+      if (!authChecked) return;
       if (!session?.user?.id) return;
 
       setDeciding(true);
       try {
-        // si email admin connu -> /admin direct (pas besoin de profil)
         if (isAdminEmail(session.user.email)) {
           r.replace("/admin");
           return;
         }
 
-        // sinon essaie le profil (avec timeout pour éviter blocage)
-        const { data: prof } = await withTimeout(
+        const { data: prof, error: profErr } = await withTimeout(
           supabase
             .from("profiles")
             .select("role")
@@ -114,6 +126,12 @@ export default function LoginPage() {
           "profiles role timeout"
         );
 
+        // Si erreur 401/permission, on ne boucle pas: on laisse la page login
+        if (profErr) {
+          console.warn("[login][decide] profiles error:", profErr);
+          return;
+        }
+
         if (prof?.role === "admin") {
           r.replace("/admin");
           return;
@@ -121,7 +139,6 @@ export default function LoginPage() {
 
         r.replace(r.query.next ? String(r.query.next) : "/app");
       } catch (e) {
-        // Si la décision échoue, on ne bloque pas la page login
         console.error("[login][decide] error:", e);
       } finally {
         setDeciding(false);
@@ -130,16 +147,18 @@ export default function LoginPage() {
 
     decide();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.user?.id, session?.user?.email, r.query.next]);
+  }, [authChecked, session?.user?.id, session?.user?.email, r.query.next]);
 
   async function ensureProfile(user) {
     if (!user?.id) return;
 
-    const { data: existing } = await withTimeout(
+    const { data: existing, error: exErr } = await withTimeout(
       supabase.from("profiles").select("user_id").eq("user_id", user.id).maybeSingle(),
       6000,
       "profiles existing timeout"
     );
+
+    if (exErr) throw exErr;
 
     if (!existing) {
       const fullName =
@@ -147,8 +166,7 @@ export default function LoginPage() {
         (user.email ? user.email.split("@")[0] : "Utilisateur");
       const role = isAdminEmail(user.email) ? "admin" : "seller";
 
-      // nécessite la policy INSERT
-      await withTimeout(
+      const { error: insErr } = await withTimeout(
         supabase.from("profiles").insert({
           user_id: user.id,
           full_name: fullName,
@@ -157,6 +175,8 @@ export default function LoginPage() {
         6000,
         "profiles insert timeout"
       );
+
+      if (insErr) throw insErr;
     }
   }
 
@@ -169,13 +189,13 @@ export default function LoginPage() {
     }
 
     if (user?.id) {
-      const { data: prof } = await withTimeout(
+      const { data: prof, error: profErr } = await withTimeout(
         supabase.from("profiles").select("role").eq("user_id", user.id).maybeSingle(),
         6000,
         "profiles role timeout"
       );
 
-      if (prof?.role === "admin") {
+      if (!profErr && prof?.role === "admin") {
         r.replace("/admin");
         return;
       }
@@ -200,9 +220,7 @@ export default function LoginPage() {
       setLastResp({ data, err: serializeErr(err) });
       if (err) throw err;
 
-      // 1) crée la ligne profil si manquante
       await ensureProfile(data?.user);
-      // 2) redirige (email admin > profil.role > /app)
       await redirectByRoleOrEmail(data?.user);
     } catch (e2) {
       console.error("[login] error:", e2);
@@ -244,26 +262,20 @@ export default function LoginPage() {
   const onReset = async () => {
     setError(null);
     try {
-      await clearAuthStorageAndCaches();
+      // Force aussi un signOut côté lib (mémoire)
+      await supabase.auth.signOut();
     } catch (_) {}
-    // force reload sans cache logique
+    await clearAuthStorageAndCaches();
     window.location.href = "/login?clean=1&ts=" + Date.now();
   };
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      console.log(
-        "[env] NEXT_PUBLIC_SUPABASE_URL:",
-        process.env.NEXT_PUBLIC_SUPABASE_URL ? "ok" : "manquant"
-      );
-      console.log(
-        "[env] NEXT_PUBLIC_SUPABASE_ANON_KEY:",
-        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "ok" : "manquant"
-      );
+      console.log("[env] NEXT_PUBLIC_SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL ? "ok" : "manquant");
+      console.log("[env] NEXT_PUBLIC_SUPABASE_ANON_KEY:", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "ok" : "manquant");
     }
   }, []);
 
-  // Ne jamais rester coincé indéfiniment: si deciding, on montre "Chargement…"
   if (loading || deciding) {
     return (
       <div className="min-h-screen flex items-center justify-center p-4">
@@ -290,7 +302,7 @@ export default function LoginPage() {
           className="btn w-full"
           onClick={onReset}
           disabled={submitting}
-          title="Supprime les tokens locaux Supabase + caches (déblocage)"
+          title="Supprime tokens Supabase + caches (déblocage)"
         >
           Débloquer (réinitialiser session)
         </button>
@@ -326,12 +338,7 @@ export default function LoginPage() {
             {submitting ? "Connexion…" : "Se connecter"}
           </button>
 
-          <button
-            type="button"
-            className="btn w-full"
-            onClick={onSendOtp}
-            disabled={submitting}
-          >
+          <button type="button" className="btn w-full" onClick={onSendOtp} disabled={submitting}>
             Tester par lien magique (OTP)
           </button>
 
@@ -345,9 +352,7 @@ export default function LoginPage() {
         {lastResp && (
           <details className="text-xs mt-2">
             <summary>Debug (réponse brute)</summary>
-            <pre className="mt-1 p-2 bg-gray-100 rounded">
-              {JSON.stringify(lastResp, null, 2)}
-            </pre>
+            <pre className="mt-1 p-2 bg-gray-100 rounded">{JSON.stringify(lastResp, null, 2)}</pre>
           </details>
         )}
       </div>
