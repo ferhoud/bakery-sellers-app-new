@@ -1,96 +1,17 @@
-// public/sw.js — SW robuste (push + focus + broadcast + version + purge cache)
-// Bump la version à chaque release pour invalider immédiatement l’ancienne version.
-const SW_VERSION = "2025-10-12-02";
-
-// Activer immédiatement la nouvelle version
-self.addEventListener("install", (event) => {
-  self.skipWaiting();
-});
-
-self.addEventListener("activate", (event) => {
-  event.waitUntil((async () => {
-    // Purge tous les caches pour éviter l’ancienne version (PWA/Next)
-    try {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
-    } catch (e) {
-      // ignore
-    }
-    // Prend le contrôle tout de suite
-    await self.clients.claim();
-    // Informe les pages (utile pour forcer reloadAll côté app)
-    try { await broadcast({ type: "sw-activated", version: SW_VERSION }); } catch {}
-  })());
-});
-
-// Utilitaire : envoyer un message à toutes les fenêtres clientes
-async function broadcast(message) {
-  const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  for (const client of all) {
-    try { client.postMessage(message); } catch (e) { /* ignore */ }
-  }
-}
-
-// Réception push : affiche une notif + informe les pages ouvertes
-self.addEventListener("push", (event) => {
-  let data = {};
-  try {
-    data = event?.data?.json?.() ?? {};
-  } catch {
-    try { data = JSON.parse(event.data.text()); } catch { data = {}; }
-  }
-
-  const title = data.title || "Notification";
-  const body = data.body || "";
-  const icon = data.icon || "/icon-192.png"; // assure-toi que l'icône existe dans /public
-  const url = data.url || "/";               // cible au clic sur la notification
-
-  event.waitUntil((async () => {
-    // 1) informer immédiatement les pages (permet reloadAll côté app)
-    await broadcast({ type: "push", payload: data });
-
-    // 2) afficher la notification
-    await self.registration.showNotification(title, {
-      body,
-      icon,
-      data: { url },
-      tag: data.tag || undefined,         // tag identique => remplace notif précédente (optionnel)
-      renotify: !!data.renotify,          // optionnel
-      requireInteraction: !!data.sticky,  // garder la notif jusqu'au clic (optionnel)
-    });
-  })());
-});
-
-// Clic sur la notification : focus une fenêtre existante ou en ouvrir une
 self.addEventListener("notificationclick", (event) => {
-  event.notification.close();
-  const targetUrl = event.notification?.data?.url || "/";
+  event.notification.close(); // ferme la notif cliquée :contentReference[oaicite:3]{index=3}
+  const url = event.notification?.data?.url || "/";
 
   event.waitUntil((async () => {
-    const allClients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    const allClients = await clients.matchAll({ type: "window", includeUncontrolled: true });
 
-    // Cherche une fenêtre sur le même origin déjà ouverte
     for (const client of allClients) {
-      // Si une fenêtre correspond déjà à l’URL, focus-la
-      if (client.url.includes(new URL(targetUrl, self.location.origin).pathname)) {
-        try { await client.focus(); } catch {}
-        // informe la page qu’un clic de notif a eu lieu (optionnel)
-        try { client.postMessage({ type: "notification-click", url: targetUrl }); } catch {}
+      if ("focus" in client) {
+        await client.focus();
+        if ("navigate" in client) await client.navigate(url);
         return;
       }
     }
-
-    // Sinon, ouvre une nouvelle fenêtre
-    const newClient = await self.clients.openWindow(targetUrl);
-    if (newClient) {
-      try { newClient.postMessage({ type: "notification-click", url: targetUrl }); } catch {}
-    }
+    if (clients.openWindow) await clients.openWindow(url);
   })());
 });
-
-// (optionnel) fermeture : rien à faire, mais hook présent si tu veux tracer
-self.addEventListener("notificationclose", () => {
-  // noop
-});
-
-// Pas de stratégie cache ici => on laisse Next/Vercel gérer. Si tu veux un cache offline, on ajoutera Workbox.
