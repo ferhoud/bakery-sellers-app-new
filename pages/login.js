@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
-import { useAuth } from "@/lib/useAuth";
 import { isAdminEmail } from "@/lib/admin";
 
 function withTimeout(promise, ms, label = "timeout") {
@@ -24,7 +23,7 @@ async function clearAuthStorageAndCaches() {
     Object.keys(sessionStorage).forEach((k) => sessionStorage.removeItem(k));
   } catch (_) {}
 
-  // Best effort: SW + caches (quand un vieux SW garde des chunks)
+  // Best effort: SW + caches (utile si un vieux SW garde des chunks)
   try {
     if ("serviceWorker" in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
@@ -42,7 +41,6 @@ async function clearAuthStorageAndCaches() {
 
 export default function LoginPage() {
   const r = useRouter();
-  const { session: hookSession, loading: hookLoading } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -51,37 +49,32 @@ export default function LoginPage() {
   const [error, setError] = useState(null);
   const [lastResp, setLastResp] = useState(null);
 
-  // Vérité Supabase (anti “session fantôme”)
-  const [authChecked, setAuthChecked] = useState(false);
-  const [sbSession, setSbSession] = useState(null);
-
+  // Source de vérité: Supabase (pas useAuth)
+  const [checking, setChecking] = useState(true);
+  const [session, setSession] = useState(null);
   const [deciding, setDeciding] = useState(false);
   const [info, setInfo] = useState(null);
+
+  const isBusy = checking || deciding;
 
   useEffect(() => {
     let alive = true;
 
-    // 1) getSession au montage
     (async () => {
       try {
-        const { data } = await withTimeout(
-          supabase.auth.getSession(),
-          6000,
-          "getSession timeout"
-        );
+        const { data } = await withTimeout(supabase.auth.getSession(), 6000, "getSession timeout");
         if (!alive) return;
-        setSbSession(data?.session ?? null);
+        setSession(data?.session ?? null);
       } catch (e) {
         console.error("[login] getSession error:", e);
       } finally {
-        if (alive) setAuthChecked(true);
+        if (alive) setChecking(false);
       }
     })();
 
-    // 2) écoute les changements auth (logout/login)
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSbSession(session ?? null);
-      setAuthChecked(true);
+    const { data } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s ?? null);
+      setChecking(false);
     });
 
     return () => {
@@ -92,49 +85,30 @@ export default function LoginPage() {
     };
   }, []);
 
-  // IMPORTANT:
-  // - Après authChecked: on ignore hookSession (souvent stale)
-  // - Avant: on accepte hookSession pour être rapide
-  const session = useMemo(() => {
-    if (!authChecked) return sbSession || hookSession || null;
-    return sbSession || null;
-  }, [authChecked, sbSession, hookSession]);
-
-  // On n’affiche jamais un “Chargement…” infini.
-  // On met juste une bannière si on check encore.
-  const showCheckingBanner = !authChecked || hookLoading || deciding;
+  const user = useMemo(() => session?.user ?? null, [session]);
 
   useEffect(() => {
     const decide = async () => {
-      if (!authChecked) return;
-      if (!session?.user?.id) return;
+      if (!user?.id) return;
 
       setDeciding(true);
       setInfo("Redirection…");
       try {
-        // Admin direct par email
-        if (isAdminEmail(session.user.email)) {
+        if (isAdminEmail(user.email)) {
           r.replace("/admin");
           return;
         }
 
-        // Sinon profil.role (timeout pour éviter blocage)
-        const resp = await withTimeout(
-          supabase
-            .from("profiles")
-            .select("role")
-            .eq("user_id", session.user.id)
-            .maybeSingle(),
+        // profil.role (timeout + si erreur on ne boucle pas)
+        const { data: prof, error: profErr } = await withTimeout(
+          supabase.from("profiles").select("role").eq("user_id", user.id).maybeSingle(),
           6000,
           "profiles role timeout"
         );
 
-        const prof = resp?.data;
-        const profErr = resp?.error;
-
-        // Si erreur (401/permission), on ne boucle pas
         if (profErr) {
           console.warn("[login][decide] profiles error:", profErr);
+          // On laisse la page login visible, pas de boucle
           setInfo(null);
           return;
         }
@@ -155,13 +129,13 @@ export default function LoginPage() {
 
     decide();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, session?.user?.id, session?.user?.email, r.query.next]);
+  }, [user?.id, user?.email, r.query.next]);
 
-  async function ensureProfile(user) {
-    if (!user?.id) return;
+  async function ensureProfile(u) {
+    if (!u?.id) return;
 
     const { data: existing, error: exErr } = await withTimeout(
-      supabase.from("profiles").select("user_id").eq("user_id", user.id).maybeSingle(),
+      supabase.from("profiles").select("user_id").eq("user_id", u.id).maybeSingle(),
       6000,
       "profiles existing timeout"
     );
@@ -169,16 +143,12 @@ export default function LoginPage() {
 
     if (!existing) {
       const fullName =
-        user.user_metadata?.full_name ||
-        (user.email ? user.email.split("@")[0] : "Utilisateur");
-      const role = isAdminEmail(user.email) ? "admin" : "seller";
+        u.user_metadata?.full_name ||
+        (u.email ? u.email.split("@")[0] : "Utilisateur");
+      const role = isAdminEmail(u.email) ? "admin" : "seller";
 
       const { error: insErr } = await withTimeout(
-        supabase.from("profiles").insert({
-          user_id: user.id,
-          full_name: fullName,
-          role,
-        }),
+        supabase.from("profiles").insert({ user_id: u.id, full_name: fullName, role }),
         6000,
         "profiles insert timeout"
       );
@@ -186,21 +156,20 @@ export default function LoginPage() {
     }
   }
 
-  const redirectByRoleOrEmail = async (user) => {
+  const redirectByRoleOrEmail = async (u) => {
     const next = r.query.next ? String(r.query.next) : "/app";
 
-    if (isAdminEmail(user?.email)) {
+    if (isAdminEmail(u?.email)) {
       r.replace("/admin");
       return;
     }
 
-    if (user?.id) {
+    if (u?.id) {
       const { data: prof, error: profErr } = await withTimeout(
-        supabase.from("profiles").select("role").eq("user_id", user.id).maybeSingle(),
+        supabase.from("profiles").select("role").eq("user_id", u.id).maybeSingle(),
         6000,
         "profiles role timeout"
       );
-
       if (!profErr && prof?.role === "admin") {
         r.replace("/admin");
         return;
@@ -226,9 +195,9 @@ export default function LoginPage() {
       setLastResp({ data, err: serializeErr(err) });
       if (err) throw err;
 
-      // important: met à jour notre session locale immédiatement
-      if (data?.session) setSbSession(data.session);
-      setAuthChecked(true);
+      // on force l’état local tout de suite
+      if (data?.session) setSession(data.session);
+      setChecking(false);
 
       await ensureProfile(data?.user);
       await redirectByRoleOrEmail(data?.user);
@@ -250,8 +219,7 @@ export default function LoginPage() {
         supabase.auth.signInWithOtp({
           email,
           options: {
-            emailRedirectTo:
-              (typeof window !== "undefined" ? window.location.origin : "") + "/app",
+            emailRedirectTo: (typeof window !== "undefined" ? window.location.origin : "") + "/app",
           },
         }),
         12000,
@@ -281,31 +249,24 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (typeof window !== "undefined") {
-      console.log("[login] authChecked:", authChecked);
-      console.log("[login] hookLoading:", hookLoading);
       console.log("[env] NEXT_PUBLIC_SUPABASE_URL:", process.env.NEXT_PUBLIC_SUPABASE_URL ? "ok" : "manquant");
       console.log("[env] NEXT_PUBLIC_SUPABASE_ANON_KEY:", process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ? "ok" : "manquant");
+      console.log("[login] checking:", checking, "hasSession:", !!session);
     }
-  }, [authChecked, hookLoading]);
+  }, [checking, session]);
 
   return (
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="w-full max-w-sm border rounded-2xl p-6 space-y-4">
         <div className="text-xl font-semibold">Connexion</div>
 
-        {showCheckingBanner && (
+        {isBusy && (
           <div className="text-sm p-2 rounded" style={{ background: "#f3f4f6" }}>
-            {info || "Vérification de session…"}
+            {info || "Vérification…"}
           </div>
         )}
 
-        <button
-          type="button"
-          className="btn w-full"
-          onClick={onReset}
-          disabled={submitting}
-          title="Supprime tokens Supabase + caches (déblocage)"
-        >
+        <button type="button" className="btn w-full" onClick={onReset} disabled={submitting}>
           Débloquer (réinitialiser session)
         </button>
 
