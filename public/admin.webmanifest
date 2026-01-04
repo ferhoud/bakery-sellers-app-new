@@ -1,0 +1,9 @@
+{
+  "name": "Vente Rambouillet",
+  "short_name": "Vente",
+  "start_url": "/admin",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111827",
+  "icons": []
+}
