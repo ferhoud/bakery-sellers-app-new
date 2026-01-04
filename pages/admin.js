@@ -251,6 +251,72 @@ export default function AdminPage() {
     [sellersById]
   );
 
+  /* ======= VALIDATION HEURES MENSUELLES (badge + accès rapide) ======= */
+  const [mhPendingCount, setMhPendingCount] = useState(null);   // admin_status=pending (toutes réponses)
+  const [mhToReviewCount, setMhToReviewCount] = useState(null); // seller_status=accepted/disputed + admin_status=pending
+  const [mhLatestRows, setMhLatestRows] = useState([]);
+
+  const loadMonthlyHoursStats = useCallback(async () => {
+    try {
+      // 1) Total "admin à traiter" (quelle que soit la réponse vendeuse)
+      const { count, error } = await supabase
+        .from("monthly_hours_attestations")
+        .select("id", { count: "exact", head: true })
+        .eq("month_start", monthFrom)
+        .eq("admin_status", "pending");
+      if (error) throw error;
+      setMhPendingCount(count ?? 0);
+
+      // 2) "À traiter" au sens strict: la vendeuse a répondu (validé ou corrigé)
+      const { count: c2, error: e2 } = await supabase
+        .from("monthly_hours_attestations")
+        .select("id", { count: "exact", head: true })
+        .eq("month_start", monthFrom)
+        .eq("admin_status", "pending")
+        .in("seller_status", ["accepted", "disputed"]);
+      if (e2) throw e2;
+      setMhToReviewCount(c2 ?? 0);
+
+      // 3) Petit aperçu (5 dernières)
+      const { data, error: e3 } = await supabase
+        .from("monthly_hours_attestations")
+        .select("id, seller_id, seller_status, computed_hours, seller_correction_hours, updated_at")
+        .eq("month_start", monthFrom)
+        .eq("admin_status", "pending")
+        .order("updated_at", { ascending: false })
+        .limit(5);
+      if (e3) throw e3;
+      setMhLatestRows(data || []);
+    } catch (e) {
+      console.warn("loadMonthlyHoursStats error:", e?.message || e);
+      setMhPendingCount(null);
+      setMhToReviewCount(null);
+      setMhLatestRows([]);
+    }
+  }, [monthFrom]);
+
+  // Chargement initial + changement de mois
+  useEffect(() => {
+    if (loading) return;
+    if (!session) return;
+    loadMonthlyHoursStats();
+  }, [loading, session, loadMonthlyHoursStats]);
+
+  // Realtime: dès qu’une vendeuse valide/corrige, l’admin voit le compteur bouger
+  useEffect(() => {
+    if (!session) return;
+    const ch = supabase
+      .channel("mh_attestations_rt_admin")
+      .on("postgres_changes", { event: "*", schema: "public", table: "monthly_hours_attestations" }, () => {
+        loadMonthlyHoursStats();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [session, loadMonthlyHoursStats]);
+
+
   /* Planning semaine (avec fallback direct sur table shifts) */
   const loadWeekAssignments = useCallback(async (fromIso, toIso) => {
     let data = null, error = null;
@@ -769,6 +835,7 @@ export default function AdminPage() {
         loadMonthAbsences?.(),
         loadMonthUpcomingAbsences?.(),
         loadMonthAcceptedRepl?.(),
+        loadMonthlyHoursStats?.(),
       ]);
       // PAS de setRefreshKey ici → évite les recalculs inutiles
     } finally {
@@ -786,6 +853,7 @@ export default function AdminPage() {
     loadMonthAbsences,
     loadMonthUpcomingAbsences,
     loadMonthAcceptedRepl,
+    loadMonthlyHoursStats,
   ]);
 
   // Initial load
@@ -830,6 +898,12 @@ export default function AdminPage() {
   }, [days, loadSellers, loadWeekAssignments]);
 
   /* ---------- RENDER ---------- */
+
+  const mhAwaitingSellerCount =
+    mhPendingCount == null || mhToReviewCount == null
+      ? null
+      : Math.max(0, (mhPendingCount || 0) - (mhToReviewCount || 0));
+
   return (
     <>
 <Head>
@@ -847,11 +921,72 @@ export default function AdminPage() {
           <div className="hdr">Compte: {profile?.full_name || "-"} <span className="sub">(admin)</span></div>
           <div className="flex items-center gap-2">
             <Link href="/admin/sellers" legacyBehavior><a className="btn">👥 Gerer les vendeuses</a></Link>
+            <Link href="/admin/monthly-hours" legacyBehavior>
+              <a className="btn" title="Validation des heures mensuelles">
+                🧾 Heures mensuelles
+                {mhToReviewCount != null && mhToReviewCount > 0 ? (
+                  <span style={{ marginLeft: 8, background: "#dc2626", color: "#fff", padding: "2px 8px", borderRadius: 9999, fontSize: 12 }}>
+                    {mhToReviewCount}
+                  </span>
+                ) : null}
+              </a>
+            </Link>
             <Link href="/push-setup" legacyBehavior><a className="btn">🔔 Activer les notifications</a></Link>
             <button type="button" className="btn" onClick={handleSignOut} disabled={signingOut}>
               {signingOut ? "Déconnexion…" : "Se déconnecter"}
             </button>
           </div>
+        </div>
+
+
+        <div className="card">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+            <div>
+              <div className="hdr mb-1">Validation heures mensuelles</div>
+              <div className="text-sm text-gray-600">
+                Mois : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>{" "}
+                · À traiter : <span className="font-medium">{mhToReviewCount == null ? "…" : mhToReviewCount}</span>
+                · En attente vendeuses : <span className="font-medium">{mhAwaitingSellerCount == null ? "…" : mhAwaitingSellerCount}</span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
+                “À traiter” = la vendeuse a validé ou corrigé. “En attente vendeuses” = pas encore de réponse.
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button type="button" className="btn" onClick={loadMonthlyHoursStats}>Rafraîchir</button>
+              <Link href="/admin/monthly-hours" legacyBehavior><a className="btn">Ouvrir</a></Link>
+            </div>
+          </div>
+
+          {mhLatestRows && mhLatestRows.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {mhLatestRows.map((row) => {
+                const name = nameFromId(row.seller_id) || "-";
+                const st = row.seller_status;
+                const tag = st === "accepted" ? "validé" : st === "disputed" ? "corrigé" : "en attente";
+                return (
+                  <div key={row.id} className="flex items-center justify-between border rounded-2xl p-3">
+                    <div className="text-sm">
+                      <div className="font-medium">{name}</div>
+                      <div className="text-gray-600">
+                        {tag} · calculé: {Number(row.computed_hours || 0).toFixed(2)} h
+                        {st === "disputed" ? (
+                          <> · proposé: {Number(row.seller_correction_hours || 0).toFixed(2)} h</>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-500">
+                      {row.updated_at ? String(row.updated_at).replace("T", " ").slice(0, 16) : ""}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-sm text-gray-600 mt-3">
+              Aucune demande pour ce mois (ou aucune à traiter).
+            </div>
+          )}
         </div>
 
         {latestCancel && (
