@@ -2,8 +2,7 @@
    SW "push-only" : pas de cache fetch, donc pas de blocage après déploiement.
 */
 
-self.addEventListener("install", (event) => {
-  // Prend la main tout de suite à la mise à jour
+self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
@@ -15,21 +14,17 @@ self.addEventListener("activate", (event) => {
       await Promise.all(keys.map((k) => caches.delete(k)));
     } catch (_) {}
 
-    // Contrôle immédiat des pages ouvertes
     await self.clients.claim();
   })());
 });
 
-// Permet au client de demander "prends la main maintenant"
 self.addEventListener("message", (event) => {
   if (event?.data?.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("push", (event) => {
   let data = {};
-  try {
-    data = event.data ? event.data.json() : {};
-  } catch (_) {}
+  try { data = event.data ? event.data.json() : {}; } catch (_) {}
 
   const title = data.title || "Notification";
   const options = {
