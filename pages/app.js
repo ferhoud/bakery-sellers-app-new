@@ -185,8 +185,12 @@ export default function AppSeller() {
   // IMPORTANT: TOUS LES HOOKS EN HAUT (aucun return avant)
   // ----------------------------
 
-  const [monday, setMonday] = useState(startOfWeek(new Date()));
-  const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)), [monday]);
+  // ✅ lazy init pour éviter toute surprise et garder un init stable
+  const [monday, setMonday] = useState(() => startOfWeek(new Date()));
+  const days = useMemo(
+    () => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)),
+    [monday]
+  );
 
   const todayIso = useMemo(() => fmtISODate(new Date()), []);
   const rangeTo = useMemo(() => fmtISODate(addDays(new Date(), 60)), []);
@@ -203,6 +207,7 @@ export default function AppSeller() {
   const [absDate, setAbsDate] = useState(todayIso);
   const [msgAbs, setMsgAbs] = useState("");
 
+  // (gardés même si non utilisés, pour éviter de “bouger” ton fichier)
   const [replAsk, setReplAsk] = useState(null);
   const [approvalMsg, setApprovalMsg] = useState(null);
 
@@ -534,12 +539,12 @@ export default function AppSeller() {
       .order("date", { ascending: true });
 
     const byDate = {};
-    (data || []).forEach((r) => {
-      if (!byDate[r.date]) byDate[r.date] = { ids: [], approved: false, pending: false, locked: false };
-      byDate[r.date].ids.push(r.id);
-      if (r.status === "approved") byDate[r.date].approved = true;
-      if (r.status === "pending") byDate[r.date].pending = true;
-      if (r.admin_forced) byDate[r.date].locked = true;
+    (data || []).forEach((r2) => {
+      if (!byDate[r2.date]) byDate[r2.date] = { ids: [], approved: false, pending: false, locked: false };
+      byDate[r2.date].ids.push(r2.id);
+      if (r2.status === "approved") byDate[r2.date].approved = true;
+      if (r2.status === "pending") byDate[r2.date].pending = true;
+      if (r2.admin_forced) byDate[r2.date].locked = true;
     });
 
     const arr = Object.keys(byDate)
@@ -570,7 +575,7 @@ export default function AppSeller() {
       return;
     }
 
-    const volunteerIds = Array.from(new Set((rows || []).map((r) => r.volunteer_id).filter(Boolean)));
+    const volunteerIds = Array.from(new Set((rows || []).map((r2) => r2.volunteer_id).filter(Boolean)));
     let vnames = {};
     if (volunteerIds.length) {
       const { data: profs } = await supabase.from("profiles").select("user_id, full_name").in("user_id", volunteerIds);
@@ -890,7 +895,11 @@ export default function AppSeller() {
                 {absentToday.acceptedShift ? (
                   <>
                     {" "}
-                    (<span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(absentToday.acceptedShift)}</span>)
+                    (
+                    <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>
+                      {labelForShift(absentToday.acceptedShift)}
+                    </span>
+                    )
                   </>
                 ) : null}
               </>
@@ -903,7 +912,12 @@ export default function AppSeller() {
 
       <div className="card">
         <div className="hdr mb-4">Planning de la semaine</div>
-        <WeekNav monday={monday} onPrev={() => setMonday(addDays(monday, -7))} onToday={() => setMonday(startOfWeek(new Date()))} onNext={() => setMonday(addDays(monday, 7))} />
+        <WeekNav
+          monday={monday}
+          onPrev={() => setMonday(addDays(monday, -7))}
+          onToday={() => setMonday(startOfWeek(new Date()))}
+          onNext={() => setMonday(addDays(monday, 7))}
+        />
 
         <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
           {days.map((d) => {
