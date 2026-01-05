@@ -9,6 +9,7 @@ import { isAdminEmail } from "@/lib/admin";
 import { BUILD_TAG } from "@/lib/version";
 import { fmtISODate } from "@/lib/date";
 
+/* ---------- utils ---------- */
 function firstDayOfMonth(d) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
@@ -29,12 +30,17 @@ function fmtErr(e) {
   const code = e?.code || e?.status;
   return code ? `${msg} (code ${code})` : msg;
 }
-function withTimeout(promise, ms, label = "Timeout") {
+function withTimeout(p, ms, label = "Timeout") {
   let t;
   const timeout = new Promise((_, reject) => {
     t = setTimeout(() => reject(new Error(label)), ms);
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
+  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
+}
+
+// IMPORTANT: transforme n’importe quelle valeur "thenable" en vraie Promise
+async function execQuery(q) {
+  return await q; // le await ici est volontaire: ça force l’exécution du builder Supabase
 }
 
 export default function AdminMonthlyHoursPage() {
@@ -49,12 +55,15 @@ export default function AdminMonthlyHoursPage() {
 
     (async () => {
       try {
-        const { data, error } = await withTimeout(supabase.auth.getSession(), 12000, "Timeout getSession (12s)");
+        const { data, error } = await withTimeout(
+          supabase.auth.getSession(),
+          12000,
+          "Timeout getSession (12s)"
+        );
         if (!alive) return;
         if (error) throw error;
         setSession(data?.session ?? null);
       } catch (e) {
-        console.warn("[monthly-hours] getSession error:", e);
         if (!alive) return;
         setSession(null);
       } finally {
@@ -85,12 +94,26 @@ export default function AdminMonthlyHoursPage() {
 
   const [onlyPending, setOnlyPending] = useState(true);
   const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState("idle");
   const [err, setErr] = useState("");
   const [tableUsed, setTableUsed] = useState("");
   const [rows, setRows] = useState([]);
   const [sellers, setSellers] = useState([]);
 
   const inflight = useRef(false);
+
+  // Watchdog anti “loading infini”
+  useEffect(() => {
+    if (!loading) return;
+    const t = setTimeout(() => {
+      if (!inflight.current) return;
+      inflight.current = false;
+      setLoading(false);
+      setErr("Timeout global (25s). Supabase ne répond pas ou la requête est bloquée.");
+      setPhase("timeout-global");
+    }, 25000);
+    return () => clearTimeout(t);
+  }, [loading]);
 
   const sellersById = useMemo(() => new Map((sellers || []).map((s) => [s.user_id, s])), [sellers]);
   const nameFromId = useCallback((id) => sellersById.get(id)?.full_name || "", [sellersById]);
@@ -100,33 +123,30 @@ export default function AdminMonthlyHoursPage() {
     if (!authChecked) return;
 
     if (!session) {
-      // pas connecté => /login (hard)
       const ts = Date.now();
       window.location.replace(`/login?stay=1&next=/admin/monthly-hours&ts=${ts}`);
       return;
     }
 
     if (!isAdmin) {
-      // connecté mais pas admin => /app
       r.replace("/app");
     }
   }, [authChecked, session, isAdmin, r]);
 
   const loadSellers = useCallback(async () => {
     try {
-      const { data, error } = await withTimeout(supabase.rpc("list_sellers"), 15000, "Timeout list_sellers (15s)");
-      if (error) throw error;
-      const list = Array.isArray(data) ? data : [];
+      setPhase("list_sellers…");
+      const res = await withTimeout(execQuery(supabase.rpc("list_sellers")), 15000, "Timeout list_sellers (15s)");
+      if (res?.error) throw res.error;
+      const list = Array.isArray(res?.data) ? res.data : [];
       list.sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "fr", { sensitivity: "base" }));
       setSellers(list);
     } catch (e) {
-      // pas bloquant
-      console.warn("[monthly-hours] list_sellers failed:", e);
+      // Pas bloquant: si ça rate, on affiche quand même les rows avec seller_id
       setSellers([]);
     }
   }, []);
 
-  // Essaie plusieurs tables possibles, sans jamais rester bloqué
   const loadRows = useCallback(async () => {
     if (!session || !isAdmin) return;
     if (inflight.current) return;
@@ -136,10 +156,12 @@ export default function AdminMonthlyHoursPage() {
     setErr("");
     setRows([]);
     setTableUsed("");
+    setPhase("start");
+
+    // On lance les vendeuses en fond, mais on NE BLOQUE PAS les heures mensuelles dessus
+    loadSellers().catch(() => {});
 
     try {
-      await loadSellers();
-
       const tableCandidates = [
         "monthly_hours_attestations",
         "monthly_hours",
@@ -147,25 +169,29 @@ export default function AdminMonthlyHoursPage() {
       ];
 
       let lastError = null;
+      let found = false;
 
       for (const t of tableCandidates) {
         try {
+          setPhase(`select ${t}…`);
+
           let q = supabase
             .from(t)
             .select("*")
-            .eq("month_start", monthStart)
-            .order("updated_at", { ascending: false });
+            .eq("month_start", monthStart);
 
-          if (onlyPending) {
-            // si la colonne n’existe pas, ça va throw et on passe à la table suivante
-            q = q.eq("admin_status", "pending");
-          }
+          // admin_status peut ne pas exister, donc on teste avec le filtre seulement si demandé
+          if (onlyPending) q = q.eq("admin_status", "pending");
 
-          const { data, error } = await withTimeout(q, 20000, `Timeout select ${t} (20s)`);
-          if (error) throw error;
+          // IMPORTANT: on force l’exécution du builder dans une vraie Promise
+          const res = await withTimeout(execQuery(q), 20000, `Timeout select ${t} (20s)`);
+
+          if (res?.error) throw res.error;
 
           setTableUsed(t);
-          setRows(Array.isArray(data) ? data : []);
+          setRows(Array.isArray(res?.data) ? res.data : []);
+          setPhase(`ok (${t})`);
+          found = true;
           lastError = null;
           break;
         } catch (e) {
@@ -173,52 +199,52 @@ export default function AdminMonthlyHoursPage() {
         }
       }
 
-      if (lastError && !tableUsed) {
-        throw lastError;
+      if (!found) {
+        throw lastError || new Error("Aucune table mensuelle trouvée (candidates testées).");
       }
     } catch (e) {
-      console.error("[monthly-hours] load error:", e);
       setErr(fmtErr(e));
+      setPhase("error");
     } finally {
       inflight.current = false;
       setLoading(false);
     }
-  }, [session, isAdmin, monthStart, onlyPending, loadSellers, tableUsed]);
+  }, [session, isAdmin, monthStart, onlyPending, loadSellers]);
 
   useEffect(() => {
     if (!session || !isAdmin) return;
     loadRows();
   }, [session, isAdmin, loadRows]);
 
-  // Admin action (si colonnes existent)
-  const adminDecide = useCallback(async (row, decision) => {
-    if (!tableUsed) return;
-    try {
-      const computed = Number(row?.computed_hours ?? 0);
-      const corrected = row?.seller_correction_hours != null ? Number(row.seller_correction_hours) : null;
+  const adminDecide = useCallback(
+    async (row, decision) => {
+      if (!tableUsed) return;
+      try {
+        setPhase(`update ${decision}…`);
+        const computed = Number(row?.computed_hours ?? 0);
+        const corrected = row?.seller_correction_hours != null ? Number(row.seller_correction_hours) : null;
+        const final = row?.seller_status === "disputed" && corrected != null ? corrected : computed;
 
-      const final =
-        row?.seller_status === "disputed" && corrected != null ? corrected : computed;
+        const payload = { admin_status: decision, final_hours: final };
 
-      const payload = { admin_status: decision, final_hours: final };
+        const res = await withTimeout(
+          execQuery(supabase.from(tableUsed).update(payload).eq("id", row.id)),
+          15000,
+          "Timeout update (15s)"
+        );
+        if (res?.error) throw res.error;
 
-      const { error } = await withTimeout(
-        supabase.from(tableUsed).update(payload).eq("id", row.id),
-        15000,
-        "Timeout update (15s)"
-      );
-      if (error) throw error;
-
-      await loadRows();
-    } catch (e) {
-      alert(fmtErr(e));
-    }
-  }, [tableUsed, loadRows]);
+        await loadRows();
+      } catch (e) {
+        alert(fmtErr(e));
+        setPhase("error");
+      }
+    },
+    [tableUsed, loadRows]
+  );
 
   // UI
   if (!authChecked) return <div className="p-4">Chargement…</div>;
-
-  // si redirect en cours
   if (!session) return <div className="p-4">Redirection vers /login…</div>;
   if (!isAdmin) return <div className="p-4">Redirection…</div>;
 
@@ -280,14 +306,12 @@ export default function AdminMonthlyHoursPage() {
           </div>
 
           <div className="text-xs text-gray-500">
-            Admin: <b>{email || "—"}</b> • table: <b>{tableUsed || "—"}</b> • month_start: <b>{monthStart}</b>
+            Admin: <b>{email || "—"}</b> • table: <b>{tableUsed || "—"}</b> • month_start: <b>{monthStart}</b> • phase:{" "}
+            <b>{phase}</b>
           </div>
 
           {err ? (
-            <div
-              className="text-sm border rounded-xl p-2"
-              style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" }}
-            >
+            <div className="text-sm border rounded-xl p-2" style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" }}>
               {err}
             </div>
           ) : null}
