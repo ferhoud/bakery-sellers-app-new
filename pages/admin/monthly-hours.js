@@ -5,12 +5,10 @@ import { useRouter } from "next/router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { supabase } from "@/lib/supabaseClient";
-import { useAuth } from "@/lib/useAuth";
 import { isAdminEmail } from "@/lib/admin";
 import { BUILD_TAG } from "@/lib/version";
-import { fmtISODate } from "../../lib/date";
+import { fmtISODate } from "@/lib/date";
 
-/* ---------- utils ---------- */
 function firstDayOfMonth(d) {
   return new Date(d.getFullYear(), d.getMonth(), 1);
 }
@@ -31,7 +29,7 @@ function fmtErr(e) {
   const code = e?.code || e?.status;
   return code ? `${msg} (code ${code})` : msg;
 }
-function withTimeout(promise, ms, label = "timeout") {
+function withTimeout(promise, ms, label = "Timeout") {
   let t;
   const timeout = new Promise((_, reject) => {
     t = setTimeout(() => reject(new Error(label)), ms);
@@ -41,27 +39,32 @@ function withTimeout(promise, ms, label = "timeout") {
 
 export default function AdminMonthlyHoursPage() {
   const r = useRouter();
-  const { session: hookSession, profile, loading: hookLoading } = useAuth();
 
-  // ✅ session “source de vérité” (anti blocage)
-  const [sbSession, setSbSession] = useState(null);
+  // Auth "béton" sans useAuth
   const [authChecked, setAuthChecked] = useState(false);
+  const [session, setSession] = useState(null);
 
   useEffect(() => {
     let alive = true;
 
     (async () => {
       try {
-        const { data } = await supabase.auth.getSession();
+        const { data, error } = await withTimeout(supabase.auth.getSession(), 12000, "Timeout getSession (12s)");
         if (!alive) return;
-        setSbSession(data?.session || null);
+        if (error) throw error;
+        setSession(data?.session ?? null);
+      } catch (e) {
+        console.warn("[monthly-hours] getSession error:", e);
+        if (!alive) return;
+        setSession(null);
       } finally {
         if (alive) setAuthChecked(true);
       }
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => {
-      setSbSession(sess || null);
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => {
+      if (!alive) return;
+      setSession(s ?? null);
       setAuthChecked(true);
     });
 
@@ -73,139 +76,162 @@ export default function AdminMonthlyHoursPage() {
     };
   }, []);
 
-  const session = sbSession || hookSession;
   const email = session?.user?.email || "";
-  const isAdmin = !!session && (isAdminEmail(email) || profile?.role === "admin");
+  const isAdmin = !!session && isAdminEmail(email);
 
   // UI state
   const [selectedMonth, setSelectedMonth] = useState(() => firstDayOfMonth(new Date()));
   const monthStart = useMemo(() => fmtISODate(firstDayOfMonth(selectedMonth)), [selectedMonth]);
 
-  const [rows, setRows] = useState([]);
-  const [sellers, setSellers] = useState([]);
-  const sellersById = useMemo(() => new Map((sellers || []).map((s) => [s.user_id, s])), [sellers]);
-  const nameFromId = useCallback((id) => sellersById.get(id)?.full_name || "", [sellersById]);
-
   const [onlyPending, setOnlyPending] = useState(true);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [tableUsed, setTableUsed] = useState("");
+  const [rows, setRows] = useState([]);
+  const [sellers, setSellers] = useState([]);
+
   const inflight = useRef(false);
 
-  // redirects (après hooks)
+  const sellersById = useMemo(() => new Map((sellers || []).map((s) => [s.user_id, s])), [sellers]);
+  const nameFromId = useCallback((id) => sellersById.get(id)?.full_name || "", [sellersById]);
+
+  // Redirects
   useEffect(() => {
-    if (!authChecked && hookLoading) return;
+    if (!authChecked) return;
 
     if (!session) {
-      r.replace("/login?stay=1&next=/admin/monthly-hours");
+      // pas connecté => /login (hard)
+      const ts = Date.now();
+      window.location.replace(`/login?stay=1&next=/admin/monthly-hours&ts=${ts}`);
       return;
     }
+
     if (!isAdmin) {
+      // connecté mais pas admin => /app
       r.replace("/app");
     }
-  }, [authChecked, hookLoading, session, isAdmin, r]);
+  }, [authChecked, session, isAdmin, r]);
 
   const loadSellers = useCallback(async () => {
-    let list = [];
     try {
-      const { data, error } = await supabase.rpc("list_sellers");
-      if (!error && Array.isArray(data)) list = data;
-    } catch {}
-    // Tri stable
-    if (list?.length) {
+      const { data, error } = await withTimeout(supabase.rpc("list_sellers"), 15000, "Timeout list_sellers (15s)");
+      if (error) throw error;
+      const list = Array.isArray(data) ? data : [];
       list.sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "fr", { sensitivity: "base" }));
+      setSellers(list);
+    } catch (e) {
+      // pas bloquant
+      console.warn("[monthly-hours] list_sellers failed:", e);
+      setSellers([]);
     }
-    setSellers(list || []);
   }, []);
 
+  // Essaie plusieurs tables possibles, sans jamais rester bloqué
   const loadRows = useCallback(async () => {
+    if (!session || !isAdmin) return;
     if (inflight.current) return;
+
     inflight.current = true;
-    setErr("");
     setLoading(true);
+    setErr("");
+    setRows([]);
+    setTableUsed("");
 
     try {
       await loadSellers();
 
-      const q = supabase
-        .from("monthly_hours_attestations")
-        .select(
-          "id, seller_id, month_start, seller_status, admin_status, computed_hours, seller_correction_hours, seller_comment, final_hours, updated_at, created_at"
-        )
-        .eq("month_start", monthStart)
-        .order("updated_at", { ascending: false });
+      const tableCandidates = [
+        "monthly_hours_attestations",
+        "monthly_hours",
+        "monthly_hours_rows",
+      ];
 
-      const query = onlyPending ? q.eq("admin_status", "pending") : q;
+      let lastError = null;
 
-      const { data, error } = await withTimeout(query, 20000, "Timeout Supabase (20s)");
-      if (error) throw error;
+      for (const t of tableCandidates) {
+        try {
+          let q = supabase
+            .from(t)
+            .select("*")
+            .eq("month_start", monthStart)
+            .order("updated_at", { ascending: false });
 
-      setRows(data || []);
+          if (onlyPending) {
+            // si la colonne n’existe pas, ça va throw et on passe à la table suivante
+            q = q.eq("admin_status", "pending");
+          }
+
+          const { data, error } = await withTimeout(q, 20000, `Timeout select ${t} (20s)`);
+          if (error) throw error;
+
+          setTableUsed(t);
+          setRows(Array.isArray(data) ? data : []);
+          lastError = null;
+          break;
+        } catch (e) {
+          lastError = e;
+        }
+      }
+
+      if (lastError && !tableUsed) {
+        throw lastError;
+      }
     } catch (e) {
-      console.error("[admin/monthly-hours] load error:", e);
-      setRows([]);
+      console.error("[monthly-hours] load error:", e);
       setErr(fmtErr(e));
     } finally {
       inflight.current = false;
       setLoading(false);
     }
-  }, [monthStart, onlyPending, loadSellers]);
+  }, [session, isAdmin, monthStart, onlyPending, loadSellers, tableUsed]);
 
   useEffect(() => {
     if (!session || !isAdmin) return;
     loadRows();
   }, [session, isAdmin, loadRows]);
 
-  // Realtime: recharge si une vendeuse répond / admin traite
-  useEffect(() => {
-    if (!session || !isAdmin) return;
-    const ch = supabase
-      .channel("mh_admin_page_rt")
-      .on("postgres_changes", { event: "*", schema: "public", table: "monthly_hours_attestations" }, () => {
-        loadRows();
-      })
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, [session, isAdmin, loadRows]);
-
-  async function adminDecide(row, decision) {
-    // decision: "approved" | "rejected"
+  // Admin action (si colonnes existent)
+  const adminDecide = useCallback(async (row, decision) => {
+    if (!tableUsed) return;
     try {
-      const final =
-        row?.seller_status === "disputed" && row?.seller_correction_hours != null
-          ? Number(row.seller_correction_hours)
-          : Number(row?.computed_hours || 0);
+      const computed = Number(row?.computed_hours ?? 0);
+      const corrected = row?.seller_correction_hours != null ? Number(row.seller_correction_hours) : null;
 
-      // On met à jour admin_status + final_hours (colonne utilisée côté vendeuse)
+      const final =
+        row?.seller_status === "disputed" && corrected != null ? corrected : computed;
+
+      const payload = { admin_status: decision, final_hours: final };
+
       const { error } = await withTimeout(
-        supabase
-          .from("monthly_hours_attestations")
-          .update({ admin_status: decision, final_hours: final })
-          .eq("id", row.id),
+        supabase.from(tableUsed).update(payload).eq("id", row.id),
         15000,
         "Timeout update (15s)"
       );
-
       if (error) throw error;
+
       await loadRows();
     } catch (e) {
-      console.error("[admin/monthly-hours] decide error:", e);
       alert(fmtErr(e));
     }
-  }
+  }, [tableUsed, loadRows]);
 
-  const showLoading = !authChecked || hookLoading || (session && !isAdmin); // pendant redirect
-  if (showLoading) return <div className="p-4">Chargement…</div>;
+  // UI
+  if (!authChecked) return <div className="p-4">Chargement…</div>;
+
+  // si redirect en cours
+  if (!session) return <div className="p-4">Redirection vers /login…</div>;
+  if (!isAdmin) return <div className="p-4">Redirection…</div>;
 
   return (
     <>
       <Head>
-        <title>Admin • Heures mensuelles - {BUILD_TAG}</title>
+        <title>Admin • Heures mensuelles</title>
         <meta name="robots" content="noindex" />
       </Head>
 
-      <div style={{ padding: "8px", background: "#111", color: "#fff", fontWeight: 700 }}>{BUILD_TAG}</div>
+      <div style={{ padding: "8px", background: "#111", color: "#fff", fontWeight: 700 }}>
+        {BUILD_TAG}
+      </div>
 
       <div className="p-4 max-w-6xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -215,12 +241,15 @@ export default function AdminMonthlyHoursPage() {
               <a className="btn">⬅ Retour</a>
             </Link>
             <button className="btn" onClick={() => (window.location.href = "/logout")}>
-              Déconnexion hard
+              /logout
+            </button>
+            <button className="btn" onClick={() => (window.location.href = "/purge")}>
+              /purge
             </button>
           </div>
         </div>
 
-        <div className="card">
+        <div className="card space-y-3">
           <div className="grid sm:grid-cols-3 gap-3 items-end">
             <div>
               <div className="text-sm mb-1">Mois</div>
@@ -233,13 +262,13 @@ export default function AdminMonthlyHoursPage() {
                   setSelectedMonth(new Date(y, m - 1, 1));
                 }}
               />
-              <div className="text-xs text-gray-600 mt-1">Mois sélectionné : {labelMonthFR(selectedMonth)}</div>
+              <div className="text-xs text-gray-600 mt-1">Mois: {labelMonthFR(selectedMonth)}</div>
             </div>
 
             <div className="flex items-center gap-2">
               <label className="text-sm flex items-center gap-2">
                 <input type="checkbox" checked={onlyPending} onChange={(e) => setOnlyPending(e.target.checked)} />
-                Afficher seulement “à traiter”
+                Seulement “à traiter”
               </label>
             </div>
 
@@ -250,42 +279,44 @@ export default function AdminMonthlyHoursPage() {
             </div>
           </div>
 
+          <div className="text-xs text-gray-500">
+            Admin: <b>{email || "—"}</b> • table: <b>{tableUsed || "—"}</b> • month_start: <b>{monthStart}</b>
+          </div>
+
           {err ? (
-            <div className="mt-3 text-sm border rounded-xl p-2" style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" }}>
+            <div
+              className="text-sm border rounded-xl p-2"
+              style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" }}
+            >
               {err}
             </div>
           ) : null}
 
-          {loading ? <div className="mt-3 text-sm text-gray-600">Chargement…</div> : null}
-
-          {!loading && !err && rows.length === 0 ? (
-            <div className="mt-3 text-sm text-gray-600">Aucune ligne pour ce mois (avec ce filtre).</div>
-          ) : null}
+          {loading ? <div className="text-sm text-gray-600">Chargement…</div> : null}
         </div>
+
+        {!loading && !err && rows.length === 0 ? (
+          <div className="card text-sm text-gray-600">Aucune ligne pour ce mois (ou filtre trop strict).</div>
+        ) : null}
 
         {!loading && rows.length > 0 ? (
           <div className="space-y-2">
             {rows.map((row) => {
-              const name = nameFromId(row.seller_id) || "—";
-              const sellerTag =
-                row.seller_status === "accepted" ? "validé" : row.seller_status === "disputed" ? "corrigé" : "en attente";
-              const adminTag =
-                row.admin_status === "approved" ? "approuvé ✅" : row.admin_status === "rejected" ? "refusé ❌" : "à traiter";
-
-              const computed = Number(row.computed_hours || 0);
-              const corrected = row.seller_correction_hours != null ? Number(row.seller_correction_hours) : null;
+              const name = nameFromId(row.seller_id) || row.seller_id || "—";
+              const computed = row?.computed_hours != null ? Number(row.computed_hours) : null;
+              const corrected = row?.seller_correction_hours != null ? Number(row.seller_correction_hours) : null;
 
               return (
-                <div key={row.id} className="border rounded-2xl p-3 space-y-2">
+                <div key={row.id || JSON.stringify(row)} className="border rounded-2xl p-3 space-y-2">
                   <div className="flex items-start justify-between gap-2 flex-wrap">
                     <div>
                       <div className="font-medium">{name}</div>
                       <div className="text-xs text-gray-600">
-                        Vendeuse: {sellerTag} · Admin: <span className="font-medium">{adminTag}</span>
+                        seller_status: <b>{row.seller_status ?? "—"}</b> • admin_status: <b>{row.admin_status ?? "—"}</b>
                       </div>
                     </div>
 
-                    {row.admin_status === "pending" ? (
+                    {row?.admin_status === "pending" && row?.id ? (
                       <div className="flex gap-2">
                         <button
                           className="btn"
@@ -306,26 +337,29 @@ export default function AdminMonthlyHoursPage() {
                   </div>
 
                   <div className="text-sm text-gray-800">
-                    Calculé: <span className="font-semibold">{computed.toFixed(2)} h</span>
+                    Calculé: <b>{computed != null ? computed.toFixed(2) : "—"} h</b>
                     {corrected != null ? (
                       <>
                         {" "}
-                        · Correction: <span className="font-semibold">{corrected.toFixed(2)} h</span>
+                        • Correction: <b>{corrected.toFixed(2)} h</b>
                       </>
                     ) : null}
-                    {row.final_hours != null ? (
+                    {row?.final_hours != null ? (
                       <>
                         {" "}
-                        · Retenu: <span className="font-semibold">{Number(row.final_hours).toFixed(2)} h</span>
+                        • Retenu: <b>{Number(row.final_hours).toFixed(2)} h</b>
                       </>
                     ) : null}
                   </div>
 
-                  {row.seller_comment ? <div className="text-xs text-gray-600">📝 {row.seller_comment}</div> : null}
+                  {row?.seller_comment ? <div className="text-xs text-gray-600">📝 {row.seller_comment}</div> : null}
 
-                  <div className="text-xs text-gray-500">
-                    MAJ: {row.updated_at ? String(row.updated_at).replace("T", " ").slice(0, 16) : "—"}
-                  </div>
+                  <details>
+                    <summary className="text-xs text-gray-500 cursor-pointer">Détails</summary>
+                    <pre className="text-xs mt-2" style={{ whiteSpace: "pre-wrap" }}>
+                      {JSON.stringify(row, null, 2)}
+                    </pre>
+                  </details>
                 </div>
               );
             })}
