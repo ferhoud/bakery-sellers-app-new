@@ -954,7 +954,23 @@ export default function AdminPage() {
             </div>
             <div className="flex gap-2">
               <button type="button" className="btn" onClick={loadMonthlyHoursStats}>Rafraîchir</button>
-              <Link href="/admin/monthly-hours" legacyBehavior><a className="btn">Ouvrir</a></Link>
+             <a
+  className="btn"
+  href="/admin/monthly-hours"
+  title="Validation des heures mensuelles"
+  onClick={(e) => {
+    e.preventDefault();
+    window.location.href = "/admin/monthly-hours";
+  }}
+>
+  🧾 Heures mensuelles
+  {mhToReviewCount != null && mhToReviewCount > 0 ? (
+    <span style={{ marginLeft: 8, background: "#dc2626", color: "#fff", padding: "2px 8px", borderRadius: 9999, fontSize: 12 }}>
+      {mhToReviewCount}
+    </span>
+  ) : null}
+</a>
+
             </div>
           </div>
 
