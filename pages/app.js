@@ -19,14 +19,14 @@ const SELLER_COLOR_OVERRIDES = {
   olivia: "#64b5f6",
   colleen: "#81c784",
   ibtissam: "#ba68c8",
-  charlene: "#f59e0b",
+  charlene: "#f59e0b", // 🟧 Charlene reste orange
 };
 
 const normalize = (s) => String(s || "").trim().toLowerCase();
 
 // Hash stable (sur le nom) → teinte HSL
 function hashStr(str) {
-  let h = 2166136261;
+  let h = 2166136261; // FNV-like
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
     h = (h * 16777619) >>> 0;
@@ -40,19 +40,22 @@ function hslToHex(h, s, l) {
   const f = (n) => {
     const k = (n + h / 30) % 12;
     const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
-    return Math.round(255 * c).toString(16).padStart(2, "0");
+    return Math.round(255 * c)
+      .toString(16)
+      .padStart(2, "0");
   };
   return `#${f(0)}${f(8)}${f(4)}`;
 }
 function autoColorFromName(name) {
   const key = normalize(name);
   const hue = hashStr(key) % 360;
-  return hslToHex(hue, 65, 50);
+  return hslToHex(hue, 65, 50); // saturé, lisible
 }
 function isNamePlaceholder(name) {
   const n = String(name || "").trim();
   return !n || n === "-" || n === "—";
 }
+/** Couleur finale (stable) : priorité override par nom, sinon hash du nom/id */
 function colorForSeller(sellerId, name) {
   const ovr = SELLER_COLOR_OVERRIDES[normalize(name)];
   if (ovr) return ovr;
@@ -92,224 +95,159 @@ function labelForShift(code) {
   }
 }
 
-function withTimeout(promise, ms, label = "timeout") {
-  let t;
-  const timeout = new Promise((_, reject) => {
-    t = setTimeout(() => reject(new Error(label)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(t));
-}
-function fmtErr(e) {
-  if (!e) return "Erreur inconnue";
-  if (typeof e === "string") return e;
-  const msg = e?.message || String(e);
-  const code = e?.code || e?.status;
-  return code ? `${msg} (code ${code})` : msg;
-}
-
-/**
- * ✅ Composant "boot" (peu de hooks) : vérifie session réelle, gère erreur, puis monte SellerAppMain.
- * Important : aucun hook métier (monday etc) ici, donc pas de mismatch.
- */
 export default function AppSeller() {
+  const { session, profile, loading } = useAuth();
   const r = useRouter();
-  const { session: hookSession, profile, loading: hookLoading } = useAuth();
 
-  // Source de vérité Supabase (évite session fantôme)
-  const [sbSession, setSbSession] = useState(null);
-  const [authChecked, setAuthChecked] = useState(false);
-
-  const session = sbSession || hookSession || null;
   const userId = session?.user?.id || null;
+  const userEmail = session?.user?.email || null;
 
-  const [fatalErr, setFatalErr] = useState(null);
-  const [bootDone, setBootDone] = useState(false);
-
-  // Session watcher
-  useEffect(() => {
-    let alive = true;
-
-    (async () => {
-      try {
-        const { data } = await withTimeout(supabase.auth.getSession(), 6000, "getSession timeout");
-        if (!alive) return;
-        setSbSession(data?.session ?? null);
-      } catch (e) {
-        console.warn("[app] getSession failed:", e);
-      } finally {
-        if (alive) setAuthChecked(true);
-      }
-    })();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSbSession(s ?? null);
-      setAuthChecked(true);
-    });
-
-    return () => {
-      alive = false;
-      try {
-        sub?.subscription?.unsubscribe?.();
-      } catch (_) {}
-    };
-  }, []);
-
-  // Vérification "hard" user (évite spinner infini)
-  useEffect(() => {
-    if (!authChecked) return;
-
-    let alive = true;
-    (async () => {
-      try {
-        setFatalErr(null);
-
-        const { data: u, error: uErr } = await withTimeout(supabase.auth.getUser(), 6000, "getUser timeout");
-        if (!alive) return;
-
-        if (uErr || !u?.user) {
-          setBootDone(true);
-          if (typeof window !== "undefined") {
-            window.location.replace("/login?stay=1&next=/app");
-          }
-          return;
-        }
-      } catch (e) {
-        if (alive) setFatalErr(fmtErr(e));
-      } finally {
-        if (alive) setBootDone(true);
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [authChecked]);
-
-  // Fallback profile (au cas où useAuth est lent / RLS)
+  // 🔧 Fallback local pour ne pas rester bloqué si profile tarde / manque
   const [profileFallback, setProfileFallback] = useState(null);
   const [profileTried, setProfileTried] = useState(false);
 
   useEffect(() => {
+    // Quand on a une session mais pas de profile fourni par useAuth, on tente une lecture directe.
     const run = async () => {
-      if (!userId || profile || profileTried) return;
+      if (!session || profile || profileTried) return;
       try {
-        const { data: p, error } = await supabase
+        const { data: prof } = await supabase
           .from("profiles")
           .select("user_id, full_name, role")
           .eq("user_id", userId)
           .maybeSingle();
-        if (!error && p) setProfileFallback(p);
-      } catch (e) {
+        if (prof) setProfileFallback(prof);
+      } catch (_) {
         // ignore
       } finally {
         setProfileTried(true);
       }
     };
     run();
-  }, [userId, profile, profileTried]);
+  }, [session, profile, profileTried, userId]);
 
-  // Si admin arrive par erreur sur /app → /admin
-  useEffect(() => {
-    if (!bootDone) return;
-    if (!userId) return;
-
-    const role = profile?.role ?? profileFallback?.role ?? "seller";
-    if (role === "admin") r.replace("/admin");
-  }, [bootDone, userId, profile, profileFallback, r]);
-
-  // UI boot
-  if (!bootDone) return <div className="p-4">Chargement…</div>;
-
-  if (fatalErr) {
-    return (
-      <div className="min-h-screen flex items-center justify-center p-4">
-        <div className="w-full max-w-sm border rounded-2xl p-6 space-y-3">
-          <div className="text-xl font-semibold">Blocage /app</div>
-          <div className="text-sm" style={{ color: "#b91c1c", whiteSpace: "pre-wrap" }}>
-            {fatalErr}
-          </div>
-          <button className="btn w-full" onClick={() => (window.location.href = "/logout")}>
-            Déconnexion hard (/logout)
-          </button>
-          <button className="btn w-full" onClick={() => (window.location.href = "/login?stay=1&next=/app")}>
-            Aller à /login
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (!session || !userId) {
-    return (
-      <div className="p-4">
-        Connexion requise…{" "}
-        <a href="/login?stay=1&next=/app" style={{ textDecoration: "underline" }}>
-          Aller à /login
-        </a>
-      </div>
-    );
-  }
-
-  // ✅ On monte le gros composant (tous les hooks métier dedans) seulement quand la session est OK
-  return (
-    <SellerAppMain
-      session={session}
-      userId={userId}
-      hookLoading={hookLoading}
-      profile={profile}
-      profileFallback={profileFallback}
-    />
-  );
-}
-
-/**
- * ✅ Composant principal vendeuse/planificatrice
- * Tous les hooks métier sont ici, et il n’y a pas de "return avant hooks".
- */
-function SellerAppMain({ session, userId, hookLoading, profile, profileFallback }) {
-  const r = useRouter();
-
-  // --- Hooks "métier" (TOUJOURS appelés) ---
-  const [monday, setMonday] = useState(startOfWeek(new Date()));
-  const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)), [monday]);
-
+  // 👤 Accès "planificatrice" (table planner_access)
   const [isPlanner, setIsPlanner] = useState(false);
   const [plannerChecked, setPlannerChecked] = useState(false);
-  const [editPlanning, setEditPlanning] = useState(false);
 
-  // Accès planificatrice
   useEffect(() => {
-    let alive = true;
+    if (!userId) {
+      setIsPlanner(false);
+      setPlannerChecked(true);
+      return;
+    }
     const run = async () => {
       try {
-        const { data, error } = await supabase.from("planner_access").select("user_id").eq("user_id", userId).maybeSingle();
+        const { data, error } = await supabase
+          .from("planner_access")
+          .select("user_id")
+          .eq("user_id", userId)
+          .maybeSingle();
         if (!error && data) setIsPlanner(true);
       } catch (e) {
         // ignore
       } finally {
-        if (alive) setPlannerChecked(true);
+        setPlannerChecked(true);
       }
     };
     run();
-    return () => {
-      alive = false;
-    };
   }, [userId]);
+
+  // ✏️ Mode édition planning (visible uniquement si accès planificatrice)
+  const [editPlanning, setEditPlanning] = useState(false);
 
   const displayName =
     profile?.full_name ||
     profileFallback?.full_name ||
     session?.user?.user_metadata?.full_name ||
-    (session?.user?.email ? session.user.email.split("@")[0] : "—");
+    (userEmail ? userEmail.split("@")[0] : "—");
 
-  // --- Planning ---
+  // Sécurité / redirections
+  // 🔒 Redirection selon auth/role — UN SEUL useEffect
+  useEffect(() => {
+    if (loading) return;
+    if (!session) {
+      r.replace("/login");
+      return;
+    }
+    if (!plannerChecked) return;
+
+    const role = profile?.role ?? profileFallback?.role ?? "seller";
+    if (role === "admin") {
+      r.replace("/admin");
+      return;
+    }
+  }, [session, profile, profileFallback, plannerChecked, loading, r]);
+
+  // Semaine affichée
+  const [monday, setMonday] = useState(startOfWeek(new Date()));
+  const days = useMemo(
+    () => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)),
+    [monday]
+  );
+
+  // Planning (lecture seule)
   const [assign, setAssign] = useState({});
+
+  // Notifications remplacement + validation
+  const [replAsk, setReplAsk] = useState(null); // { absence_id, date, absent_name }
+  const [approvalMsg, setApprovalMsg] = useState(null); // { absence_id, date, absent_name }
+
+  // Absence
+  const [reasonAbs, setReasonAbs] = useState("");
+  const [absDate, setAbsDate] = useState(fmtISODate(new Date()));
+  const [msgAbs, setMsgAbs] = useState("");
+
+  // Congés approuvés (vue globale)
+  const [approvedLeaves, setApprovedLeaves] = useState([]);
+
+  // Fenêtre absences à venir
   const todayIso = useMemo(() => fmtISODate(new Date()), []);
-  const [todayPlan, setTodayPlan] = useState({});
+  const rangeTo = fmtISODate(addDays(new Date(), 60));
 
-  const [names, setNames] = useState({}); // user_id -> full_name
+  // Absences mois courant (passé uniquement)
+  const now = new Date();
+  const myMonthFromPast = fmtISODate(firstDayOfMonth(now));
+  const myMonthToPast = fmtISODate(lastDayOfMonth(now));
+  const [myMonthAbs, setMyMonthAbs] = useState([]);
 
+  // Mes absences à venir (fenêtre glissante, pas seulement le mois)
+  // [{ date, ids: [...], status: 'pending' | 'approved', locked: boolean }]
+  const [myMonthUpcomingAbs, setMyMonthUpcomingAbs] = useState([]);
+
+  // Remplacements acceptés pour MES absences (par absence_id)
+  // { [absence_id]: { volunteer_id, volunteer_name, shift: accepted_shift_code } }
+  const [acceptedByAbsence, setAcceptedByAbsence] = useState({});
+
+  // Mes remplacements à venir (je suis la volontaire acceptée)
+  // [{ absence_id, date, absent_id, accepted_shift_code }]
+  const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
+
+  const absentToday = useMemo(() => {
+    const entry = (myMonthUpcomingAbs || []).find((a) => a.date === todayIso);
+    if (!entry) return null;
+    let accepted = null;
+    let acceptedShift = null;
+    for (const id of entry.ids) {
+      if (acceptedByAbsence[id]) {
+        accepted = acceptedByAbsence[id];
+        acceptedShift = acceptedByAbsence[id].shift || null;
+        break;
+      }
+    }
+    return {
+      date: todayIso,
+      status: entry.status,
+      locked: !!entry.locked,
+      accepted,
+      acceptedShift,
+    };
+  }, [myMonthUpcomingAbs, acceptedByAbsence, todayIso]);
+
+  // Charger noms vendeuses (RPC list_active_seller_names) + fallback profiles
+  const [names, setNames] = useState({}); // { user_id: full_name }
   const loadSellerNames = useCallback(async () => {
+    if (!userId) return;
     try {
       const { data: rpcData, error: rpcErr } = await supabase.rpc("list_active_seller_names");
 
@@ -335,31 +273,61 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     } catch (e) {
       console.warn("loadSellerNames failed (RLS ?):", e?.message || e);
     }
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
     loadSellerNames();
   }, [loadSellerNames]);
 
+  // Liste vendeuses utilisable dans select (même si names manque, on essaye)
+  const sellerOptions = useMemo(() => {
+    const entries = Object.entries(names || {}).map(([id, full_name]) => ({
+      user_id: id,
+      full_name: (full_name || "").trim(),
+    }));
+
+    // ajoute celles déjà dans assign si elles ne sont pas dans names
+    const inPlanning = new Set();
+    Object.values(assign || {}).forEach((rec) => {
+      if (rec?.seller_id) inPlanning.add(rec.seller_id);
+    });
+    inPlanning.forEach((id) => {
+      if (!entries.find((e) => e.user_id === id)) entries.push({ user_id: id, full_name: "" });
+    });
+
+    return entries.sort((a, b) =>
+      (a.full_name || a.user_id).localeCompare(b.full_name || b.user_id, "fr")
+    );
+  }, [names, assign]);
+
+  // Charger le planning de la semaine (lecture pour toutes, édition possible pour planificatrice)
   const loadWeekPlanning = useCallback(async () => {
+    if (!userId) return;
+    if (!session) return;
     const from = fmtISODate(days[0]);
     const to = fmtISODate(days[6]);
 
+    // 1) Vue (si dispo)
     const { data: vw, error: e1 } = await supabase
       .from("view_week_assignments")
       .select("date, shift_code, seller_id, full_name")
       .gte("date", from)
       .lte("date", to);
 
+    // ⚠️ Certaines RLS peuvent renvoyer 0 lignes sans erreur → on fallback sur shifts
     if (!e1 && Array.isArray(vw) && vw.length > 0) {
       const next = {};
       vw.forEach((row) => {
-        next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: row.full_name || null };
+        next[`${row.date}|${row.shift_code}`] = {
+          seller_id: row.seller_id,
+          full_name: row.full_name || null,
+        };
       });
       setAssign(next);
       return;
     }
 
+    // 2) Fallback shifts
     const { data: sh, error: e2 } = await supabase
       .from("shifts")
       .select("date, shift_code, seller_id")
@@ -373,16 +341,24 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
 
     const next = {};
     (sh || []).forEach((row) => {
-      next[`${row.date}|${row.shift_code}`] = { seller_id: row.seller_id, full_name: null };
+      next[`${row.date}|${row.shift_code}`] = {
+        seller_id: row.seller_id,
+        full_name: null,
+      };
     });
     setAssign(next);
-  }, [days]);
+  }, [days, session, userId]);
 
   useEffect(() => {
     loadWeekPlanning();
   }, [monday, loadWeekPlanning]);
 
+  // Planning du jour (pour bloc haut)
+  const [todayPlan, setTodayPlan] = useState({});
   const loadTodayPlan = useCallback(async () => {
+    if (!userId) return;
+    if (!session) return;
+
     const { data: vw, error: e1 } = await supabase
       .from("view_week_assignments")
       .select("date, shift_code, seller_id, full_name")
@@ -397,7 +373,10 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       return;
     }
 
-    const { data: sh, error: e2 } = await supabase.from("shifts").select("shift_code, seller_id").eq("date", todayIso);
+    const { data: sh, error: e2 } = await supabase
+      .from("shifts")
+      .select("shift_code, seller_id")
+      .eq("date", todayIso);
 
     if (e2) {
       console.error("loadTodayPlan shifts error:", e2);
@@ -409,7 +388,7 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       next[row.shift_code] = { seller_id: row.seller_id, full_name: null };
     });
     setTodayPlan(next);
-  }, [todayIso]);
+  }, [todayIso, session, userId]);
 
   useEffect(() => {
     loadTodayPlan();
@@ -430,23 +409,7 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     };
   }, [loadWeekPlanning, loadTodayPlan]);
 
-  const sellerOptions = useMemo(() => {
-    const entries = Object.entries(names || {}).map(([user_id, full_name]) => ({
-      user_id,
-      full_name: (full_name || "").trim(),
-    }));
-
-    const inPlanning = new Set();
-    Object.values(assign || {}).forEach((rec) => {
-      if (rec?.seller_id) inPlanning.add(rec.seller_id);
-    });
-    inPlanning.forEach((id) => {
-      if (!entries.find((e) => e.user_id === id)) entries.push({ user_id: id, full_name: "" });
-    });
-
-    return entries.sort((a, b) => (a.full_name || a.user_id).localeCompare(b.full_name || b.user_id, "fr"));
-  }, [names, assign]);
-
+  // Sauvegarder shift (planificatrice uniquement) via RPC
   const saveShift = useCallback(
     async (iso, code, seller_id) => {
       if (!isPlanner) return;
@@ -454,6 +417,7 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       const key = `${iso}|${code}`;
       const resolvedName = seller_id ? names?.[seller_id] || null : null;
 
+      // Optimistic
       setAssign((prev) => ({
         ...prev,
         [key]: { seller_id: seller_id || null, full_name: resolvedName },
@@ -479,63 +443,12 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     [isPlanner, names, loadWeekPlanning, loadTodayPlan]
   );
 
-  // --- Absences / remplacements / congés / validation mensuelle ---
-  // (Le reste de ton code reste identique, mais on garde ici tout ce que tu avais déjà.)
-  // Pour éviter de te re-balancer 600 lignes de plus (et risquer une erreur de copie),
-  // je te remets ci-dessous la partie UI + logique complète telle que tu l'avais, sans changer le contenu.
-  //
-  // ✅ IMPORTANT: tu n’auras plus l’erreur "Rendered more hooks..." car monday/useState est maintenant
-  // dans SellerAppMain, qui ne se monte qu’une fois la session OK, et ne change pas le nombre de hooks.
-
-  // ---------- (COLLE ICI TOUT LE RESTE DE TON ANCIEN SellerAppMain) ----------
-  // 👉 MAIS: on ne fait PLUS aucun "return" avant d’avoir déclaré tous les hooks.
-  // Donc on continue ici avec le reste EXACT de ton code précédent.
-  //
-  // Pour ne pas te faire perdre de temps, je te fournis une version complète ci-dessous qui reprend
-  // ton fichier précédent et le remet au bon endroit (sans early return avant hooks).
-
-  // --- Fenêtres de temps / états absence ---
-  const [replAsk, setReplAsk] = useState(null);
-  const [approvalMsg, setApprovalMsg] = useState(null);
-
-  const [reasonAbs, setReasonAbs] = useState("");
-  const [absDate, setAbsDate] = useState(fmtISODate(new Date()));
-  const [msgAbs, setMsgAbs] = useState("");
-
-  const [approvedLeaves, setApprovedLeaves] = useState([]);
-  const rangeTo = fmtISODate(addDays(new Date(), 60));
-
-  const now = new Date();
-  const myMonthFromPast = fmtISODate(firstDayOfMonth(now));
-  const myMonthToPast = fmtISODate(lastDayOfMonth(now));
-  const [myMonthAbs, setMyMonthAbs] = useState([]);
-
-  const [myMonthUpcomingAbs, setMyMonthUpcomingAbs] = useState([]);
-  const [acceptedByAbsence, setAcceptedByAbsence] = useState({});
-  const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
-
-  const absentToday = useMemo(() => {
-    const entry = (myMonthUpcomingAbs || []).find((a) => a.date === todayIso);
-    if (!entry) return null;
-    let accepted = null;
-    let acceptedShift = null;
-    for (const id of entry.ids) {
-      if (acceptedByAbsence[id]) {
-        accepted = acceptedByAbsence[id];
-        acceptedShift = acceptedByAbsence[id].shift || null;
-        break;
-      }
-    }
-    return {
-      date: todayIso,
-      status: entry.status,
-      locked: !!entry.locked,
-      accepted,
-      acceptedShift,
-    };
-  }, [myMonthUpcomingAbs, acceptedByAbsence, todayIso]);
-
+  // Absence (demande)
   const submitAbs = async () => {
+    if (!userId) {
+      r.replace("/login?next=/app");
+      return;
+    }
     setMsgAbs("");
 
     const { error } = await supabase.from("absences").insert({
@@ -552,14 +465,22 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     }
 
     const { data: u } = await supabase.auth.getUser();
-    const sellerName = u?.user?.user_metadata?.full_name || u?.user?.email?.split("@")[0] || "Vendeuse";
+    const sellerName =
+      u?.user?.user_metadata?.full_name ||
+      u?.user?.email?.split("@")[0] ||
+      "Vendeuse";
 
-    await notifyAdminsNewAbsence({ sellerName, startDate: absDate, endDate: absDate });
+    await notifyAdminsNewAbsence({
+      sellerName,
+      startDate: absDate,
+      endDate: absDate,
+    });
 
     setMsgAbs("Demande d'absence envoyée. En attente de validation.");
     setReasonAbs("");
   };
 
+  // Remplacement: logique “proposer de remplacer”
   const shouldPrompt = async (absence) => {
     if (!absence) return false;
     const tIso = fmtISODate(new Date());
@@ -567,6 +488,7 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     if (absence.date < tIso) return false;
     if (absence.status !== "approved") return false;
     if (absence.admin_forced) return false;
+
     const { data: mine } = await supabase
       .from("replacement_interest")
       .select("id")
@@ -574,15 +496,27 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       .eq("volunteer_id", userId)
       .limit(1)
       .maybeSingle();
+
     return !mine;
   };
 
   const openPrompt = async (absence) => {
-    const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", absence.seller_id).single();
-    setReplAsk({ absence_id: absence.id, date: absence.date, absent_name: prof?.full_name || "Une vendeuse" });
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("full_name")
+      .eq("user_id", absence.seller_id)
+      .single();
+
+    setReplAsk({
+      absence_id: absence.id,
+      date: absence.date,
+      absent_name: prof?.full_name || "Une vendeuse",
+    });
   };
 
+  // Realtime absences (insert/update) → prompt + refresh
   useEffect(() => {
+    if (!userId) return;
     const ch = supabase
       .channel("absences_rt_seller_pending_approved")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "absences" }, async (payload) => {
@@ -609,7 +543,9 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
+  // Pré-chargement prompt absence future non répondue
   useEffect(() => {
+    if (!userId) return;
     const preload = async () => {
       const tIso = fmtISODate(new Date());
       const { data: abs, error } = await supabase
@@ -619,11 +555,18 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
         .gte("date", tIso)
         .eq("admin_forced", false)
         .order("date", { ascending: true });
+
       if (error || !abs || abs.length === 0) return;
-      const { data: mine } = await supabase.from("replacement_interest").select("absence_id").eq("volunteer_id", userId);
+
+      const { data: mine } = await supabase
+        .from("replacement_interest")
+        .select("absence_id")
+        .eq("volunteer_id", userId);
+
       const responded = new Set((mine || []).map((r) => r.absence_id));
       const target = abs.find((a) => a.seller_id !== userId && !responded.has(a.id));
       if (!target) return;
+
       await openPrompt(target);
     };
     preload();
@@ -631,12 +574,15 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
   }, [userId]);
 
   const volunteerYes = async () => {
+    if (!userId) return;
     if (!replAsk) return;
+
     const { error } = await supabase.from("replacement_interest").insert({
       absence_id: replAsk.absence_id,
       volunteer_id: userId,
       status: "pending",
     });
+
     if (error) {
       console.error(error);
       alert("Impossible d’enregistrer votre volontariat.");
@@ -648,23 +594,41 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
   const volunteerNo = () => setReplAsk(null);
 
   const seenKey = (absenceId) => `ri_seen_${absenceId}`;
-  const isSeen = (absenceId) => typeof window !== "undefined" && localStorage.getItem(seenKey(absenceId)) === "1";
+  const isSeen = (absenceId) =>
+    typeof window !== "undefined" && localStorage.getItem(seenKey(absenceId)) === "1";
 
+  // Realtime replacement_interest (accepted) → pop “Validé”
   useEffect(() => {
+    if (!userId) return;
     const ch = supabase
       .channel("replacement_rt_seller_approved")
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "replacement_interest" }, async (payload) => {
         const oldS = payload.old?.status,
           newS = payload.new?.status;
+
         if (
           payload.new?.volunteer_id === userId &&
           oldS !== "accepted" &&
           newS === "accepted" &&
           !isSeen(payload.new.absence_id)
         ) {
-          const { data: abs } = await supabase.from("absences").select("date, seller_id").eq("id", payload.new.absence_id).single();
-          const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", abs?.seller_id).single();
-          setApprovalMsg({ absence_id: payload.new.absence_id, date: abs?.date, absent_name: prof?.full_name || "Une vendeuse" });
+          const { data: abs } = await supabase
+            .from("absences")
+            .select("date, seller_id")
+            .eq("id", payload.new.absence_id)
+            .single();
+
+          const { data: prof } = await supabase
+            .from("profiles")
+            .select("full_name")
+            .eq("user_id", abs?.seller_id)
+            .single();
+
+          setApprovalMsg({
+            absence_id: payload.new.absence_id,
+            date: abs?.date,
+            absent_name: prof?.full_name || "Une vendeuse",
+          });
         }
         await reloadAccepted();
         await loadMyUpcomingRepl();
@@ -677,7 +641,9 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
+  // Préchargement “Validé” non vu
   useEffect(() => {
+    if (!userId) return;
     const preloadAccepted = async () => {
       const tIso = fmtISODate(new Date());
       const { data: rows } = await supabase
@@ -685,23 +651,37 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
         .select("absence_id")
         .eq("volunteer_id", userId)
         .eq("status", "accepted");
+
       const target = (rows || []).find((r) => !isSeen(r.absence_id));
       if (!target) return;
+
       const { data: abs } = await supabase
         .from("absences")
         .select("id, date, seller_id")
         .eq("id", target.absence_id)
         .gte("date", tIso)
         .maybeSingle();
+
       if (!abs) return;
-      const { data: prof } = await supabase.from("profiles").select("full_name").eq("user_id", abs.seller_id).single();
-      setApprovalMsg({ absence_id: target.absence_id, date: abs.date, absent_name: prof?.full_name || "Une vendeuse" });
+
+      const { data: prof } = await supabase
+        .from("profiles")
+        .select("full_name")
+        .eq("user_id", abs.seller_id)
+        .single();
+
+      setApprovalMsg({
+        absence_id: target.absence_id,
+        date: abs.date,
+        absent_name: prof?.full_name || "Une vendeuse",
+      });
     };
     preloadAccepted();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
   const loadApprovedLeaves = async () => {
+    if (!userId) return;
     const tIso = fmtISODate(new Date());
     const { data } = await supabase
       .from("leaves")
@@ -718,16 +698,28 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     const ids = Array.from(new Set(data.map((l) => l.seller_id)));
     let namesMap = {};
     if (ids.length > 0) {
-      const { data: profs } = await supabase.from("profiles").select("user_id, full_name").in("user_id", ids);
+      const { data: profs } = await supabase
+        .from("profiles")
+        .select("user_id, full_name")
+        .in("user_id", ids);
       (profs || []).forEach((p) => {
         namesMap[p.user_id] = p.full_name;
       });
     }
-    setApprovedLeaves(data.map((l) => ({ ...l, seller_name: namesMap[l.seller_id] || "—" })));
+
+    setApprovedLeaves(
+      data.map((l) => ({
+        ...l,
+        seller_name: namesMap[l.seller_id] || "—",
+      }))
+    );
   };
+
   useEffect(() => {
     loadApprovedLeaves();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
   useEffect(() => {
     const chLeaves = supabase
       .channel("leaves_rt_seller_view")
@@ -735,12 +727,15 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
         await loadApprovedLeaves();
       })
       .subscribe();
+
     return () => {
       supabase.removeChannel(chLeaves);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   const loadMyMonthAbs = async () => {
+    if (!userId) return;
     const tIso = fmtISODate(new Date());
     const { data } = await supabase
       .from("absences")
@@ -750,11 +745,13 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       .gte("date", myMonthFromPast)
       .lte("date", myMonthToPast)
       .lt("date", tIso);
+
     const arr = Array.from(new Set((data || []).map((r) => r.date))).sort((a, b) => a.localeCompare(b));
     setMyMonthAbs(arr);
   };
 
   const loadMyMonthUpcomingAbs = async () => {
+    if (!userId) return;
     const { data } = await supabase
       .from("absences")
       .select("id, date, status, admin_forced")
@@ -781,10 +778,12 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
         status: byDate[date].approved ? "approved" : "pending",
         locked: byDate[date].locked,
       }));
+
     setMyMonthUpcomingAbs(arr);
   };
 
   const reloadAccepted = async () => {
+    if (!userId) return;
     const { data: rows, error } = await supabase
       .from("replacement_interest")
       .select("id, status, volunteer_id, accepted_shift_code, absence_id, absences(id, seller_id, date)")
@@ -800,11 +799,15 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     const volunteerIds = Array.from(new Set((rows || []).map((r) => r.volunteer_id).filter(Boolean)));
     let vnames = {};
     if (volunteerIds.length) {
-      const { data: profs } = await supabase.from("profiles").select("user_id, full_name").in("user_id", volunteerIds);
+      const { data: profs } = await supabase
+        .from("profiles")
+        .select("user_id, full_name")
+        .in("user_id", volunteerIds);
       (profs || []).forEach((p) => {
         vnames[p.user_id] = p.full_name;
       });
     }
+
     const map = {};
     (rows || []).forEach((r) => {
       map[r.absence_id] = {
@@ -817,11 +820,13 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
   };
 
   const loadMyUpcomingRepl = useCallback(async () => {
+    if (!userId) return;
     const { data: riRows, error: e1 } = await supabase
       .from("replacement_interest")
       .select("absence_id, accepted_shift_code")
       .eq("volunteer_id", userId)
       .eq("status", "accepted");
+
     if (e1) {
       console.error(e1);
       setMyUpcomingRepl([]);
@@ -834,7 +839,11 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       return;
     }
 
-    const { data: absRows, error: e2 } = await supabase.from("absences").select("id, seller_id, date").in("id", ids);
+    const { data: absRows, error: e2 } = await supabase
+      .from("absences")
+      .select("id, seller_id, date")
+      .in("id", ids);
+
     if (e2) {
       console.error(e2);
       setMyUpcomingRepl([]);
@@ -861,9 +870,14 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
   }, [userId, myMonthFromPast, myMonthToPast, loadMyUpcomingRepl]);
 
   const deleteMyAbsencesForDate = async (date) => {
+    if (!userId) return;
     if (!window.confirm(`Annuler votre absence du ${frDate(date)} ?`)) return;
 
-    const { data: rows } = await supabase.from("absences").select("id, admin_forced").eq("seller_id", userId).eq("date", date);
+    const { data: rows } = await supabase
+      .from("absences")
+      .select("id, admin_forced")
+      .eq("seller_id", userId)
+      .eq("date", date);
 
     if ((rows || []).some((r) => r.admin_forced)) {
       alert("Cette absence a été enregistrée par l’admin et ne peut pas être annulée.");
@@ -873,15 +887,20 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     const { data: sdata } = await supabase.auth.getSession();
     const resp = await fetch("/api/absences/delete-by-date", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${sdata?.session?.access_token || ""}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${sdata?.session?.access_token || ""}`,
+      },
       body: JSON.stringify({ date }),
     });
+
     const json = await resp.json().catch(() => ({}));
     if (!resp.ok || !json.ok) {
       alert(`Échec de l’annulation: ${json.error || resp.statusText}`);
       return;
     }
-    await Promise.all([loadMyMonthUpcomingAbs?.(), reloadAccepted?.(), loadMyUpcomingRepl?.()]);
+
+    await Promise.all([loadMyMonthUpcomingAbs(), reloadAccepted(), loadMyUpcomingRepl()]);
     alert("Absence annulée.");
   };
 
@@ -904,9 +923,9 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       document.removeEventListener("visibilitychange", onWake);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [userId]);
 
-  // --- Validation mensuelle (inchangé) ---
+  // --- Validation mensuelle ---
   const monthStartPrev = useMemo(() => {
     const now2 = new Date();
     const firstThis = new Date(now2.getFullYear(), now2.getMonth(), 1);
@@ -928,6 +947,7 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
   const [monthlyFlash, setMonthlyFlash] = useState("");
 
   const ensureMonthlyRow = useCallback(async () => {
+    if (!userId) return;
     setMonthlyErr("");
     setMonthlyLoading(true);
     try {
@@ -943,29 +963,36 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
     } finally {
       setMonthlyLoading(false);
     }
-  }, [monthStartPrev]);
+  }, [monthStartPrev, userId]);
 
   useEffect(() => {
     ensureMonthlyRow();
   }, [ensureMonthlyRow]);
 
   useEffect(() => {
+    if (!userId) return;
     const ch = supabase
       .channel("monthly_hours_seller_" + userId)
-      .on("postgres_changes", { event: "*", schema: "public", table: "monthly_hours_attestations", filter: `seller_id=eq.${userId}` }, (payload) => {
-        const row = payload?.new;
-        if (!row) return;
-        if (row.month_start !== monthStartPrev) return;
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "monthly_hours_attestations", filter: `seller_id=eq.${userId}` },
+        (payload) => {
+          const row = payload?.new;
+          if (!row) return;
+          if (row.month_start !== monthStartPrev) return;
 
-        setMonthlyRow(row);
+          setMonthlyRow(row);
 
-        if (payload.eventType === "UPDATE" && row.admin_status && row.admin_status !== "pending") {
-          setMonthlyFlash(
-            row.admin_status === "approved" ? "Tes heures ont été validées par l'admin ✅" : "L'admin a refusé la correction ❌"
-          );
-          setTimeout(() => setMonthlyFlash(""), 5000);
+          if (payload.eventType === "UPDATE" && row.admin_status && row.admin_status !== "pending") {
+            setMonthlyFlash(
+              row.admin_status === "approved"
+                ? "Tes heures ont été validées par l'admin ✅"
+                : "L'admin a refusé la correction ❌"
+            );
+            setTimeout(() => setMonthlyFlash(""), 5000);
+          }
         }
-      })
+      )
       .subscribe();
 
     return () => {
@@ -974,6 +1001,7 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
   }, [userId, monthStartPrev]);
 
   const sellerAcceptMonthly = useCallback(async () => {
+    if (!userId) return;
     setMonthlyErr("");
     const { data, error } = await supabase.rpc("seller_monthly_hours_submit", {
       p_month_start: monthStartPrev,
@@ -988,9 +1016,10 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       return;
     }
     setMonthlyRow(data || null);
-  }, [monthStartPrev]);
+  }, [userId, monthStartPrev]);
 
   const sellerCorrectMonthly = useCallback(async () => {
+    if (!userId) return;
     setMonthlyErr("");
     const val = Number(String(corrHours || "").replace(",", "."));
     if (!Number.isFinite(val) || val <= 0) {
@@ -1011,21 +1040,23 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       return;
     }
     setMonthlyRow(data || null);
-  }, [monthStartPrev, corrHours, corrNote]);
+  }, [userId, monthStartPrev, corrHours, corrNote]);
 
-  // --- RENDER (aucun return avant hooks) ---
+  // --- ÉTATS GÉNÉRAUX D'ACCÈS ---
+  const uiBusy = loading || !plannerChecked;
+  if (!session) return <div className="p-4">Connexion requise…</div>;
+
+  if (uiBusy) {
+    return <div className="p-4">Chargement…</div>;
+  }
+
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
         <div className="hdr">Bonjour {displayName}</div>
         <div className="flex items-center gap-2">
           {isPlanner && (
-            <button
-              className="btn"
-              onClick={() => setEditPlanning((v) => !v)}
-              title="Activer/Désactiver la modification du planning"
-              style={{ backgroundColor: editPlanning ? "#111827" : undefined, color: editPlanning ? "#fff" : undefined }}
-            >
+            <button className="btn" onClick={() => setEditPlanning((v) => !v)}>
               {editPlanning ? "Mode planning: ON" : "Modifier le planning"}
             </button>
           )}
@@ -1034,8 +1065,6 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
           </button>
         </div>
       </div>
-
-      {!plannerChecked && <div className="text-xs opacity-70">Vérification accès planificatrice…</div>}
 
       {/* Validation heures mensuelles */}
       {(monthlyLoading || monthlyRow) && (
@@ -1086,8 +1115,17 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
                       placeholder="Heures corrigées (ex: 151.5)"
                       inputMode="decimal"
                     />
-                    <input className="input" value={corrNote} onChange={(e) => setCorrNote(e.target.value)} placeholder="Commentaire (optionnel)" />
-                    <button className="btn" onClick={sellerCorrectMonthly} style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}>
+                    <input
+                      className="input"
+                      value={corrNote}
+                      onChange={(e) => setCorrNote(e.target.value)}
+                      placeholder="Commentaire (optionnel)"
+                    />
+                    <button
+                      className="btn"
+                      onClick={sellerCorrectMonthly}
+                      style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
+                    >
                       Envoyer correction
                     </button>
                   </div>
@@ -1273,18 +1311,91 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
       )}
 
       {/* Planning semaine */}
-      <WeekView
-        monday={monday}
-        setMonday={setMonday}
-        days={days}
-        assign={assign}
-        todayIso={todayIso}
-        names={names}
-        isPlanner={isPlanner}
-        editPlanning={editPlanning}
-        sellerOptions={sellerOptions}
-        saveShift={saveShift}
-      />
+      <div className="card">
+        <div className="hdr mb-4">Planning de la semaine</div>
+
+        <WeekNav
+          monday={monday}
+          onPrev={() => setMonday(addDays(monday, -7))}
+          onToday={() => setMonday(startOfWeek(new Date()))}
+          onNext={() => setMonday(addDays(monday, 7))}
+        />
+
+        <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
+          {days.map((d) => {
+            const iso = fmtISODate(d);
+            const sunday = isSunday(d);
+            const isToday = iso === todayIso;
+
+            return (
+              <div
+                key={iso}
+                className="border rounded-2xl p-3 space-y-3"
+                style={{ borderWidth: isToday ? 2 : 1, borderColor: isToday ? "#2563eb" : "#e5e7eb" }}
+              >
+                <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
+                <div className="font-semibold">{iso}</div>
+
+                {["MORNING", "MIDDAY", ...(sunday ? ["SUNDAY_EXTRA"] : []), "EVENING"].map((code) => {
+                  const key = `${iso}|${code}`;
+                  const label = SHIFT_LABELS[code] || code;
+
+                  const rec = assign?.[key];
+                  const assigned = rec?.seller_id || "";
+
+                  const raw = rec?.full_name;
+                  const name = !isNamePlaceholder(raw) ? raw : assigned ? names?.[assigned] || "" : "";
+                  const shownName = assigned ? name || "Vendeuse" : "—";
+
+                  const bg = assigned ? colorForSeller(assigned, name || shownName) : "#f3f4f6";
+                  const fg = assigned ? "#fff" : "#6b7280";
+                  const border = assigned ? "transparent" : "#e5e7eb";
+
+                  return (
+                    <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
+                      <div className="text-sm font-medium">{label}</div>
+                      <div className="mt-1 text-sm">{shownName}</div>
+
+                      {isPlanner && editPlanning && (
+                        <div className="mt-3">
+                          <select
+                            className="input"
+                            value={assigned}
+                            onChange={(e) => saveShift(iso, code, e.target.value || null)}
+                            style={{
+                              backgroundColor: "#fff",
+                              color: "#111827",
+                              border: "1px solid #e5e7eb",
+                              WebkitAppearance: "menulist",
+                              appearance: "menulist",
+                            }}
+                          >
+                            <option value="">— (aucune)</option>
+                            {(sellerOptions || []).map((s) => {
+                              const lbl = (s.full_name || names?.[s.user_id] || "").trim() || s.user_id.slice(0, 8);
+                              return (
+                                <option key={s.user_id} value={s.user_id}>
+                                  {lbl}
+                                </option>
+                              );
+                            })}
+                          </select>
+
+                          {(!sellerOptions || sellerOptions.length === 0) && (
+                            <div className="text-xs text-gray-600 mt-2">
+                              Liste vendeuses indisponible. Vérifie la RPC <code>list_active_seller_names</code>.
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
       {/* Congés */}
       <div className="card">
@@ -1431,97 +1542,49 @@ function SellerAppMain({ session, userId, hookLoading, profile, profileFallback 
         <LeaveRequestForm />
       </div>
 
-      {/* Petit indicateur utile si hookLoading traîne */}
-      {hookLoading && <div className="text-xs opacity-60">Sync profil…</div>}
-    </div>
-  );
-}
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
+      </div>
 
-function WeekView({ monday, setMonday, days, assign, todayIso, names, isPlanner, editPlanning, sellerOptions, saveShift }) {
-  return (
-    <div className="card">
-      <div className="hdr mb-4">Planning de la semaine</div>
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
+      </div>
 
-      <WeekNav
-        monday={monday}
-        onPrev={() => setMonday(addDays(monday, -7))}
-        onToday={() => setMonday(startOfWeek(new Date()))}
-        onNext={() => setMonday(addDays(monday, 7))}
-      />
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
+      </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
-        {days.map((d) => {
-          const iso = fmtISODate(d);
-          const sunday = isSunday(d);
-          const isToday = iso === todayIso;
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
+      </div>
 
-          return (
-            <div
-              key={iso}
-              className="border rounded-2xl p-3 space-y-3"
-              style={{ borderWidth: isToday ? 2 : 1, borderColor: isToday ? "#2563eb" : "#e5e7eb" }}
-            >
-              <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
-              <div className="font-semibold">{iso}</div>
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
+      </div>
 
-              {["MORNING", "MIDDAY", ...(sunday ? ["SUNDAY_EXTRA"] : []), "EVENING"].map((code) => {
-                const key = `${iso}|${code}`;
-                const label = SHIFT_LABELS[code] || code;
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
+      </div>
 
-                const rec = assign?.[key];
-                const assigned = rec?.seller_id || "";
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
+      </div>
 
-                const raw = rec?.full_name;
-                const name = !isNamePlaceholder(raw) ? raw : assigned ? names?.[assigned] || "" : "";
-                const shownName = assigned ? name || "Vendeuse" : "—";
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
+      </div>
 
-                const bg = assigned ? colorForSeller(assigned, name || shownName) : "#f3f4f6";
-                const fg = assigned ? "#fff" : "#6b7280";
-                const border = assigned ? "transparent" : "#e5e7eb";
-
-                return (
-                  <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
-                    <div className="text-sm font-medium">{label}</div>
-                    <div className="mt-1 text-sm">{shownName}</div>
-
-                    {isPlanner && editPlanning && (
-                      <div className="mt-3">
-                        <select
-                          className="input"
-                          style={{
-                            backgroundColor: "#fff",
-                            color: "#111827",
-                            border: "1px solid #e5e7eb",
-                            WebkitAppearance: "menulist",
-                            appearance: "menulist",
-                          }}
-                          value={assigned}
-                          onChange={(e) => saveShift(iso, code, e.target.value || null)}
-                        >
-                          <option value="">— (aucune)</option>
-                          {(sellerOptions || []).map((s) => {
-                            const lbl = (s.full_name || names?.[s.user_id] || "").trim() || s.user_id.slice(0, 8);
-                            return (
-                              <option key={s.user_id} value={s.user_id}>
-                                {lbl}
-                              </option>
-                            );
-                          })}
-                        </select>
-
-                        {(!sellerOptions || sellerOptions.length === 0) && (
-                          <div className="text-xs text-gray-600 mt-2">
-                            Liste vendeuses indisponible. Vérifie la RPC <code>list_active_seller_names</code>.
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })}
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé (période)</div>
+        <LeaveRequestForm />
       </div>
     </div>
   );
