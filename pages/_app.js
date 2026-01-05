@@ -20,54 +20,76 @@ async function closeAllOriginNotifications() {
   }
 }
 
+async function resetServiceWorkerAndCachesOnce() {
+  const KEY = "sw_reset_done_2026_01_05_v2";
+  try {
+    if (localStorage.getItem(KEY) === "1") return;
+    localStorage.setItem(KEY, "1");
+  } catch (_) {
+    // si localStorage bloqué, on ne force pas
+    return;
+  }
+
+  // Unregister SW
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(regs.map((r) => r.unregister().catch(() => {})));
+  } catch (_) {}
+
+  // Purge caches
+  try {
+    if (window.caches?.keys) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k).catch(() => {})));
+    }
+  } catch (_) {}
+}
+
 export default function App({ Component, pageProps }) {
   useEffect(() => {
-    let reloaded = false;
+    let disposed = false;
 
     const onFocus = () => {
+      if (document.visibilityState && document.visibilityState !== "visible") return;
       closeAllOriginNotifications().catch(() => {});
     };
 
     document.addEventListener("visibilitychange", onFocus);
     window.addEventListener("focus", onFocus);
 
-    // IMPORTANT: pas de await au top-level → tout ici, dans une IIFE async
     (async () => {
+      // Kill-switch si besoin (tu peux mettre NEXT_PUBLIC_DISABLE_SW=1 sur Vercel)
+      if (process.env.NEXT_PUBLIC_DISABLE_SW === "1") return;
       if (!("serviceWorker" in navigator)) return;
 
       try {
+        // ✅ réparation une fois
+        await resetServiceWorkerAndCachesOnce();
+        if (disposed) return;
+
         const reg = await navigator.serviceWorker.register("/sw.js", {
+          scope: "/",
           updateViaCache: "none",
         });
 
-        // Force un check update
         try {
           await reg.update();
         } catch (_) {}
 
-        // Si une version attend, on la prend direct
         if (reg.waiting) {
           try {
             reg.waiting.postMessage({ type: "SKIP_WAITING" });
           } catch (_) {}
         }
 
-        // Quand le nouveau SW prend le contrôle, reload 1 fois (évite les états “cassés”)
-        navigator.serviceWorker.addEventListener("controllerchange", () => {
-          if (reloaded) return;
-          reloaded = true;
-          window.location.reload();
-        });
-
-        // Nettoyage notifs au démarrage
         await closeAllOriginNotifications();
       } catch (e) {
-        // Ne bloque jamais l’app si SW casse
-        console.warn("[sw] register error:", e);
+        console.warn("[sw] init error:", e?.message || e);
       }
     })();
 
     return () => {
+      disposed = true;
       document.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("focus", onFocus);
     };
