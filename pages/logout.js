@@ -1,64 +1,56 @@
-import { useEffect, useState } from "react";
+/* eslint-disable react/no-unescaped-entities */
+
+import { useEffect } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-async function hardClear() {
-  try {
-    Object.keys(localStorage)
-      .filter((k) => k.startsWith("sb-") || k.includes("supabase"))
-      .forEach((k) => localStorage.removeItem(k));
-  } catch (_) {}
-
-  try {
-    Object.keys(sessionStorage).forEach((k) => sessionStorage.removeItem(k));
-  } catch (_) {}
-
-  try {
-    if ("serviceWorker" in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map((r) => r.unregister()));
-    }
-  } catch (_) {}
-
-  try {
-    if ("caches" in window) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
-    }
-  } catch (_) {}
-}
-
-export default function LogoutPage() {
-  const [msg, setMsg] = useState("Déconnexion…");
-
+export default function Logout() {
   useEffect(() => {
+    let alive = true;
+
     (async () => {
       try {
-        setMsg("Fermeture de session…");
         await supabase.auth.signOut();
       } catch (_) {}
 
-      setMsg("Nettoyage du cache…");
-      await hardClear();
+      if (!alive || typeof window === "undefined") return;
 
-      setMsg("Redirection…");
-      window.location.replace("/login?ts=" + Date.now());
+      try {
+        const ls = window.localStorage;
+        const ss = window.sessionStorage;
+
+        const collectKeys = (st) => {
+          const out = [];
+          try {
+            for (let i = 0; i < st.length; i++) {
+              const k = st.key(i);
+              if (k) out.push(k);
+            }
+          } catch (_) {}
+          return out;
+        };
+
+        const shouldRemove = (k) =>
+          k.startsWith("sb-") ||
+          k.includes("supabase") ||
+          k.includes("auth-token") ||
+          k.includes("token") ||
+          k.includes("refresh");
+
+        collectKeys(ls).forEach((k) => {
+          if (shouldRemove(k)) ls.removeItem(k);
+        });
+        collectKeys(ss).forEach((k) => {
+          if (shouldRemove(k)) ss.removeItem(k);
+        });
+      } catch (_) {}
+
+      window.location.replace("/login?stay=1&next=/app");
     })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  return (
-    <div className="min-h-screen flex items-center justify-center p-4">
-      <div className="w-full max-w-sm border rounded-2xl p-6 space-y-3">
-        <div className="text-xl font-semibold">{msg}</div>
-        <div className="text-sm opacity-80">
-          Si ça reste bloqué, clique ci-dessous.
-        </div>
-        <button
-          className="btn w-full"
-          onClick={() => window.location.replace("/login?ts=" + Date.now())}
-        >
-          Aller à /login
-        </button>
-      </div>
-    </div>
-  );
+  return <div className="p-4">Déconnexion...</div>;
 }
