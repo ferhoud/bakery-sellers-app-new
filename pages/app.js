@@ -11,6 +11,10 @@ import WeekNav from "@/components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
 import LeaveRequestForm from "@/components/LeaveRequestForm";
 
+const [fatalErr, setFatalErr] = useState(null);
+const [bootDone, setBootDone] = useState(false);
+
+
 /* Libellés + créneau dimanche (doit exister dans shift_types) */
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
 /* Couleurs (fixes + auto pour nouvelles vendeuses) */
