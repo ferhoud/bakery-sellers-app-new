@@ -37,14 +37,16 @@ function withTimeout(p, ms, label = "Timeout") {
   });
   return Promise.race([p, timeout]).finally(() => clearTimeout(t));
 }
-
-// IMPORTANT: transforme n’importe quelle valeur "thenable" en vraie Promise
+// Force l’exécution d’un builder Supabase (thenable)
 async function execQuery(q) {
-  return await q; // le await ici est volontaire: ça force l’exécution du builder Supabase
+  return await q;
 }
 
 export default function AdminMonthlyHoursPage() {
   const r = useRouter();
+
+  // Debug visible uniquement si ?debug=1
+  const debug = useMemo(() => String(r.query?.debug || "") === "1", [r.query]);
 
   // Auth "béton" sans useAuth
   const [authChecked, setAuthChecked] = useState(false);
@@ -63,7 +65,7 @@ export default function AdminMonthlyHoursPage() {
         if (!alive) return;
         if (error) throw error;
         setSession(data?.session ?? null);
-      } catch (e) {
+      } catch (_) {
         if (!alive) return;
         setSession(null);
       } finally {
@@ -88,8 +90,14 @@ export default function AdminMonthlyHoursPage() {
   const email = session?.user?.email || "";
   const isAdmin = !!session && isAdminEmail(email);
 
-  // UI state
-  const [selectedMonth, setSelectedMonth] = useState(() => firstDayOfMonth(new Date()));
+  // ✅ Mois par défaut = mois précédent
+  const [selectedMonth, setSelectedMonth] = useState(() => {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() - 1);
+    return firstDayOfMonth(d);
+  });
+
   const monthStart = useMemo(() => fmtISODate(firstDayOfMonth(selectedMonth)), [selectedMonth]);
 
   const [onlyPending, setOnlyPending] = useState(true);
@@ -141,8 +149,8 @@ export default function AdminMonthlyHoursPage() {
       const list = Array.isArray(res?.data) ? res.data : [];
       list.sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "fr", { sensitivity: "base" }));
       setSellers(list);
-    } catch (e) {
-      // Pas bloquant: si ça rate, on affiche quand même les rows avec seller_id
+    } catch (_) {
+      // Pas bloquant
       setSellers([]);
     }
   }, []);
@@ -158,15 +166,11 @@ export default function AdminMonthlyHoursPage() {
     setTableUsed("");
     setPhase("start");
 
-    // On lance les vendeuses en fond, mais on NE BLOQUE PAS les heures mensuelles dessus
+    // Ne bloque pas l’affichage si list_sellers rate
     loadSellers().catch(() => {});
 
     try {
-      const tableCandidates = [
-        "monthly_hours_attestations",
-        "monthly_hours",
-        "monthly_hours_rows",
-      ];
+      const tableCandidates = ["monthly_hours_attestations", "monthly_hours", "monthly_hours_rows"];
 
       let lastError = null;
       let found = false;
@@ -175,17 +179,11 @@ export default function AdminMonthlyHoursPage() {
         try {
           setPhase(`select ${t}…`);
 
-          let q = supabase
-            .from(t)
-            .select("*")
-            .eq("month_start", monthStart);
+          let q = supabase.from(t).select("*").eq("month_start", monthStart);
 
-          // admin_status peut ne pas exister, donc on teste avec le filtre seulement si demandé
           if (onlyPending) q = q.eq("admin_status", "pending");
 
-          // IMPORTANT: on force l’exécution du builder dans une vraie Promise
           const res = await withTimeout(execQuery(q), 20000, `Timeout select ${t} (20s)`);
-
           if (res?.error) throw res.error;
 
           setTableUsed(t);
@@ -199,9 +197,7 @@ export default function AdminMonthlyHoursPage() {
         }
       }
 
-      if (!found) {
-        throw lastError || new Error("Aucune table mensuelle trouvée (candidates testées).");
-      }
+      if (!found) throw lastError || new Error("Aucune table mensuelle trouvée (candidates testées).");
     } catch (e) {
       setErr(fmtErr(e));
       setPhase("error");
@@ -255,9 +251,7 @@ export default function AdminMonthlyHoursPage() {
         <meta name="robots" content="noindex" />
       </Head>
 
-      <div style={{ padding: "8px", background: "#111", color: "#fff", fontWeight: 700 }}>
-        {BUILD_TAG}
-      </div>
+      <div style={{ padding: "8px", background: "#111", color: "#fff", fontWeight: 700 }}>{BUILD_TAG}</div>
 
       <div className="p-4 max-w-6xl mx-auto space-y-4">
         <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -306,12 +300,20 @@ export default function AdminMonthlyHoursPage() {
           </div>
 
           <div className="text-xs text-gray-500">
-            Admin: <b>{email || "—"}</b> • table: <b>{tableUsed || "—"}</b> • month_start: <b>{monthStart}</b> • phase:{" "}
-            <b>{phase}</b>
+            Admin: <b>{email || "—"}</b> • table: <b>{tableUsed || "—"}</b> • month_start: <b>{monthStart}</b>
+            {debug ? (
+              <>
+                {" "}
+                • phase: <b>{phase}</b>
+              </>
+            ) : null}
           </div>
 
           {err ? (
-            <div className="text-sm border rounded-xl p-2" style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" }}>
+            <div
+              className="text-sm border rounded-xl p-2"
+              style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca", color: "#991b1b" }}
+            >
               {err}
             </div>
           ) : null}
@@ -378,12 +380,14 @@ export default function AdminMonthlyHoursPage() {
 
                   {row?.seller_comment ? <div className="text-xs text-gray-600">📝 {row.seller_comment}</div> : null}
 
-                  <details>
-                    <summary className="text-xs text-gray-500 cursor-pointer">Détails</summary>
-                    <pre className="text-xs mt-2" style={{ whiteSpace: "pre-wrap" }}>
-                      {JSON.stringify(row, null, 2)}
-                    </pre>
-                  </details>
+                  {debug ? (
+                    <details>
+                      <summary className="text-xs text-gray-500 cursor-pointer">Détails</summary>
+                      <pre className="text-xs mt-2" style={{ whiteSpace: "pre-wrap" }}>
+                        {JSON.stringify(row, null, 2)}
+                      </pre>
+                    </details>
+                  ) : null}
                 </div>
               );
             })}
