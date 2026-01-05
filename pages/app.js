@@ -118,28 +118,19 @@ export default function AppSeller() {
   const r = useRouter();
   const { session: hookSession, profile: hookProfile } = useAuth();
 
-  // Session source de vérité (évite le “je me déconnecte mais ça reste bizarre”)
+  // Session source de vérité (évite le "je me déconnecte mais ça reste bizarre")
   const [sbSession, setSbSession] = useState(null);
   const [authChecked, setAuthChecked] = useState(false);
 
   useEffect(() => {
     let alive = true;
 
-    // 🔒 Sécurité anti "chargement infini" (prod) :
-    // si getSession se bloque pour une raison quelconque, on "débloque" quand même l'UI.
-    const safety = setTimeout(() => {
-      if (alive) setAuthChecked(true);
-    }, 7000);
-
     (async () => {
       try {
         const { data } = await supabase.auth.getSession();
         if (!alive) return;
         setSbSession(data?.session ?? null);
-      } catch (e) {
-        console.warn("[app] getSession failed:", e?.message || e);
       } finally {
-        clearTimeout(safety);
         if (alive) setAuthChecked(true);
       }
     })();
@@ -151,12 +142,12 @@ export default function AppSeller() {
 
     return () => {
       alive = false;
-      clearTimeout(safety);
       try {
         sub?.subscription?.unsubscribe?.();
       } catch (_) {}
     };
   }, []);
+
   const session = sbSession ?? hookSession ?? null;
   const userId = session?.user?.id || null;
   const userEmail = session?.user?.email || null;
@@ -258,9 +249,10 @@ export default function AppSeller() {
   // Redirects (APRÈS hooks)
   // ----------------------------
   useEffect(() => {
+    // On attend que Supabase nous dise clairement si une session existe ou non
     if (!authChecked) return;
 
-    // Pas connecté => /login (au lieu de rester bloqué sur "Chargement…")
+    // Pas connecté => /login (au lieu de rester bloqué)
     if (!userId) {
       if (typeof window !== "undefined") {
         window.location.replace("/login?stay=1&next=/app");
@@ -273,6 +265,51 @@ export default function AppSeller() {
       r.replace("/admin");
     }
   }, [authChecked, userId, role, r]);
+
+
+  // Déconnexion robuste (évite les sessions "collées")
+  const hardLogout = useCallback(async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      console.warn("[app] signOut failed:", e?.message || e);
+    }
+
+    if (typeof window === "undefined") return;
+
+    try {
+      const ls = window.localStorage;
+      const ss = window.sessionStorage;
+
+      const collectKeys = (st) => {
+        const out = [];
+        try {
+          for (let i = 0; i < st.length; i++) {
+            const k = st.key(i);
+            if (k) out.push(k);
+          }
+        } catch (_) {}
+        return out;
+      };
+
+      const shouldRemove = (k) =>
+        k.startsWith("sb-") ||
+        k.includes("supabase") ||
+        k.includes("auth-token") ||
+        k.includes("token") ||
+        k.includes("refresh");
+
+      collectKeys(ls).forEach((k) => {
+        if (shouldRemove(k)) ls.removeItem(k);
+      });
+      collectKeys(ss).forEach((k) => {
+        if (shouldRemove(k)) ss.removeItem(k);
+      });
+    } catch (_) {}
+
+    // On repart proprement
+    window.location.replace("/login?stay=1&next=/app");
+  }, []);
 
   // Planner access (table planner_access)
   useEffect(() => {
@@ -764,18 +801,18 @@ export default function AppSeller() {
   const showNeedAuth = !userId && authChecked;
 
   if (showLoading) {
-    return <div className="p-4">Chargement…</div>;
+    return <div className="p-4">Chargement...</div>;
   }
 
   if (showNeedAuth) {
     return (
       <div className="p-4 space-y-3">
-        <div>Connexion requise…</div>
+        <div>Connexion requise...</div>
         <button className="btn" onClick={() => (window.location.href = "/login?stay=1&next=/app")}>
           Aller à /login
         </button>
-        <button className="btn" onClick={() => (window.location.href = "/logout")}>
-          Déconnexion hard (/logout)
+        <button className="btn" onClick={hardLogout}>
+          Se déconnecter
         </button>
       </div>
     );
@@ -791,7 +828,7 @@ export default function AppSeller() {
               {editPlanning ? "Mode planning: ON" : "Modifier le planning"}
             </button>
           )}
-          <button className="btn" onClick={() => (window.location.href = "/logout")}>
+          <button className="btn" onClick={hardLogout}>
             Se déconnecter
           </button>
         </div>
@@ -813,7 +850,7 @@ export default function AppSeller() {
             </div>
           )}
 
-          {monthlyLoading && <div className="text-sm text-gray-600">Chargement…</div>}
+          {monthlyLoading && <div className="text-sm text-gray-600">Chargement...</div>}
 
           {!monthlyLoading && monthlyRow && (
             <>
