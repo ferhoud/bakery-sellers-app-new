@@ -1,5 +1,4 @@
-﻿
-/* eslint-disable react/no-unescaped-entities */
+﻿/* eslint-disable react/no-unescaped-entities */
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
@@ -265,7 +264,6 @@ export default function AppSeller() {
       r.replace("/admin");
     }
   }, [authChecked, userId, role, r]);
-
 
   // Déconnexion robuste (évite les sessions "collées")
   const hardLogout = useCallback(async () => {
@@ -712,7 +710,9 @@ export default function AppSeller() {
 
   // Validation mensuelle (si RPC existent)
   const ensureMonthlyRow = useCallback(async () => {
-    if (!userId || monthlyUnsupported) return;
+  // ✅ On ne crée/charge jamais d'attestation mensuelle pour un admin/non-seller
+  if (!userId || monthlyUnsupported || role === "admin") return;
+
     setMonthlyErr("");
     setMonthlyLoading(true);
     try {
@@ -736,48 +736,164 @@ export default function AppSeller() {
     } finally {
       setMonthlyLoading(false);
     }
-  }, [userId, monthStartPrev, monthlyUnsupported]);
+  }, [userId, monthStartPrev, monthlyUnsupported, role]);
 
   useEffect(() => {
     ensureMonthlyRow();
   }, [ensureMonthlyRow]);
 
+
+  // Recharge simple (utile pour rafraîchir quand l'admin valide/refuse)
+  const fetchMonthlyRow = useCallback(async () => {
+    if (!userId || monthlyUnsupported || role === "admin") return null;
+    try {
+      const { data, error } = await supabase
+        .from("monthly_hours_attestations")
+        .select("*")
+        .eq("seller_id", userId)
+        .eq("month_start", monthStartPrev)
+        .maybeSingle();
+      if (error) throw error;
+      if (data) {
+        setMonthlyRow(data || null);
+        if (data?.seller_status === "disputed") setCorrHours(String(data?.seller_correction_hours ?? ""));
+        if (data?.seller_comment) setCorrNote(String(data?.seller_comment || ""));
+      }
+      return data || null;
+    } catch (e) {
+      return null;
+    }
+  }, [userId, monthStartPrev, monthlyUnsupported, role]);
+
+  // Auto-refresh pendant l'attente de décision admin (évite Ctrl+F5)
+  useEffect(() => {
+    if (!userId || role === "admin" || monthlyUnsupported) return;
+    if (!monthlyRow) return;
+
+    const awaiting =
+      monthlyRow.admin_status === "pending" &&
+      (monthlyRow.seller_status === "accepted" || monthlyRow.seller_status === "disputed");
+
+    if (!awaiting) return;
+
+    const t = setInterval(() => {
+      fetchMonthlyRow().catch(() => {});
+    }, 15000);
+
+    return () => clearInterval(t);
+  }, [userId, role, monthlyUnsupported, monthlyRow, fetchMonthlyRow]);
+
+  // Soumission mensuelle (vendeuse) : on utilise la RPC si elle fonctionne,
+  // mais on a un fallback direct en UPDATE pour éviter le cas "admin_status=rejected"
+  // qui faisait un UPDATE 0 ligne sans erreur visible.
+  const directUpdateMonthlyRow = useCallback(
+    async ({ mode, corrected, comment }) => {
+      const nowIso = new Date().toISOString();
+
+      const patch = {
+        // Quand la vendeuse (re)valide ou corrige, on remet le dossier "à traiter" côté admin.
+        admin_status: "pending",
+        seller_confirmed_at: nowIso,
+      };
+
+      if (mode === "accept") {
+        patch.seller_status = "accepted";
+        patch.seller_correction_hours = null;
+        patch.seller_comment = null;
+      } else if (mode === "correct") {
+        patch.seller_status = "disputed";
+        patch.seller_correction_hours = corrected;
+        patch.seller_comment = comment || null;
+      } else {
+        throw new Error("Mode mensuel invalide");
+      }
+
+      // Si on a un id, c’est le plus précis. Sinon, on cible seller_id + month_start.
+      let q = supabase.from("monthly_hours_attestations").update(patch);
+
+      if (monthlyRow?.id != null) q = q.eq("id", monthlyRow.id);
+      else q = q.eq("seller_id", userId).eq("month_start", monthStartPrev);
+
+      const { data, error } = await q.select("*").maybeSingle();
+      if (error) throw error;
+
+      setMonthlyRow(data || null);
+      return data || null;
+    },
+    [userId, monthStartPrev, monthlyRow]
+  );
+
   const sellerAcceptMonthly = useCallback(async () => {
     if (!userId || monthlyUnsupported) return;
     setMonthlyErr("");
+    setMonthlyFlash("");
+
+    // 1) tente la RPC (si elle gère déjà tout)
     const { data, error } = await supabase.rpc("seller_monthly_hours_submit", {
       p_month_start: monthStartPrev,
       p_mode: "accept",
       p_corrected: null,
       p_comment: null,
     });
-    if (error) {
-      setMonthlyErr(error.message || "Échec de validation");
+
+    if (!error && data?.seller_status === "accepted") {
+      setMonthlyRow(data || null);
+      setMonthlyFlash("✅ Validation envoyée à l’admin.");
+      fetchMonthlyRow().catch(() => {});
+      setTimeout(() => setMonthlyFlash(""), 5000);
       return;
     }
-    setMonthlyRow(data || null);
-  }, [userId, monthStartPrev, monthlyUnsupported]);
+
+    // 2) fallback: UPDATE direct (utile si admin_status était 'rejected')
+    try {
+      await directUpdateMonthlyRow({ mode: "accept", corrected: null, comment: null });
+      setMonthlyFlash("✅ Validation envoyée à l’admin.");
+      fetchMonthlyRow().catch(() => {});
+      setTimeout(() => setMonthlyFlash(""), 5000);
+    } catch (e) {
+      setMonthlyErr(error?.message || e?.message || "Échec de validation");
+    }
+  }, [userId, monthStartPrev, monthlyUnsupported, directUpdateMonthlyRow, fetchMonthlyRow]);
 
   const sellerCorrectMonthly = useCallback(async () => {
     if (!userId || monthlyUnsupported) return;
     setMonthlyErr("");
+    setMonthlyFlash("");
+
     const val = Number(String(corrHours || "").replace(",", "."));
     if (!Number.isFinite(val) || val <= 0) {
       setMonthlyErr("Indique un total d'heures valide (ex: 151.5).");
       return;
     }
+
+    const comment = (corrNote || "").trim() || null;
+
+    // 1) tente la RPC
     const { data, error } = await supabase.rpc("seller_monthly_hours_submit", {
       p_month_start: monthStartPrev,
       p_mode: "correct",
       p_corrected: val,
-      p_comment: (corrNote || "").trim() || null,
+      p_comment: comment,
     });
-    if (error) {
-      setMonthlyErr(error.message || "Échec d'envoi de correction");
+
+    if (!error && data?.seller_status === "disputed") {
+      setMonthlyRow(data || null);
+      setMonthlyFlash("✅ Correction envoyée à l’admin.");
+      fetchMonthlyRow().catch(() => {});
+      setTimeout(() => setMonthlyFlash(""), 5000);
       return;
     }
-    setMonthlyRow(data || null);
-  }, [userId, monthStartPrev, corrHours, corrNote, monthlyUnsupported]);
+
+    // 2) fallback: UPDATE direct (utile si admin_status était 'rejected')
+    try {
+      await directUpdateMonthlyRow({ mode: "correct", corrected: val, comment });
+      setMonthlyFlash("✅ Correction envoyée à l’admin.");
+      fetchMonthlyRow().catch(() => {});
+      setTimeout(() => setMonthlyFlash(""), 5000);
+    } catch (e) {
+      setMonthlyErr(error?.message || e?.message || "Échec d'envoi de correction");
+    }
+  }, [userId, monthStartPrev, corrHours, corrNote, monthlyUnsupported, directUpdateMonthlyRow, fetchMonthlyRow]);
 
   const absentToday = useMemo(() => {
     const entry = (myMonthUpcomingAbs || []).find((a) => a.date === todayIso);
@@ -834,21 +950,40 @@ export default function AppSeller() {
         </div>
       </div>
 
-      {!monthlyUnsupported && (monthlyLoading || monthlyRow) && (
+     {role !== "admin" && !monthlyUnsupported && (monthlyLoading || monthlyRow) && (
+
         <div className="card">
           <div className="hdr mb-2">Validation des heures - {capFirst(monthLabel)}</div>
 
           {monthlyFlash && (
-            <div className="text-sm mb-2 border rounded-xl p-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
+            <div
+              className="text-sm mb-2 border rounded-xl p-2"
+              style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}
+            >
               {monthlyFlash}
             </div>
           )}
 
           {monthlyErr && (
-            <div className="text-sm mb-2 border rounded-xl p-2" style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}>
+            <div
+              className="text-sm mb-2 border rounded-xl p-2"
+              style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}
+            >
               {monthlyErr}
             </div>
           )}
+
+          {monthlyRow?.admin_status === "pending" &&
+          monthlyRow?.seller_status === "pending" &&
+          monthlyRow?.admin_comment ? (
+            <div
+              className="text-sm mb-2 border rounded-xl p-2"
+              style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}
+            >
+              <b>Message admin :</b> {monthlyRow.admin_comment}
+            </div>
+          ) : null}
+
 
           {monthlyLoading && <div className="text-sm text-gray-600">Chargement...</div>}
 
@@ -859,10 +994,83 @@ export default function AppSeller() {
                 <span className="font-semibold">{Number(monthlyRow.computed_hours || 0).toFixed(2)} h</span>
               </div>
 
+              {(() => {
+                const computed = Number(monthlyRow?.computed_hours || 0);
+                const corrected =
+                  monthlyRow?.seller_correction_hours != null
+                    ? Number(monthlyRow.seller_correction_hours)
+                    : null;
+                const final =
+                  monthlyRow?.final_hours != null
+                    ? Number(monthlyRow.final_hours)
+                    : computed;
+
+                // ✅ Décision admin = approuvé
+                if (monthlyRow?.admin_status === "approved") {
+                  const what = monthlyRow?.seller_status === "disputed" ? "correction" : "validation";
+                  return (
+                    <div
+                      className="text-sm mt-3 border rounded-xl p-2"
+                      style={{ backgroundColor: "#dcfce7", borderColor: "#86efac" }}
+                    >
+                      ✅ Votre {what} a été validée. Total heures = <b>{final.toFixed(2)} h</b>.
+                    </div>
+                  );
+                }
+
+                // ⏳ Correction envoyée (vendeuse), en attente admin
+                if (monthlyRow?.seller_status === "disputed") {
+                  return (
+                    <div
+                      className="text-sm mt-3 border rounded-xl p-2"
+                      style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}
+                    >
+                      ✅ Votre correction{" "}
+                      {corrected != null ? (
+                        <>
+                          (<b>{corrected.toFixed(2)} h</b>)
+                        </>
+                      ) : null}{" "}
+                      est envoyée et elle est en attente de confirmation par l’administrateur.
+                    </div>
+                  );
+                }
+
+                // ⏳ Validation envoyée (vendeuse), en attente admin
+                if (monthlyRow?.seller_status === "accepted") {
+                  return (
+                    <div
+                      className="text-sm mt-3 border rounded-xl p-2"
+                      style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}
+                    >
+                      ✅ Votre validation est envoyée et elle est en attente de confirmation par l’administrateur.
+                    </div>
+                  );
+                }
+
+                // ⚠️ Cas "rejected" (ancien état) : on affiche un message
+                if (monthlyRow?.admin_status === "rejected") {
+                  return (
+                    <div
+                      className="text-sm mt-3 border rounded-xl p-2"
+                      style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}
+                    >
+                      ⚠️ L’administrateur a refusé. Merci de corriger à nouveau.
+                    </div>
+                  );
+                }
+
+                return null;
+              })()}
+
               {monthlyRow.seller_status === "pending" && (
                 <div className="mt-3 space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                    <button className="btn" onClick={sellerAcceptMonthly} style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}>
+                    <button
+                      className="btn"
+                      onClick={sellerAcceptMonthly}
+                      style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}
+                    >
                       Valider
                     </button>
                     <div className="text-xs text-gray-500">
@@ -871,9 +1079,24 @@ export default function AppSeller() {
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <input className="input" value={corrHours} onChange={(e) => setCorrHours(e.target.value)} placeholder="Heures corrigées (ex: 151.5)" inputMode="decimal" />
-                    <input className="input" value={corrNote} onChange={(e) => setCorrNote(e.target.value)} placeholder="Commentaire (optionnel)" />
-                    <button className="btn" onClick={sellerCorrectMonthly} style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}>
+                    <input
+                      className="input"
+                      value={corrHours}
+                      onChange={(e) => setCorrHours(e.target.value)}
+                      placeholder="Heures corrigées (ex: 151.5)"
+                      inputMode="decimal"
+                    />
+                    <input
+                      className="input"
+                      value={corrNote}
+                      onChange={(e) => setCorrNote(e.target.value)}
+                      placeholder="Commentaire (optionnel)"
+                    />
+                    <button
+                      className="btn"
+                      onClick={sellerCorrectMonthly}
+                      style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
+                    >
                       Envoyer correction
                     </button>
                   </div>
@@ -902,13 +1125,21 @@ export default function AppSeller() {
               const border = assigned ? "transparent" : "#e5e7eb";
 
               return (
-                <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
+                <div
+                  key={code}
+                  className="rounded-2xl p-3"
+                  style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}
+                >
                   <div className="text-sm">{SHIFT_LABELS[code] || code}</div>
                   <div className="mt-1 text-sm">{shownName}</div>
 
                   {isPlanner && editPlanning && (
                     <div className="mt-3">
-                      <select className="input" value={assigned || ""} onChange={(e) => saveShift(todayIso, code, e.target.value || null)}>
+                      <select
+                        className="input"
+                        value={assigned || ""}
+                        onChange={(e) => saveShift(todayIso, code, e.target.value || null)}
+                      >
                         <option value="">— (aucune)</option>
                         {sellerOptions.map((s) => (
                           <option key={s.user_id} value={s.user_id}>
@@ -926,10 +1157,18 @@ export default function AppSeller() {
       </div>
 
       {absentToday && (
-        <div className="border rounded-2xl p-3 flex flex-col gap-2" style={{ backgroundColor: absentToday.status === "approved" ? "#fee2e2" : "#fff7ed", borderColor: "#fca5a5" }}>
+        <div
+          className="border rounded-2xl p-3 flex flex-col gap-2"
+          style={{
+            backgroundColor: absentToday.status === "approved" ? "#fee2e2" : "#fff7ed",
+            borderColor: "#fca5a5",
+          }}
+        >
           <div className="font-medium">Absente aujourd’hui - {frDate(absentToday.date)}</div>
           <div className="text-sm">
-            {absentToday.status === "approved" ? "Absence approuvée par l’administrateur." : "Demande d’absence en attente d’approbation."}
+            {absentToday.status === "approved"
+              ? "Absence approuvée par l’administrateur."
+              : "Demande d’absence en attente d’approbation."}
             {absentToday.accepted ? (
               <>
                 {" "}
@@ -937,7 +1176,11 @@ export default function AppSeller() {
                 {absentToday.acceptedShift ? (
                   <>
                     {" "}
-                    (<span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>{labelForShift(absentToday.acceptedShift)}</span>)
+                    (
+                    <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>
+                      {labelForShift(absentToday.acceptedShift)}
+                    </span>
+                    )
                   </>
                 ) : null}
               </>
@@ -950,7 +1193,12 @@ export default function AppSeller() {
 
       <div className="card">
         <div className="hdr mb-4">Planning de la semaine</div>
-        <WeekNav monday={monday} onPrev={() => setMonday(addDays(monday, -7))} onToday={() => setMonday(startOfWeek(new Date()))} onNext={() => setMonday(addDays(monday, 7))} />
+        <WeekNav
+          monday={monday}
+          onPrev={() => setMonday(addDays(monday, -7))}
+          onToday={() => setMonday(startOfWeek(new Date()))}
+          onNext={() => setMonday(addDays(monday, 7))}
+        />
 
         <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
           {days.map((d) => {
@@ -959,7 +1207,11 @@ export default function AppSeller() {
             const isToday = iso === todayIso;
 
             return (
-              <div key={iso} className="border rounded-2xl p-3 space-y-3" style={{ borderWidth: isToday ? 2 : 1, borderColor: isToday ? "#2563eb" : "#e5e7eb" }}>
+              <div
+                key={iso}
+                className="border rounded-2xl p-3 space-y-3"
+                style={{ borderWidth: isToday ? 2 : 1, borderColor: isToday ? "#2563eb" : "#e5e7eb" }}
+              >
                 <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
                 <div className="font-semibold">{iso}</div>
 
@@ -977,13 +1229,21 @@ export default function AppSeller() {
                   const border = assigned ? "transparent" : "#e5e7eb";
 
                   return (
-                    <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
+                    <div
+                      key={code}
+                      className="rounded-2xl p-3"
+                      style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}
+                    >
                       <div className="text-sm font-medium">{SHIFT_LABELS[code] || code}</div>
                       <div className="mt-1 text-sm">{shownName}</div>
 
                       {isPlanner && editPlanning && (
                         <div className="mt-3">
-                          <select className="input" value={assigned} onChange={(e) => saveShift(iso, code, e.target.value || null)}>
+                          <select
+                            className="input"
+                            value={assigned}
+                            onChange={(e) => saveShift(iso, code, e.target.value || null)}
+                          >
                             <option value="">— (aucune)</option>
                             {sellerOptions.map((s) => (
                               <option key={s.user_id} value={s.user_id}>
@@ -1030,7 +1290,9 @@ export default function AppSeller() {
       <div className="card">
         <div className="hdr mb-2">Vos absences ce mois</div>
         {myMonthAbs.length === 0 ? (
-          <div className="text-sm text-gray-600">Vous n'avez aucune absence approuvée passée (ou aujourd'hui) ce mois-ci.</div>
+          <div className="text-sm text-gray-600">
+            Vous n'avez aucune absence approuvée passée (ou aujourd'hui) ce mois-ci.
+          </div>
         ) : (
           <div className="text-sm">
             {(() => {
