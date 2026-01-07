@@ -41,14 +41,11 @@ function safeNum(x) {
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
 }
-
-/* ---------- debug helper ---------- */
 async function execQuery(q) {
   const res = await q;
   return res;
 }
 
-/* ---------- main ---------- */
 export default function AdminMonthlyHours() {
   const r = useRouter();
 
@@ -128,9 +125,13 @@ export default function AdminMonthlyHours() {
       if (error) throw error;
       setSellers(Array.isArray(data) ? data : []);
     } catch (_) {
-      // fallback silencieux (non bloquant)
       setSellers([]);
     }
+  }, []);
+
+  const isActionableForAdmin = useCallback((row) => {
+    const s = row?.seller_status ?? null;
+    return s === "accepted" || s === "disputed";
   }, []);
 
   const loadRows = useCallback(async () => {
@@ -154,7 +155,11 @@ export default function AdminMonthlyHours() {
           if (res?.error) throw res.error;
 
           setTableUsed(t);
-          setRows(res?.data || []);
+
+          let data = res?.data || [];
+          if (onlyPending) data = data.filter(isActionableForAdmin);
+
+          setRows(data);
           found = true;
           lastError = null;
           break;
@@ -163,9 +168,7 @@ export default function AdminMonthlyHours() {
         }
       }
 
-      if (!found) {
-        throw lastError || new Error("Aucune table trouvée");
-      }
+      if (!found) throw lastError || new Error("Aucune table trouvée");
 
       setPhase(`ok (${tableUsed || "?"})`);
     } catch (e) {
@@ -174,7 +177,7 @@ export default function AdminMonthlyHours() {
     } finally {
       setLoading(false);
     }
-  }, [session, isAdmin, monthStart, onlyPending, tableUsed]);
+  }, [session, isAdmin, monthStart, onlyPending, tableUsed, isActionableForAdmin]);
 
   useEffect(() => {
     if (!session || !isAdmin) return;
@@ -186,37 +189,20 @@ export default function AdminMonthlyHours() {
     loadRows();
   }, [session, isAdmin, loadRows]);
 
-  const adminDecide = useCallback(
-    async (row, decision) => {
+  const adminApprove = useCallback(
+    async (row) => {
       if (!tableUsed) return;
       try {
-        setPhase(`update ${decision}…`);
+        setPhase("update approved…");
         const computed = Number(row?.computed_hours ?? 0);
         const corrected = row?.seller_correction_hours != null ? Number(row.seller_correction_hours) : null;
         const final = row?.seller_status === "disputed" && corrected != null ? corrected : computed;
 
         const nowIso = new Date().toISOString();
-
-        // IMPORTANT: on n’envoie que les colonnes qui existent dans la ligne (compat tables candidates)
         const payload = {};
-        if ("admin_status" in row) payload.admin_status = decision;
+        if ("admin_status" in row) payload.admin_status = "approved";
         if ("final_hours" in row) payload.final_hours = final;
         if ("admin_decision_at" in row) payload.admin_decision_at = nowIso;
-
-        // Si l'admin clique "Refuser", on interprète cela comme "Demander une correction".
-        // Objectif: la vendeuse doit pouvoir revalider/corriger (sans SQL manuel).
-        if (decision === "rejected") {
-          // On garde le dossier "à traiter" côté admin (pending) mais on renvoie la balle à la vendeuse.
-          if ("admin_status" in row) payload.admin_status = "pending";
-          if ("admin_comment" in row) payload.admin_comment = "Refusé: merci de corriger puis renvoyer.";
-          if ("seller_status" in row) payload.seller_status = "pending";
-          if ("seller_confirmed_at" in row) payload.seller_confirmed_at = null;
-          if ("seller_correction_hours" in row) payload.seller_correction_hours = null;
-          if ("seller_comment" in row) payload.seller_comment = null;
-
-          // Par défaut on repart sur le calcul planning
-          if ("final_hours" in row) payload.final_hours = computed;
-        }
 
         const res = await withTimeout(
           execQuery(supabase.from(tableUsed).update(payload).eq("id", row.id)),
@@ -232,6 +218,27 @@ export default function AdminMonthlyHours() {
       }
     },
     [tableUsed, loadRows]
+  );
+
+  const adminRequestCorrection = useCallback(
+    async (row) => {
+      try {
+        setPhase("request correction…");
+
+        const { error: rpcErr } = await supabase.rpc("admin_request_monthly_correction", {
+          p_row_id: row.id,
+          p_comment: "Refusé: merci de corriger puis renvoyer.",
+        });
+
+        if (rpcErr) throw rpcErr;
+
+        await loadRows();
+      } catch (e) {
+        alert(fmtErr(e));
+        setPhase("error");
+      }
+    },
+    [loadRows]
   );
 
   // UI
@@ -294,7 +301,7 @@ export default function AdminMonthlyHours() {
         {rows?.length === 0 ? (
           <div className="card">
             <div className="text-sm text-gray-600">
-              Aucune ligne pour <b>{monthLabel}</b>.
+              Aucune ligne {onlyPending ? "(à traiter)" : ""} pour <b>{monthLabel}</b>.
             </div>
           </div>
         ) : null}
@@ -311,6 +318,9 @@ export default function AdminMonthlyHours() {
 
               const computed = safeNum(row?.computed_hours);
               const corrected = safeNum(row?.seller_correction_hours);
+              const final = safeNum(row?.final_hours);
+
+              const actionable = isActionableForAdmin(row);
 
               return (
                 <div key={row.id} className="card">
@@ -318,27 +328,26 @@ export default function AdminMonthlyHours() {
                     <div>
                       <div className="font-medium">{sellerName}</div>
                       <div className="text-xs text-gray-600">
-                        seller_status: <b>{row.seller_status ?? "—"}</b> • admin_status: <b>{row.admin_status ?? "—"}</b>
+                        seller_status: <b>{row.seller_status ?? "—"}</b> • admin_status:{" "}
+                        <b>{row.admin_status ?? "—"}</b>
                       </div>
                     </div>
 
-                    {row?.admin_status === "pending" &&
-                    row?.id &&
-                    (row?.seller_status == null || row?.seller_status !== "pending") ? (
+                    {row?.admin_status === "pending" && row?.id && actionable ? (
                       <div className="flex gap-2">
                         <button
                           className="btn"
-                          onClick={() => adminDecide(row, "approved")}
+                          onClick={() => adminApprove(row)}
                           style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}
                         >
                           Approuver
                         </button>
                         <button
                           className="btn"
-                          onClick={() => adminDecide(row, "rejected")}
+                          onClick={() => adminRequestCorrection(row)}
                           style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
                         >
-                          Refuser
+                          Refuser (demander correction)
                         </button>
                       </div>
                     ) : null}
@@ -352,14 +361,15 @@ export default function AdminMonthlyHours() {
                         • Correction: <b>{corrected.toFixed(2)} h</b>
                       </>
                     ) : null}
-                    {row?.final_hours != null ? (
+                    {final != null ? (
                       <>
                         {" "}
-                        • Retenu: <b>{Number(row.final_hours).toFixed(2)} h</b>
+                        • Retenu: <b>{final.toFixed(2)} h</b>
                       </>
                     ) : null}
                   </div>
 
+                  {row?.admin_comment ? <div className="text-xs text-gray-600">📌 {row.admin_comment}</div> : null}
                   {row?.seller_comment ? <div className="text-xs text-gray-600">📝 {row.seller_comment}</div> : null}
 
                   {debug ? (

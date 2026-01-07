@@ -1,22 +1,28 @@
 // pages/login.js
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
+import { isAdminEmail } from "../lib/admin";
 
 function safeStr(x) {
   return (x ?? "").toString();
 }
 
+// sécurité: on n'autorise que des chemins relatifs
+function sanitizeNextPath(n) {
+  const s = safeStr(n);
+  if (s && s.startsWith("/")) return s;
+  return "/app";
+}
+
 export default function LoginPage() {
   const router = useRouter();
+  const didRedirectRef = useRef(false);
 
   const nextPath = useMemo(() => {
-    const q = router.query || {};
-    const n = safeStr(q.next);
-    // sécurité: on n'autorise que des chemins relatifs
-    if (n && n.startsWith("/")) return n;
-    return "/app";
-  }, [router.query]);
+    if (!router.isReady) return "/app";
+    return sanitizeNextPath(router.query?.next);
+  }, [router.isReady, router.query?.next]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -27,22 +33,63 @@ export default function LoginPage() {
   const [info, setInfo] = useState("");
   const [sessionInfo, setSessionInfo] = useState("checking"); // checking | none | yes
 
-  // Debug: check session au chargement (sans useAuth)
+  const redirectOnce = useCallback(
+    async (session) => {
+      if (didRedirectRef.current) return;
+      if (!router.isReady) return;
+
+      let dest = nextPath || "/app";
+
+      // ✅ Détection admin par email (évite le détour /app -> /admin qui provoque l'abort)
+      const em = session?.user?.email || "";
+      if (isAdminEmail(em)) {
+        if (!dest.startsWith("/admin")) dest = "/admin";
+        didRedirectRef.current = true;
+        router.replace(dest);
+        return;
+      }
+
+      // (optionnel) Tentative role via profiles si tu veux garder le système
+      // Mais si RLS bloque, on garde dest tel quel et on évite les erreurs.
+      try {
+        const uid = session?.user?.id;
+        if (uid) {
+          const { data: prof, error: pErr } = await supabase
+            .from("profiles")
+            .select("role")
+            .eq("user_id", uid)
+            .maybeSingle();
+
+          if (!pErr && prof?.role === "admin") {
+            if (!dest.startsWith("/admin")) dest = "/admin";
+          }
+        }
+      } catch (_) {}
+
+      didRedirectRef.current = true;
+      router.replace(dest);
+    },
+    [router, nextPath]
+  );
+
   useEffect(() => {
     let alive = true;
+    if (!router.isReady) return;
+
     (async () => {
       try {
         const { data, error } = await supabase.auth.getSession();
         if (!alive) return;
+
         if (error) {
           setSessionInfo("none");
           setErr(error.message || "getSession error");
           return;
         }
+
         if (data?.session) {
           setSessionInfo("yes");
-          // si déjà connecté, on redirige
-          router.replace(nextPath);
+          await redirectOnce(data.session);
         } else {
           setSessionInfo("none");
         }
@@ -53,11 +100,11 @@ export default function LoginPage() {
       }
     })();
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_evt, s) => {
       if (!alive) return;
       if (s) {
         setSessionInfo("yes");
-        router.replace(nextPath);
+        await redirectOnce(s);
       } else {
         setSessionInfo("none");
       }
@@ -69,19 +116,17 @@ export default function LoginPage() {
         sub?.subscription?.unsubscribe?.();
       } catch (_) {}
     };
-  }, [router, nextPath]);
+  }, [router.isReady, redirectOnce]);
 
   async function hardLocalReset() {
     setErr("");
     setInfo("");
     setBusy(true);
     try {
-      // 1) signOut
       try {
         await supabase.auth.signOut();
       } catch (_) {}
 
-      // 2) clear storages (tokens supabase)
       try {
         const keys = Object.keys(localStorage || {});
         keys
@@ -94,7 +139,6 @@ export default function LoginPage() {
         keys.forEach((k) => sessionStorage.removeItem(k));
       } catch (_) {}
 
-      // 3) clear caches + unregister SW
       if ("serviceWorker" in navigator) {
         try {
           const regs = await navigator.serviceWorker.getRegistrations();
@@ -123,18 +167,12 @@ export default function LoginPage() {
     const em = email.trim();
     const pw = password;
 
-    if (!em) {
-      setErr("Email requis.");
-      return;
-    }
-    if (!pw) {
-      setErr("Mot de passe requis.");
-      return;
-    }
+    if (!em) return setErr("Email requis.");
+    if (!pw) return setErr("Mot de passe requis.");
 
     setBusy(true);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { error } = await supabase.auth.signInWithPassword({
         email: em,
         password: pw,
       });
@@ -144,20 +182,8 @@ export default function LoginPage() {
         return;
       }
 
-      // double-check session
-      const { data: s2, error: e2 } = await supabase.auth.getSession();
-      if (e2) {
-        setErr(e2.message || "Session non récupérée");
-        return;
-      }
-
-      if (!s2?.session) {
-        setErr("Connexion OK mais session absente. (storage/cookies bloqués ?)");
-        return;
-      }
-
+      // on laisse onAuthStateChange faire la redirection (avec verrou)
       setInfo("Connecté ✅ Redirection…");
-      router.replace(nextPath);
     } catch (e3) {
       setErr(e3?.message || String(e3));
     } finally {

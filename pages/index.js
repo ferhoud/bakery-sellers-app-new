@@ -1,27 +1,45 @@
-﻿import { useEffect } from "react";
+﻿// pages/index.js
+import { useEffect } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 
 export default function Home() {
-  const r = useRouter();
+  const router = useRouter();
+
   useEffect(() => {
+    let alive = true;
+
+    const go = (path) => {
+      // éviter une nav vers la même URL
+      if (router.asPath !== path) {
+        router.replace(path).catch(() => {}); // ⟵ on avale l'abort
+      }
+    };
+
     (async () => {
       const { data } = await supabase.auth.getSession();
       const user = data?.session?.user;
-      if (!user) { r.replace("/login"); return; }
+
+      if (!user) { go("/login"); return; }
+
       try {
         const { data: prof } = await supabase
           .from("profiles")
           .select("role")
           .eq("user_id", user.id)
           .single();
-        if (prof?.role === "admin") r.replace("/admin");
-        else r.replace("/app");
+
+        if (!alive) return;
+
+        if (prof?.role === "admin") go("/admin");
+        else go("/app");
       } catch {
-        r.replace("/app");
+        go("/app");
       }
     })();
-  }, [r]);
-  return <div style={{padding:20,fontFamily:"system-ui"}}>Redirection…</div>;
-}
 
+    return () => { alive = false; };
+  }, [router]);
+
+  return <div style={{ padding: 20, fontFamily: "system-ui" }}>Redirection…</div>;
+}
