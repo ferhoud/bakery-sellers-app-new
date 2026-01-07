@@ -266,9 +266,7 @@ export default function AdminPage() {
     }
     // Tri stable par nom pour éviter le "shuffle" visuel
     if (rows && rows.length) {
-      rows.sort((a, b) =>
-        (a.full_name || "").localeCompare(b.full_name || "", "fr", { sensitivity: "base" })
-      );
+      rows.sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "fr", { sensitivity: "base" }));
     }
     setSellers(rows || []);
   }, []);
@@ -285,14 +283,14 @@ export default function AdminPage() {
   );
 
   /* ======= VALIDATION HEURES MENSUELLES (badge + accès rapide) ======= */
-  const [mhPendingCount, setMhPendingCount] = useState(null); // admin_status=pending (toutes réponses, mois sélectionné)
+  const [mhPendingCount, setMhPendingCount] = useState(null); // admin_status=pending (mois sélectionné)
   const [mhToReviewCount, setMhToReviewCount] = useState(null); // seller_status=accepted/disputed + admin_status=pending (mois sélectionné)
   const [mhToReviewTotal, setMhToReviewTotal] = useState(null); // ✅ total à traiter (tous mois)
   const [mhLatestRows, setMhLatestRows] = useState([]);
 
   const loadMonthlyHoursStats = useCallback(async () => {
     try {
-      // 1) Total "admin à traiter" (quelle que soit la réponse vendeuse) — mois sélectionné
+      // 1) Total "admin à traiter" (mois sélectionné) quelle que soit la réponse vendeuse
       const { count, error } = await supabase
         .from("monthly_hours_attestations")
         .select("id", { count: "exact", head: true })
@@ -301,7 +299,7 @@ export default function AdminPage() {
       if (error) throw error;
       setMhPendingCount(count ?? 0);
 
-      // 2) "À traiter" au sens strict — mois sélectionné
+      // 2) "À traiter" au sens strict (mois sélectionné): la vendeuse a répondu (validé ou corrigé)
       const { count: c2, error: e2 } = await supabase
         .from("monthly_hours_attestations")
         .select("id", { count: "exact", head: true })
@@ -311,7 +309,7 @@ export default function AdminPage() {
       if (e2) throw e2;
       setMhToReviewCount(c2 ?? 0);
 
-      // 2bis) ✅ Total global "à traiter" (tous mois)
+      // ✅ 2bis) Total global "à traiter" (tous mois) pour badge bouton
       const { count: cAll, error: eAll } = await supabase
         .from("monthly_hours_attestations")
         .select("id", { count: "exact", head: true })
@@ -320,7 +318,7 @@ export default function AdminPage() {
       if (eAll) throw eAll;
       setMhToReviewTotal(cAll ?? 0);
 
-      // 3) Petit aperçu (5 dernières) — mois sélectionné
+      // 3) Petit aperçu (5 dernières du mois sélectionné)
       const { data, error: e3 } = await supabase
         .from("monthly_hours_attestations")
         .select("id, seller_id, seller_status, computed_hours, seller_correction_hours, updated_at")
@@ -389,7 +387,7 @@ export default function AdminPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [monday]);
 
-  /* ✅ Inline ABSENCES (admin) pour chaque jour de la semaine — DÉPLACÉ AVANT setSellerAbsent (TDZ) */
+  /* ✅ Inline ABSENCES (admin) pour chaque jour de la semaine */
   const loadWeekAbsences = useCallback(async () => {
     const from = fmtISODate(days[0]);
     const to = fmtISODate(days[6]);
@@ -742,19 +740,19 @@ export default function AdminPage() {
       .channel("replacement_rt_admin")
       .on("postgres_changes", { event: "*", schema: "public", table: "replacement_interest" }, async (payload) => {
         if (payload.eventType === "INSERT") {
-          const r0 = payload.new;
-          const { data: abs } = await supabase.from("absences").select("date, seller_id, status").eq("id", r0.absence_id).single();
+          const rr = payload.new;
+          const { data: abs } = await supabase.from("absences").select("date, seller_id, status").eq("id", rr.absence_id).single();
           // ✅ Ne pas notifier si l'absence n'est pas APPROUVÉE
           if (!abs || abs.status !== "approved") {
             return;
           }
           setLatestRepl({
-            id: r0.id,
-            volunteer_id: r0.volunteer_id,
-            absence_id: r0.absence_id,
+            id: rr.id,
+            volunteer_id: rr.volunteer_id,
+            absence_id: rr.absence_id,
             date: abs?.date,
             absent_id: abs?.seller_id,
-            status: r0.status,
+            status: rr.status,
           });
         }
         loadReplacements();
@@ -967,12 +965,14 @@ export default function AdminPage() {
 
   /* 🔔 BADGE + REFRESH AUTO (badge seulement) */
   useEffect(() => {
-    const count = (pendingAbs?.length || 0) + (pendingLeaves?.length || 0) + (replList?.length || 0);
+    const mhApp = mhToReviewTotal ?? mhToReviewCount ?? 0;
+    const count = (pendingAbs?.length || 0) + (pendingLeaves?.length || 0) + (replList?.length || 0) + (mhApp || 0);
+
     const nav = typeof navigator !== "undefined" ? navigator : null;
     if (!nav) return;
     if (count > 0 && nav.setAppBadge) nav.setAppBadge(count).catch(() => {});
     else if (nav?.clearAppBadge) nav.clearAppBadge().catch(() => {});
-  }, [pendingAbs?.length, pendingLeaves?.length, replList?.length]);
+  }, [pendingAbs?.length, pendingLeaves?.length, replList?.length, mhToReviewTotal, mhToReviewCount]);
 
   /* ---- RELOAD ALL (central) ---- */
   const reloadAll = useCallback(async () => {
@@ -1044,7 +1044,7 @@ export default function AdminPage() {
     return () => navigator.serviceWorker.removeEventListener("message", handler);
   }, [reloadAll]);
 
-  // ——— Recalc & refresh when "days" or data loaders change (pass from/to)
+  // Recalc & refresh when "days" or data loaders change (pass from/to)
   useEffect(() => {
     let isMounted = true;
     const run = async () => {
@@ -1060,12 +1060,10 @@ export default function AdminPage() {
   /* ---------- RENDER ---------- */
 
   const mhAwaitingSellerCount =
-    mhPendingCount == null || mhToReviewCount == null
-      ? null
-      : Math.max(0, (mhPendingCount || 0) - (mhToReviewCount || 0));
+    mhPendingCount == null || mhToReviewCount == null ? null : Math.max(0, (mhPendingCount || 0) - (mhToReviewCount || 0));
 
-  // ✅ Badge sur le bouton: total global à traiter (tous mois)
-  const mhBadgeCount = mhToReviewTotal == null ? 0 : mhToReviewTotal;
+  // ✅ Badge bouton: total global à traiter si dispo, sinon mois sélectionné
+  const mhBadgeCount = mhToReviewTotal ?? mhToReviewCount;
 
   return (
     <>
@@ -1092,20 +1090,12 @@ export default function AdminPage() {
 
             {/* ✅ Bouton UNIQUE en haut + badge rouge type notification */}
             <Link href="/admin/monthly-hours" legacyBehavior>
-              <a
-                className="btn"
-                title={
-                  mhBadgeCount > 0
-                    ? `${mhBadgeCount} à valider/refuser (tous mois)`
-                    : "Validation des heures mensuelles"
-                }
-                style={{ position: "relative", overflow: "visible" }}
-              >
+              <a className="btn" title="Validation des heures mensuelles" style={{ position: "relative", overflow: "visible" }}>
                 🧾 Heures mensuelles
 
-                {mhBadgeCount > 0 ? (
+                {mhBadgeCount != null && mhBadgeCount > 0 ? (
                   <span
-                    title={`${mhBadgeCount} à valider/refuser (tous mois)`}
+                    title={`${mhBadgeCount} à valider/refuser`}
                     style={{
                       position: "absolute",
                       top: -6,
@@ -1124,6 +1114,7 @@ export default function AdminPage() {
                       lineHeight: "20px",
                       border: "2px solid #fff",
                       boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+                      zIndex: 20,
                     }}
                   >
                     {mhBadgeCount > 99 ? "99+" : mhBadgeCount}
@@ -1149,14 +1140,13 @@ export default function AdminPage() {
               <div className="text-sm text-gray-600">
                 Mois : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>{" "}
                 · À traiter : <span className="font-medium">{mhToReviewCount == null ? "…" : mhToReviewCount}</span>
-                · En attente vendeuses :{" "}
-                <span className="font-medium">{mhAwaitingSellerCount == null ? "…" : mhAwaitingSellerCount}</span>
+                · En attente vendeuses : <span className="font-medium">{mhAwaitingSellerCount == null ? "…" : mhAwaitingSellerCount}</span>
               </div>
               <div className="text-xs text-gray-500 mt-1">
                 “À traiter” = la vendeuse a validé ou corrigé. “En attente vendeuses” = pas encore de réponse.
               </div>
               <div className="text-xs text-gray-500 mt-1">
-                Total à traiter (tous mois) :{" "}
+                Badge bouton (global) :{" "}
                 <span className="font-medium">{mhToReviewTotal == null ? "…" : mhToReviewTotal}</span>
               </div>
             </div>
@@ -1176,9 +1166,7 @@ export default function AdminPage() {
                       <div className="font-medium">{name}</div>
                       <div className="text-gray-600">
                         {tag} · calculé: {Number(row.computed_hours || 0).toFixed(2)} h
-                        {st === "disputed" ? (
-                          <> · proposé: {Number(row.seller_correction_hours || 0).toFixed(2)} h</>
-                        ) : null}
+                        {st === "disputed" ? <> · proposé: {Number(row.seller_correction_hours || 0).toFixed(2)} h</> : null}
                       </div>
                     </div>
                     <div className="text-xs text-gray-500">
@@ -1194,10 +1182,7 @@ export default function AdminPage() {
         </div>
 
         {latestCancel && (
-          <div
-            className="border rounded-2xl p-3 flex items-start justify-between gap-2"
-            style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}
-          >
+          <div className="border rounded-2xl p-3 flex items-start justify-between gap-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
             <div className="text-sm">
               <span className="font-medium">{nameFromId(latestCancel.seller_id) || "-"}</span> a annulé son absence du{" "}
               <span className="font-medium">{latestCancel.date}</span>.
@@ -1212,8 +1197,7 @@ export default function AdminPage() {
           >
             <div className="text-sm">
               <span className="font-medium">{nameFromId(latestLeave.seller_id) || "-"}</span> demande un congé du{" "}
-              <span className="font-medium">{latestLeave.start_date}</span> au{" "}
-              <span className="font-medium">{latestLeave.end_date}</span>
+              <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
               {latestLeave.reason ? (
                 <>
                   <span> - </span>
@@ -1236,8 +1220,7 @@ export default function AdminPage() {
           >
             <div className="text-sm">
               <span className="font-medium">{nameFromId(latestRepl.volunteer_id) || "-"}</span> veut remplacer{" "}
-              <Chip name={nameFromId(latestRepl.absent_id) || "-"} /> le{" "}
-              <span className="font-medium">{latestRepl.date}</span>.
+              <Chip name={nameFromId(latestRepl.absent_id) || "-"} /> le <span className="font-medium">{latestRepl.date}</span>.
             </div>
             <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
               <ShiftSelect
@@ -1290,10 +1273,7 @@ export default function AdminPage() {
               {pendingAbs.map((a) => {
                 const name = nameFromId(a.seller_id);
                 return (
-                  <div
-                    key={a.id}
-                    className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2"
-                  >
+                  <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                     <div>
                       <div className="font-medium">{name}</div>
                       <div className="text-sm text-gray-600">
@@ -1328,10 +1308,7 @@ export default function AdminPage() {
               {pendingLeaves.map((l) => {
                 const name = nameFromId(l.seller_id);
                 return (
-                  <div
-                    key={l.id}
-                    className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2"
-                  >
+                  <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                     <div>
                       <div className="font-medium">{name}</div>
                       <div className="text-sm text-gray-600">
@@ -1369,10 +1346,7 @@ export default function AdminPage() {
                 const tag = isOngoing ? "En cours" : "À venir";
                 const tagBg = isOngoing ? "#16a34a" : "#2563eb";
                 return (
-                  <div
-                    key={l.id}
-                    className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2"
-                  >
+                  <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
                     <div>
                       <div className="font-medium">{name}</div>
                       <div className="text-sm text-gray-600">
@@ -1739,11 +1713,7 @@ function TodayColorBlocks({ today, todayIso, assign, nameFromId }) {
           const fg = assigned ? "#fff" : "#6b7280";
           const border = assigned ? "transparent" : "#e5e7eb";
           return (
-            <div
-              key={code}
-              className="rounded-2xl p-3"
-              style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}
-            >
+            <div key={code} className="rounded-2xl p-3" style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}>
               <div className="font-medium">{label}</div>
               <div className="text-sm mt-1">{assigned ? name : "-"}</div>
             </div>
@@ -1812,11 +1782,7 @@ function TotalsGrid({ sellers, monthFrom, monthTo, monthLabel, refreshKey, month
 
     // 2) Fallback direct sur shifts
     try {
-      const { data: rows, error } = await supabase
-        .from("shifts")
-        .select("seller_id, date, shift_code")
-        .gte("date", fromIso)
-        .lte("date", toIso);
+      const { data: rows, error } = await supabase.from("shifts").select("seller_id, date, shift_code").gte("date", fromIso).lte("date", toIso);
       if (error) throw error;
       return aggregateFromRows(rows, sellersList);
     } catch (e) {
