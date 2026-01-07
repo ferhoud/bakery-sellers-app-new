@@ -1074,39 +1074,42 @@ export default function AdminPage() {
 
             {/* ✅ Bouton UNIQUE en haut + badge rouge type notification */}
             <Link href="/admin/monthly-hours" legacyBehavior>
-              <a
-                className="btn"
-                title="Validation des heures mensuelles"
-                style={{ position: "relative" }}
-              >
-                🧾 Heures mensuelles
-                {mhToReviewCount != null && mhToReviewCount > 0 ? (
-                  <span
-                    title={`${mhToReviewCount} à valider/refuser`}
-                    style={{
-                      position: "absolute",
-                      top: -6,
-                      right: -6,
-                      minWidth: 20,
-                      height: 20,
-                      padding: "0 6px",
-                      borderRadius: 999,
-                      background: "#dc2626",
-                      color: "#fff",
-                      fontSize: 12,
-                      fontWeight: 800,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      lineHeight: "20px",
-                      border: "2px solid #fff",
-                    }}
-                  >
-                    {mhToReviewCount}
-                  </span>
-                ) : null}
-              </a>
-            </Link>
+  <a
+    className="btn"
+    title="Validation des heures mensuelles"
+    style={{ position: "relative", overflow: "visible" }}
+  >
+    🧾 Heures mensuelles
+
+    {mhToReviewCount != null && mhToReviewCount > 0 ? (
+      <span
+        title={`${mhToReviewCount} à valider/refuser`}
+        style={{
+          position: "absolute",
+          top: -6,
+          right: -6,
+          minWidth: 20,
+          height: 20,
+          padding: "0 6px",
+          borderRadius: 999,
+          background: "#dc2626",
+          color: "#fff",
+          fontSize: 12,
+          fontWeight: 800,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          lineHeight: "20px",
+          border: "2px solid #fff",
+          boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+        }}
+      >
+        {mhToReviewCount > 99 ? "99+" : mhToReviewCount}
+      </span>
+    ) : null}
+  </a>
+</Link>
+
 
             <Link href="/push-setup" legacyBehavior>
               <a className="btn">🔔 Activer les notifications</a>
