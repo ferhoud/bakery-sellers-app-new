@@ -255,6 +255,21 @@ export default function AdminPage() {
   // Refs pour contrôler les reloads
   const reloadInFlight = useRef(false);
   const lastWakeRef = useRef(0);
+// UI: Retard / relais (bloc dédié sous le planning)
+const [handoverFocusIso, setHandoverFocusIso] = useState(null);
+const [handoverOpen, setHandoverOpen] = useState({}); // { "YYYY-MM-DD": true/false }
+
+const openHandover = useCallback((iso) => {
+  setHandoverFocusIso(iso);
+  setHandoverOpen((prev) => ({ ...prev, [iso]: true }));
+  setTimeout(() => {
+    const wrap = document.getElementById("handover-week");
+    if (wrap?.scrollIntoView) wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+    const row = document.getElementById(`handover-${iso}`);
+    if (row?.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, 0);
+}, []);
+
 
   // Déconnexion robuste
   const [signingOut, setSigningOut] = useState(false);
@@ -1727,152 +1742,40 @@ export default function AdminPage() {
                     </div>
                   )}
 
-                  {/* ✅ Retard / relais (arrivée réelle du soir) */}
-                  <div className="space-y-2 border rounded-2xl p-3" style={{ background: "#f8fafc", borderColor: "#e2e8f0" }}>
-                    <div className="text-sm font-medium">Retard / relais (soir)</div>
+                  {/* ⏱️ Retard / relais (soir) : résumé + accès (bloc dédié plus bas) */}
+<div
+  className="flex items-center justify-between gap-2 border rounded-2xl px-3 py-2"
+  style={{ background: "#f8fafc", borderColor: "#e2e8f0" }}
+>
+  <div className="text-xs text-gray-700">
+    <span className="font-medium">⏱️ Retard/relais :</span>{" "}
+    {deltaMin == null ? (
+      rec ? (
+        <span className="text-gray-600">enregistré</span>
+      ) : (
+        <span className="text-gray-500">-</span>
+      )
+    ) : (
+      <>
+        <span className="font-semibold">{fmtDeltaMinutes(deltaMin)}</span>{" "}
+        <span className="text-gray-500">
+          ({stayedName} + / {arrivedName} -)
+        </span>
+      </>
+    )}
+  </div>
+  <button
+    type="button"
+    className="btn"
+    onClick={() => openHandover(iso)}
+    title="Ouvrir le bloc Retard / relais (soir) en dessous du planning"
+    style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
+  >
+    Ajuster
+  </button>
+</div>
 
-                    <div className="text-xs text-gray-600">
-                      Saisis l’heure réelle d’arrivée du soir. Exemple: 14:40. L’app fait automatiquement + pour “restée”, et - pour “soir”.
-                    </div>
 
-                    <div className="grid grid-cols-1 gap-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <div className="text-xs mb-1 text-gray-600">Arrivée soir réelle</div>
-                          <input
-                            type="time"
-                            className="input w-full"
-                            value={actualTime}
-                            onChange={(e) => {
-                              const v = e.target.value;
-                              setHandoverEdit((prev) => ({
-                                ...prev,
-                                [iso]: {
-                                  ...(prev[iso] || {}),
-                                  actual_time: v,
-                                  stayed_seller_id: prev?.[iso]?.stayed_seller_id ?? rec?.stayed_seller_id ?? defaultStayed,
-                                  arrived_seller_id: prev?.[iso]?.arrived_seller_id ?? rec?.arrived_seller_id ?? defaultArrived,
-                                },
-                              }));
-                            }}
-                          />
-                        </div>
-
-                        <div>
-                          <div className="text-xs mb-1 text-gray-600">Heure prévue</div>
-                          <div className="input w-full" style={{ display: "flex", alignItems: "center" }}>
-                            {plannedTime}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 gap-2">
-                        <div>
-                          <div className="text-xs mb-1 text-gray-600">Vendeuse qui est restée</div>
-                          <select
-                            className="select w-full"
-                            value={stayedId || ""}
-                            onChange={(e) => {
-                              const v = e.target.value || "";
-                              setHandoverEdit((prev) => ({
-                                ...prev,
-                                [iso]: {
-                                  ...(prev[iso] || {}),
-                                  actual_time: actualTime,
-                                  stayed_seller_id: v,
-                                  arrived_seller_id: arrivedId || defaultArrived,
-                                },
-                              }));
-                            }}
-                          >
-                            <option value="">(auto)</option>
-                            {candidatesStayed.length > 0 ? <option value="" disabled>--- planning jour ---</option> : null}
-                            {candidatesStayed.map((id) => (
-                              <option key={id} value={id}>
-                                {nameFromId(id) || id}
-                              </option>
-                            ))}
-                            <option value="" disabled>--- toutes ---</option>
-                            {sellerOptions.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div>
-                          <div className="text-xs mb-1 text-gray-600">Vendeuse du soir</div>
-                          <select
-                            className="select w-full"
-                            value={arrivedId || ""}
-                            onChange={(e) => {
-                              const v = e.target.value || "";
-                              setHandoverEdit((prev) => ({
-                                ...prev,
-                                [iso]: {
-                                  ...(prev[iso] || {}),
-                                  actual_time: actualTime,
-                                  stayed_seller_id: stayedId || defaultStayed,
-                                  arrived_seller_id: v,
-                                },
-                              }));
-                            }}
-                          >
-                            <option value="">(auto)</option>
-                            {candidatesArrived.length > 0 ? <option value="" disabled>--- planning jour ---</option> : null}
-                            {candidatesArrived.map((id) => (
-                              <option key={id} value={id}>
-                                {nameFromId(id) || id}
-                              </option>
-                            ))}
-                            <option value="" disabled>--- toutes ---</option>
-                            {sellerOptions.map((s) => (
-                              <option key={s.id} value={s.id}>
-                                {s.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-
-                      <div className="text-xs text-gray-700">
-                        {deltaMin == null ? (
-                          <span className="text-gray-500">Delta: (saisis une heure)</span>
-                        ) : (
-                          <span>
-                            Delta: <span className="font-semibold">{fmtDeltaMinutes(deltaMin)}</span>{" "}
-                            <span className="text-gray-600">
-                              ({deltaMin >= 0 ? "+" : "-"} pour {stayedName}, {deltaMin >= 0 ? "-" : "+"} pour {arrivedName})
-                            </span>
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={() => saveHandover(iso)}
-                          disabled={!actualTime}
-                          style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent", opacity: !actualTime ? 0.6 : 1 }}
-                        >
-                          Enregistrer
-                        </button>
-
-                        {rec ? (
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={() => deleteHandover(iso)}
-                            style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
-                          >
-                            Effacer
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
 
                   <ShiftRow
                     label="Soir (13h30-20h30)"
@@ -1888,6 +1791,239 @@ export default function AdminPage() {
             })}
           </div>
         </div>
+
+
+{/* ===================== RETARD / RELAIS (BLOC DÉDIÉ) ===================== */}
+<div className="card" id="handover-week">
+  <div className="hdr mb-2">Retard / relais (soir) – ajustements semaine</div>
+  <div className="text-sm text-gray-600">
+    Ici tu saisis l’heure réelle d’arrivée du soir (ex: 14:40). L’app applique automatiquement{" "}
+    <span className="font-medium">+delta</span> à la vendeuse “restée” et <span className="font-medium">-delta</span> à la vendeuse “du soir”.
+  </div>
+
+  <div className="mt-4 space-y-3">
+    {days.map((d) => {
+      const iso = fmtISODate(d);
+
+      // defaults depuis le planning
+      const morningId = assign[`${iso}|MORNING`] || "";
+      const middayId = assign[`${iso}|MIDDAY`] || "";
+      const eveningId = assign[`${iso}|EVENING`] || "";
+      const defaultStayed = middayId || morningId || "";
+      const defaultArrived = eveningId || "";
+
+      const rec = handoverByDate[iso] || null;
+      const draft = handoverEdit[iso] || null;
+
+      const actualTime = (draft?.actual_time ?? rec?.actual_time ?? "").toString();
+      const stayedId = draft?.stayed_seller_id ?? rec?.stayed_seller_id ?? defaultStayed;
+      const arrivedId = draft?.arrived_seller_id ?? rec?.arrived_seller_id ?? defaultArrived;
+
+      const plannedTime = rec?.planned_time || "13:30";
+      const pMin = parseHHMM(plannedTime);
+      const aMin = parseHHMM(actualTime);
+      const deltaMin = pMin != null && aMin != null ? aMin - pMin : null;
+
+      const stayedName = nameFromId(stayedId) || "-";
+      const arrivedName = nameFromId(arrivedId) || "-";
+
+      const open = !!handoverOpen[iso];
+      const focused = handoverFocusIso === iso;
+
+      const candidatesStayed = Array.from(new Set([middayId, morningId].filter(Boolean)));
+      const candidatesArrived = Array.from(new Set([eveningId].filter(Boolean)));
+
+      return (
+        <div
+          key={iso}
+          id={`handover-${iso}`}
+          className="border rounded-2xl p-3"
+          style={focused ? { boxShadow: "inset 0 0 0 2px rgba(245,158,11,0.55)" } : {}}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
+              <div className="font-semibold">{iso}</div>
+              <div className="text-xs text-gray-600 mt-1">
+                {deltaMin == null ? (
+                  rec ? (
+                    <span>enregistré</span>
+                  ) : (
+                    <span>-</span>
+                  )
+                ) : (
+                  <>
+                    <span className="font-semibold">{fmtDeltaMinutes(deltaMin)}</span>{" "}
+                    <span className="text-gray-500">
+                      ({stayedName} + / {arrivedName} -)
+                    </span>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setHandoverOpen((prev) => ({ ...prev, [iso]: !open }))}
+                style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
+              >
+                {open ? "Fermer" : "Ajuster"}
+              </button>
+
+              {rec ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => deleteHandover(iso)}
+                  title="Supprimer l'ajustement enregistré"
+                  style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent", padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
+                >
+                  Supprimer
+                </button>
+              ) : null}
+            </div>
+          </div>
+
+          {open ? (
+            <div className="mt-3 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <div className="text-xs mb-1 text-gray-600">Arrivée soir réelle</div>
+                  <input
+                    type="time"
+                    className="input w-full"
+                    value={actualTime}
+                    onChange={(e) => {
+                      const v = e.target.value || "";
+                      setHandoverEdit((prev) => ({
+                        ...prev,
+                        [iso]: { ...(prev[iso] || {}), actual_time: v, stayed_seller_id: stayedId, arrived_seller_id: arrivedId },
+                      }));
+                    }}
+                    placeholder="14:40"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs mb-1 text-gray-600">Heure prévue</div>
+                  <div className="input w-full" style={{ display: "flex", alignItems: "center" }}>
+                    {plannedTime}
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <div className="text-xs mb-1 text-gray-600">Vendeuse qui est restée</div>
+                  <select
+                    className="select w-full"
+                    value={stayedId || ""}
+                    onChange={(e) => {
+                      const v = e.target.value || "";
+                      setHandoverEdit((prev) => ({
+                        ...prev,
+                        [iso]: { ...(prev[iso] || {}), stayed_seller_id: v, arrived_seller_id: arrivedId, actual_time: actualTime },
+                      }));
+                    }}
+                  >
+                    <option value="" disabled>
+                      Choisir
+                    </option>
+                    {candidatesStayed.length > 0 ? (
+                      <optgroup label="Depuis planning">
+                        {candidatesStayed.map((id) => (
+                          <option key={id} value={id}>
+                            {nameFromId(id) || id}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                    <optgroup label="Toutes les vendeuses">
+                      {(sellers || []).map((s) => (
+                        <option key={s.user_id} value={s.user_id}>
+                          {s.full_name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+
+                <div>
+                  <div className="text-xs mb-1 text-gray-600">Vendeuse du soir</div>
+                  <select
+                    className="select w-full"
+                    value={arrivedId || ""}
+                    onChange={(e) => {
+                      const v = e.target.value || "";
+                      setHandoverEdit((prev) => ({
+                        ...prev,
+                        [iso]: { ...(prev[iso] || {}), arrived_seller_id: v, stayed_seller_id: stayedId, actual_time: actualTime },
+                      }));
+                    }}
+                  >
+                    <option value="" disabled>
+                      Choisir
+                    </option>
+                    {candidatesArrived.length > 0 ? (
+                      <optgroup label="Depuis planning">
+                        {candidatesArrived.map((id) => (
+                          <option key={id} value={id}>
+                            {nameFromId(id) || id}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                    <optgroup label="Toutes les vendeuses">
+                      {(sellers || []).map((s) => (
+                        <option key={s.user_id} value={s.user_id}>
+                          {s.full_name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+              </div>
+
+              <div className="text-xs text-gray-600">
+                Delta appliqué automatiquement:{" "}
+                <span className="font-semibold">{deltaMin == null ? "-" : fmtDeltaMinutes(deltaMin)}</span>{" "}
+                ( + pour “{stayedName}”, - pour “{arrivedName}” )
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => saveHandover(iso)}
+                  style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
+                >
+                  Enregistrer
+                </button>
+
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    setHandoverEdit((prev) => {
+                      const n = { ...prev };
+                      delete n[iso];
+                      return n;
+                    });
+                  }}
+                  title="Annuler les modifications locales"
+                >
+                  Annuler
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
+      );
+    })}
+  </div>
+</div>
 
         <div className="card">
           <div className="hdr mb-2">Choisir le mois pour “Total heures (mois)”</div>
@@ -2318,7 +2454,7 @@ function TotalsGrid({ sellers, monthFrom, monthTo, monthLabel, refreshKey, month
         })}
       </div>
       <div className="text-xs text-gray-500 mt-3">
-        Les totaux incluent les ajustements “Retard / relais (soir)” saisis dans le planning.
+        Les totaux incluent les ajustements “Retard / relais (soir)” saisis dans le bloc Retard / relais (soir).
       </div>
     </div>
   );
