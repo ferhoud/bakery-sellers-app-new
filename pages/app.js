@@ -91,6 +91,17 @@ function labelForShift(code) {
   }
 }
 
+function fmtMinutesHM(mins) {
+  const n = Number(mins || 0);
+  if (!Number.isFinite(n) || n === 0) return "0min";
+  const m = Math.round(Math.abs(n));
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  if (h <= 0) return `${r}min`;
+  return `${h}h${String(r).padStart(2, "0")}`;
+}
+
+
 async function rpcUpsertShift({ date, code, sellerId }) {
   // 1) tente planner_upsert_shift
   const r1 = await supabase.rpc("planner_upsert_shift", {
@@ -216,6 +227,13 @@ export default function AppSeller() {
   const [myMonthUpcomingAbs, setMyMonthUpcomingAbs] = useState([]);
   const [acceptedByAbsence, setAcceptedByAbsence] = useState({});
   const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
+
+  // Retard / relais (mois en cours) — affichage permanent
+  const [monthDelta, setMonthDelta] = useState({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
+  const [monthDeltaLoading, setMonthDeltaLoading] = useState(false);
+  const [monthDeltaErr, setMonthDeltaErr] = useState("");
+  const [monthDeltaUnsupported, setMonthDeltaUnsupported] = useState(false);
+
 
   // Validation mensuelle (si RPC existent)
   const monthStartPrev = useMemo(() => {
@@ -678,6 +696,150 @@ export default function AppSeller() {
     loadMyUpcomingRepl();
   }, [loadMyMonthAbs, loadMyMonthUpcomingAbs, reloadAccepted, loadMyUpcomingRepl]);
 
+  // Retard / relais (mois en cours)
+  const loadMyMonthDelta = useCallback(async () => {
+    if (!userId) return;
+    setMonthDeltaErr("");
+    setMonthDeltaLoading(true);
+
+    try {
+      // 1) RPC (recommandée) : seller_handover_month_summary(p_month_start)
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("seller_handover_month_summary", {
+        p_month_start: myMonthFromPast,
+      });
+
+      if (!rpcErr && rpcData != null) {
+        const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+        const extra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
+        const delay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
+        const net = Number(row?.net_minutes ?? row?.netMinutes ?? (extra - delay) ?? 0) || 0;
+
+        setMonthDelta({ extraMinutes: extra, delayMinutes: delay, netMinutes: net });
+        setMonthDeltaUnsupported(false);
+        return;
+      }
+
+      const msg = String(rpcErr?.message || "");
+      const codeE = String(rpcErr?.code || "");
+      const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
+
+      // 2) fallback direct table si RPC absente
+      if (missingFn) {
+        const { data: rows, error: e2 } = await supabase
+          .from("shift_handover_adjustments")
+          .select("*")
+          .gte("date", myMonthFromPast)
+          .lte("date", myMonthToPast)
+          .or(`staying_seller_id.eq.${userId},evening_seller_id.eq.${userId},seller_id.eq.${userId}`);
+
+        if (e2) {
+          const m2 = String(e2?.message || "");
+          const c2 = String(e2?.code || "");
+          const forbidden =
+            m2.toLowerCase().includes("permission") ||
+            m2.toLowerCase().includes("rls") ||
+            m2.toLowerCase().includes("not allowed");
+          const missingTbl = c2 === "42P01" || m2.toLowerCase().includes("does not exist");
+          const missingCol = c2 === "42703" || m2.toLowerCase().includes("column");
+
+          if (forbidden || missingTbl || missingCol) {
+            setMonthDeltaUnsupported(true);
+            setMonthDelta({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
+            return;
+          }
+          throw e2;
+        }
+
+        let extra = 0;
+        let delay = 0;
+        let net = 0;
+
+        (rows || []).forEach((row) => {
+          const raw =
+            row?.delta_minutes ??
+            row?.delta ??
+            row?.minutes ??
+            row?.minute_delta ??
+            row?.delta_min ??
+            row?.deltaMinutes ??
+            null;
+
+          const base = Number(raw);
+          if (!Number.isFinite(base) || base === 0) return;
+
+          let signed = null;
+
+          // Cas 1 : table déjà normalisée (seller_id + minutes signées)
+          if (row?.seller_id && row.seller_id === userId) {
+            signed = base;
+          }
+
+          // Cas 2 : une ligne = 2 vendeuses (celle qui reste / celle du soir)
+          if (signed == null) {
+            if (row?.staying_seller_id && row.staying_seller_id === userId) signed = Math.abs(base);
+            else if (row?.evening_seller_id && row.evening_seller_id === userId) signed = -Math.abs(base);
+          }
+
+          // Cas 3 : variantes to/from
+          if (signed == null) {
+            if (row?.to_seller_id && row.to_seller_id === userId) signed = Math.abs(base);
+            else if (row?.from_seller_id && row.from_seller_id === userId) signed = -Math.abs(base);
+          }
+
+          if (signed == null) return;
+
+          net += signed;
+          if (signed >= 0) extra += signed;
+          else delay += -signed;
+        });
+
+        setMonthDelta({
+          extraMinutes: Math.round(extra),
+          delayMinutes: Math.round(delay),
+          netMinutes: Math.round(net),
+        });
+        setMonthDeltaUnsupported(false);
+        return;
+      }
+
+      // RPC existante mais erreur réelle
+      if (rpcErr) throw rpcErr;
+    } catch (e) {
+      setMonthDeltaErr(e?.message || "Impossible de charger les retards/relais du mois.");
+    } finally {
+      setMonthDeltaLoading(false);
+    }
+  }, [userId, myMonthFromPast, myMonthToPast]);
+
+  useEffect(() => {
+    loadMyMonthDelta();
+  }, [loadMyMonthDelta]);
+
+  // Realtime (si la table existe et si l'utilisateur a accès)
+  useEffect(() => {
+    if (!userId || monthDeltaUnsupported) return;
+
+    const ch = supabase
+      .channel("handover_rt_app")
+      .on("postgres_changes", { event: "*", schema: "public", table: "shift_handover_adjustments" }, () => {
+        loadMyMonthDelta().catch(() => {});
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [userId, monthDeltaUnsupported, loadMyMonthDelta]);
+
+  // Refresh quand on revient sur l'onglet
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onFocus = () => loadMyMonthDelta().catch(() => {});
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [loadMyMonthDelta]);
+
+
   // Congés approuvés
   const loadApprovedLeaves = useCallback(async () => {
     if (!userId) return;
@@ -950,7 +1112,53 @@ export default function AppSeller() {
         </div>
       </div>
 
-     {role !== "admin" && !monthlyUnsupported && (monthlyLoading || monthlyRow) && (
+
+      {role !== "admin" &&
+        !monthDeltaUnsupported &&
+        (monthDeltaLoading ||
+          monthDeltaErr ||
+          monthDelta.extraMinutes > 0 ||
+          monthDelta.delayMinutes > 0) && (
+          <div className="card">
+            <div className="hdr mb-2">Retard / relais - mois en cours</div>
+
+            {monthDeltaLoading && <div className="text-sm text-gray-600">Chargement...</div>}
+
+            {monthDeltaErr && (
+              <div
+                className="text-sm mb-2 border rounded-xl p-2"
+                style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}
+              >
+                {monthDeltaErr}
+              </div>
+            )}
+
+            {!monthDeltaLoading && !monthDeltaErr && (
+              <div className="space-y-2">
+                {monthDelta.delayMinutes > 0 && (
+                  <div
+                    className="text-sm border rounded-xl p-2"
+                    style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}
+                  >
+                    ⏱️ Vous avez <b>{fmtMinutesHM(monthDelta.delayMinutes)}</b> de retard ce mois-ci.
+                  </div>
+                )}
+
+                {monthDelta.extraMinutes > 0 && (
+                  <div
+                    className="text-sm border rounded-xl p-2"
+                    style={{ backgroundColor: "#dcfce7", borderColor: "#86efac" }}
+                  >
+                    ➕ Vous avez <b>{fmtMinutesHM(monthDelta.extraMinutes)}</b> de travail en plus ce mois-ci.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+
+      {role !== "admin" && !monthlyUnsupported && (monthlyLoading || monthlyRow) && (
 
         <div className="card">
           <div className="hdr mb-2">Validation des heures - {capFirst(monthLabel)}</div>
