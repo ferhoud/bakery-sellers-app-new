@@ -190,16 +190,6 @@ export default function AdminPage() {
   const r = useRouter();
   const { session, profile, loading } = useAuth();
 
-  const supabaseProjectRef = useMemo(() => {
-    const u = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-    try {
-      const host = new URL(u).hostname || "";
-      return host.split(".")[0] || "";
-    } catch {
-      return "";
-    }
-  }, []);
-
   // Kill-switch (utile si besoin de couper la page en prod)
   const PANIC = process.env.NEXT_PUBLIC_ADMIN_PANIC === "1";
   if (PANIC) {
@@ -266,20 +256,16 @@ export default function AdminPage() {
   const reloadInFlight = useRef(false);
   const lastWakeRef = useRef(0);
 // UI: Retard / relais (bloc dédié sous le planning)
-const handoverKey = (iso, boundary) => `${iso}|${boundary}`;
-const handoverDomId = (iso, boundary) => `handover-${iso}-${boundary}`;
+const [handoverFocusIso, setHandoverFocusIso] = useState(null);
+const [handoverOpen, setHandoverOpen] = useState({}); // { "YYYY-MM-DD": true/false }
 
-const [handoverFocusKey, setHandoverFocusKey] = useState(null); // "YYYY-MM-DD|BOUNDARY"
-const [handoverOpen, setHandoverOpen] = useState({}); // { key: true/false }
-
-const openHandover = useCallback((iso, boundary = "EVENING_START") => {
-  const key = handoverKey(iso, boundary);
-  setHandoverFocusKey(key);
-  setHandoverOpen((prev) => ({ ...prev, [key]: true }));
+const openHandover = useCallback((iso) => {
+  setHandoverFocusIso(iso);
+  setHandoverOpen((prev) => ({ ...prev, [iso]: true }));
   setTimeout(() => {
     const wrap = document.getElementById("handover-week");
     if (wrap?.scrollIntoView) wrap.scrollIntoView({ behavior: "smooth", block: "start" });
-    const row = document.getElementById(handoverDomId(iso, boundary));
+    const row = document.getElementById(`handover-${iso}`);
     if (row?.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "center" });
   }, 0);
 }, []);
@@ -484,151 +470,142 @@ const openHandover = useCallback((iso, boundary = "EVENING_START") => {
     setAbsencesByDate(grouped);
   }, [days]);
 
-/* ======= RETARD / RELAIS (matin + soir) ======= */
-const [handoverByKey, setHandoverByKey] = useState({}); // { "YYYY-MM-DD|BOUNDARY": row }
-const [handoverEdit, setHandoverEdit] = useState({}); // { "YYYY-MM-DD|BOUNDARY": { planned_time, actual_time, stayed_seller_id, arrived_seller_id } }
+  /* ======= RETARD / RELAIS (soir) ======= */
+  const [handoverByDate, setHandoverByDate] = useState({}); // { "YYYY-MM-DD": row }
+  const [handoverEdit, setHandoverEdit] = useState({}); // { "YYYY-MM-DD": { actual_time, stayed_seller_id, arrived_seller_id } }
 
-const loadWeekHandovers = useCallback(async () => {
-  const from = fmtISODate(days[0]);
-  const to = fmtISODate(days[6]);
-
-  try {
-    const { data, error } = await supabase
-      .from("shift_handover_adjustments")
-      .select("id, date, boundary, planned_time, actual_time, stayed_seller_id, arrived_seller_id, created_at")
-      .in("boundary", ["MORNING_START", "EVENING_START"])
-      .gte("date", from)
-      .lte("date", to);
-
-    if (error) {
-      // si la table n'existe pas encore, on ignore sans casser l'UI
-      console.warn("loadWeekHandovers error:", error?.message || error);
-      setHandoverByKey({});
-      return;
-    }
-    const map = {};
-    (data || []).forEach((r) => {
-      map[`${r.date}|${r.boundary}`] = r;
-    });
-    setHandoverByKey(map);
-  } catch (e) {
-    console.warn("loadWeekHandovers exception:", e?.message || e);
-    setHandoverByKey({});
-  }
-}, [days]);
-
-const saveHandover = useCallback(
-  async (iso, boundary) => {
-    const morningId = assign[`${iso}|MORNING`] || "";
-    const middayId = assign[`${iso}|MIDDAY`] || "";
-    const eveningId = assign[`${iso}|EVENING`] || "";
-
-    const isMorning = boundary === "MORNING_START";
-    const defaultPlanned = isMorning ? "06:30" : "13:30";
-    const defaultStayed = isMorning ? "" : (middayId || morningId || "");
-    const defaultArrived = isMorning ? (morningId || "") : (eveningId || "");
-
-    const key = `${iso}|${boundary}`;
-    const cur = handoverEdit[key] || {};
-    const planned_time = (cur.planned_time || defaultPlanned).trim();
-    const actual_time = (cur.actual_time || "").trim();
-    const stayed_seller_id = cur.stayed_seller_id ?? defaultStayed; // optionnel ("" => null)
-    const arrived_seller_id = cur.arrived_seller_id ?? defaultArrived;
-
-    const pMin = parseHHMM(planned_time);
-    const aMin = parseHHMM(actual_time);
-
-    if (pMin == null) {
-      alert("Heure prévue invalide. Exemple: 06:30 ou 13:30");
-      return;
-    }
-    if (aMin == null) {
-      alert("Heure réelle invalide. Exemple: 06:40 ou 14:40");
-      return;
-    }
-    if (!arrived_seller_id) {
-      alert("Choisis la vendeuse concernée (celle qui arrive).");
-      return;
-    }
-    if (stayed_seller_id && stayed_seller_id === arrived_seller_id) {
-      alert("La vendeuse 'qui a couvert' et la vendeuse concernée ne peuvent pas être la même.");
-      return;
-    }
-
-    // delta sécurité (évite des saisies absurdes)
-    const deltaMin = clamp(aMin - pMin, -360, 360); // -6h .. +6h
-    const safeActual = (() => {
-      const mins = pMin + deltaMin;
-      const hh = String(Math.floor(mins / 60)).padStart(2, "0");
-      const mm = String(mins % 60).padStart(2, "0");
-      return `${hh}:${mm}`;
-    })();
+  const loadWeekHandovers = useCallback(async () => {
+    const from = fmtISODate(days[0]);
+    const to = fmtISODate(days[6]);
 
     try {
-      const payload = {
-        date: iso,
-        boundary,
-        planned_time,
-        actual_time: safeActual,
-        stayed_seller_id: stayed_seller_id ? stayed_seller_id : null,
-        arrived_seller_id,
-      };
-
-      const { error } = await supabase.from("shift_handover_adjustments").upsert(payload, { onConflict: "date,boundary" });
-      if (error) {
-        console.error("saveHandover error:", error);
-        alert(`Impossible d'enregistrer l'ajustement. (${error.code || "?"}) ${error.message || ""}`);
-        return;
-      }
-
-      // Nettoie le draft local de ce jour/créneau
-      setHandoverEdit((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
-      });
-
-      await loadWeekHandovers();
-      setRefreshKey((k) => k + 1);
-    } catch (e) {
-      console.error("saveHandover exception:", e);
-      alert("Impossible d'enregistrer l'ajustement (exception).");
-    }
-  },
-  [assign, handoverEdit, loadWeekHandovers]
-);
-
-const deleteHandover = useCallback(
-  async (iso, boundary) => {
-    try {
-      const { error } = await supabase
+      const { data, error } = await supabase
         .from("shift_handover_adjustments")
-        .delete()
-        .eq("date", iso)
-        .eq("boundary", boundary);
+        .select("id, date, boundary, planned_time, actual_time, stayed_seller_id, arrived_seller_id, created_at")
+        .eq("boundary", "EVENING_START")
+        .gte("date", from)
+        .lte("date", to);
+
       if (error) {
-        console.error("deleteHandover error:", error);
-        alert(`Impossible de supprimer l'ajustement. (${error.code || "?"}) ${error.message || ""}`);
+        // si la table n'existe pas encore, on ignore sans casser l'UI
+        console.warn("loadWeekHandovers error:", error?.message || error);
+        setHandoverByDate({});
+        return;
+      }
+      const map = {};
+      (data || []).forEach((r) => {
+        map[r.date] = r;
+      });
+      setHandoverByDate(map);
+    } catch (e) {
+      console.warn("loadWeekHandovers exception:", e?.message || e);
+      setHandoverByDate({});
+    }
+  }, [days]);
+
+  const saveHandover = useCallback(
+    async (iso) => {
+      const morningId = assign[`${iso}|MORNING`] || "";
+      const middayId = assign[`${iso}|MIDDAY`] || "";
+      const eveningId = assign[`${iso}|EVENING`] || "";
+      const defaultStayed = middayId || morningId || "";
+      const defaultArrived = eveningId || "";
+
+      const cur = handoverEdit[iso] || {};
+      const actual_time = (cur.actual_time || "").trim();
+      const NONE_STAYED = "__NONE__";
+      const stayedPicked = Object.prototype.hasOwnProperty.call(cur, "stayed_seller_id")
+        ? cur.stayed_seller_id
+        : defaultStayed;
+      const stayed_seller_id = stayedPicked === NONE_STAYED ? null : (stayedPicked || null);
+      const arrived_seller_id = cur.arrived_seller_id || defaultArrived;
+
+      const aMin = parseHHMM(actual_time);
+      const pMin = parseHHMM("13:30");
+      if (aMin == null) {
+        alert("Heure invalide. Exemple: 14:40");
+        return;
+      }
+      // stayed_seller_id peut être null => "retard simple" (personne ne remplace)
+      if (!arrived_seller_id) {
+        alert("Choisis la vendeuse du soir.");
+        return;
+      }
+      if (stayed_seller_id && stayed_seller_id === arrived_seller_id) {
+        alert("La vendeuse 'restée' et la vendeuse 'du soir' ne peuvent pas être la même.");
         return;
       }
 
-      const key = `${iso}|${boundary}`;
-      setHandoverEdit((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
-      });
+      // delta sécurité (évite des saisies absurdes)
+      const deltaMin = clamp(aMin - pMin, -360, 360); // -6h .. +6h
+      const safeActual = (() => {
+        const mins = pMin + deltaMin;
+        const hh = String(Math.floor(mins / 60)).padStart(2, "0");
+        const mm = String(mins % 60).padStart(2, "0");
+        return `${hh}:${mm}`;
+      })();
 
-      await loadWeekHandovers();
-      setRefreshKey((k) => k + 1);
-    } catch (e) {
-      console.error("deleteHandover exception:", e);
-      alert("Impossible de supprimer l'ajustement (exception).");
-    }
-  },
-  [loadWeekHandovers]
-);
+      try {
+        const payload = {
+          date: iso,
+          boundary: "EVENING_START",
+          planned_time: "13:30",
+          actual_time: safeActual,
+          stayed_seller_id,
+          arrived_seller_id,
+        };
 
+        const { error } = await supabase.from("shift_handover_adjustments").upsert(payload, { onConflict: "date,boundary" });
+        if (error) {
+          console.error("saveHandover error:", error);
+          alert("Impossible d'enregistrer l'ajustement (table/policy RLS ?)");
+          return;
+        }
+
+        // Nettoie le draft local de ce jour
+        setHandoverEdit((prev) => {
+          const n = { ...prev };
+          delete n[iso];
+          return n;
+        });
+
+        await loadWeekHandovers();
+        setRefreshKey((k) => k + 1);
+      } catch (e) {
+        console.error("saveHandover exception:", e);
+        alert("Impossible d'enregistrer l'ajustement (exception).");
+      }
+    },
+    [assign, handoverEdit, loadWeekHandovers]
+  );
+
+  const deleteHandover = useCallback(
+    async (iso) => {
+      try {
+        const { error } = await supabase
+          .from("shift_handover_adjustments")
+          .delete()
+          .eq("date", iso)
+          .eq("boundary", "EVENING_START");
+        if (error) {
+          console.error("deleteHandover error:", error);
+          alert("Impossible de supprimer l'ajustement.");
+          return;
+        }
+        setHandoverEdit((prev) => {
+          const n = { ...prev };
+          delete n[iso];
+          return n;
+        });
+        await loadWeekHandovers();
+        setRefreshKey((k) => k + 1);
+      } catch (e) {
+        console.error("deleteHandover exception:", e);
+        alert("Impossible de supprimer l'ajustement (exception).");
+      }
+    },
+    [loadWeekHandovers]
+  );
 
   /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
   const loadAbsencesToday = useCallback(async () => {
@@ -1292,24 +1269,7 @@ const deleteHandover = useCallback(
         <meta name="apple-mobile-web-app-title" content="Admin" />
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
       </Head>
-      <div
-  style={{
-    padding: "8px",
-    background: "#111",
-    color: "#fff",
-    fontWeight: 700,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "10px",
-    flexWrap: "wrap",
-  }}
->
-  <div>{BUILD_TAG}</div>
-  <div style={{ fontWeight: 400, fontSize: "12px", opacity: 0.85 }}>
-    Supabase: {supabaseProjectRef || "?"}
-  </div>
-</div>
+      <div style={{ padding: "8px", background: "#111", color: "#fff", fontWeight: 700 }}>{BUILD_TAG}</div>
 
       <div className="p-4 max-w-6xl mx-auto space-y-6">
         <div className="flex items-center justify-between">
@@ -1639,35 +1599,23 @@ const deleteHandover = useCallback(
               const defaultStayed = middayId || morningId || "";
               const defaultArrived = eveningId || "";
 
-const recMorning = handoverByKey[`${iso}|MORNING_START`] || null;
-const recEvening = handoverByKey[`${iso}|EVENING_START`] || null;
+              const rec = handoverByDate[iso] || null;
+              const draft = handoverEdit[iso] || null;
 
-const draftMorning = handoverEdit[`${iso}|MORNING_START`] || null;
-const draftEvening = handoverEdit[`${iso}|EVENING_START`] || null;
+              const actualTime = (draft?.actual_time ?? rec?.actual_time ?? "").toString();
+              const NONE_STAYED = "__NONE__";
+              const stayedRaw = draft?.stayed_seller_id ?? rec?.stayed_seller_id;
+              const stayedId = stayedRaw === null ? NONE_STAYED : (stayedRaw ?? defaultStayed);
+              const arrivedId = draft?.arrived_seller_id ?? rec?.arrived_seller_id ?? defaultArrived;
 
-// Matin (retard simple possible: stayed = null)
-const plannedMorning = (draftMorning?.planned_time ?? recMorning?.planned_time ?? "06:30").toString();
-const actualMorning = (draftMorning?.actual_time ?? recMorning?.actual_time ?? "").toString();
-const stayedMorningId = (draftMorning?.stayed_seller_id ?? recMorning?.stayed_seller_id ?? "") || "";
-const arrivedMorningId = (draftMorning?.arrived_seller_id ?? recMorning?.arrived_seller_id ?? (morningId || "")) || "";
-const mP = parseHHMM(plannedMorning);
-const mA = parseHHMM(actualMorning);
-const deltaMorningMin = mP != null && mA != null ? mA - mP : null;
+              const plannedTime = rec?.planned_time || "13:30";
+              const pMin = parseHHMM(plannedTime);
+              const aMin = parseHHMM(actualTime);
+              const deltaMin = pMin != null && aMin != null ? aMin - pMin : null;
 
-const stayedMorningName = stayedMorningId ? (nameFromId(stayedMorningId) || "-") : "-";
-const arrivedMorningName = arrivedMorningId ? (nameFromId(arrivedMorningId) || "-") : "-";
+              const stayedName = stayedId === "__NONE__" ? "Personne" : (nameFromId(stayedId) || "-");
+              const arrivedName = nameFromId(arrivedId) || "-";
 
-// Soir
-const plannedEvening = (draftEvening?.planned_time ?? recEvening?.planned_time ?? "13:30").toString();
-const actualEvening = (draftEvening?.actual_time ?? recEvening?.actual_time ?? "").toString();
-const stayedEveningId = (draftEvening?.stayed_seller_id ?? recEvening?.stayed_seller_id ?? defaultStayed) || "";
-const arrivedEveningId = (draftEvening?.arrived_seller_id ?? recEvening?.arrived_seller_id ?? defaultArrived) || "";
-const eP = parseHHMM(plannedEvening);
-const eA = parseHHMM(actualEvening);
-const deltaEveningMin = eP != null && eA != null ? eA - eP : null;
-
-const stayedEveningName = stayedEveningId ? (nameFromId(stayedEveningId) || "-") : "-";
-const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "-") : "-";
               const candidatesStayed = Array.from(new Set([middayId, morningId].filter(Boolean)));
               const candidatesArrived = Array.from(new Set([eveningId].filter(Boolean)));
 
@@ -1797,70 +1745,42 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                     </div>
                   )}
 
-                  {/* ⏱️ Retard / relais (matin + soir) : résumé + accès (bloc dédié plus bas) */}
+                  {/* ⏱️ Retard / relais (soir) : résumé + accès (bloc dédié plus bas) */}
 <div
   className="flex items-center justify-between gap-2 border rounded-2xl px-3 py-2"
   style={{ background: "#f8fafc", borderColor: "#e2e8f0" }}
 >
-  <div className="text-xs text-gray-700 space-y-1">
-    <div>
-      <span className="font-medium">⏱️ Retard :</span>{" "}
-      <span className="text-gray-500">Matin</span>{" "}
-      {deltaMorningMin == null ? (
-        recMorning ? (
-          <span className="text-gray-600">enregistré</span>
-        ) : (
-          <span className="text-gray-500">-</span>
-        )
+  <div className="text-xs text-gray-700">
+    <span className="font-medium">⏱️ Retard/relais :</span>{" "}
+    {deltaMin == null ? (
+      rec ? (
+        <span className="text-gray-600">enregistré</span>
       ) : (
-        <>
-          <span className="font-semibold">{fmtDeltaMinutes(deltaMorningMin)}</span>{" "}
-          <span className="text-gray-500">
-            ({stayedMorningName} + / {arrivedMorningName} -)
-          </span>
-        </>
-      )}
-      <span className="text-gray-400"> • </span>
-      <span className="text-gray-500">Soir</span>{" "}
-      {deltaEveningMin == null ? (
-        recEvening ? (
-          <span className="text-gray-600">enregistré</span>
-        ) : (
-          <span className="text-gray-500">-</span>
-        )
-      ) : (
-        <>
-          <span className="font-semibold">{fmtDeltaMinutes(deltaEveningMin)}</span>{" "}
-          <span className="text-gray-500">
-            ({stayedEveningName} + / {arrivedEveningName} -)
-          </span>
-        </>
-      )}
-    </div>
+        <span className="text-gray-500">-</span>
+      )
+    ) : (
+      <>
+        <span className="font-semibold">{fmtDeltaMinutes(deltaMin)}</span>{" "}
+        <span className="text-gray-500">
+          ({stayedName} + / {arrivedName} -)
+        </span>
+      </>
+    )}
   </div>
-
-  <div className="flex gap-1">
-    <button
-      type="button"
-      className="btn"
-      onClick={() => openHandover(iso, "MORNING_START")}
-      title="Ouvrir le bloc Retard / relais (matin) en dessous du planning"
-      style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
-    >
-      Matin
-    </button>
-    <button
-      type="button"
-      className="btn"
-      onClick={() => openHandover(iso, "EVENING_START")}
-      title="Ouvrir le bloc Retard / relais (soir) en dessous du planning"
-      style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
-    >
-      Soir
-    </button>
-  </div>
+  <button
+    type="button"
+    className="btn"
+    onClick={() => openHandover(iso)}
+    title="Ouvrir le bloc Retard / relais (soir) en dessous du planning"
+    style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
+  >
+    Ajuster
+  </button>
 </div>
-<ShiftRow
+
+
+
+                  <ShiftRow
                     label="Soir (13h30-20h30)"
                     iso={iso}
                     code="EVENING"
@@ -1876,18 +1796,15 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
         </div>
 
 
-
-
 {/* ===================== RETARD / RELAIS (BLOC DÉDIÉ) ===================== */}
 <div className="card" id="handover-week">
-  <div className="hdr mb-2">Retard / relais – ajustements semaine (matin + soir)</div>
+  <div className="hdr mb-2">Retard / relais (soir) – ajustements semaine</div>
   <div className="text-sm text-gray-600">
-    Ici tu saisis l’heure <span className="font-medium">prévue</span> et l’heure <span className="font-medium">réelle</span>.
-    L’app applique automatiquement <span className="font-medium">+delta</span> à la vendeuse “qui a couvert” (optionnel)
-    et <span className="font-medium">-delta</span> à la vendeuse concernée (celle qui arrive).
+    Ici tu saisis l’heure réelle d’arrivée du soir (ex: 14:40). L’app applique automatiquement{" "}
+    <span className="font-medium">+delta</span> à la vendeuse “restée” et <span className="font-medium">-delta</span> à la vendeuse “du soir”.
   </div>
 
-  <div className="mt-4 space-y-4">
+  <div className="mt-4 space-y-3">
     {days.map((d) => {
       const iso = fmtISODate(d);
 
@@ -1895,279 +1812,228 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
       const morningId = assign[`${iso}|MORNING`] || "";
       const middayId = assign[`${iso}|MIDDAY`] || "";
       const eveningId = assign[`${iso}|EVENING`] || "";
+      const defaultStayed = middayId || morningId || "";
+      const defaultArrived = eveningId || "";
 
-      const dayLabel = `${capFirst(weekdayFR(d))} ${iso}`;
+      const rec = handoverByDate[iso] || null;
+      const draft = handoverEdit[iso] || null;
 
-      const renderBoundary = (boundary) => {
-        const isMorning = boundary === "MORNING_START";
-        const key = handoverKey(iso, boundary);
-        const rec = handoverByKey[key] || null;
-        const draft = handoverEdit[key] || null;
+      const actualTime = (draft?.actual_time ?? rec?.actual_time ?? "").toString();
+      const NONE_STAYED = "__NONE__";
+      const stayedRaw = draft?.stayed_seller_id ?? rec?.stayed_seller_id;
+      const stayedId = stayedRaw === null ? NONE_STAYED : (stayedRaw ?? defaultStayed);
+      const arrivedId = draft?.arrived_seller_id ?? rec?.arrived_seller_id ?? defaultArrived;
 
-        const defaultPlanned = isMorning ? "06:30" : "13:30";
-        const defaultStayed = isMorning ? "" : (middayId || morningId || "");
-        const defaultArrived = isMorning ? (morningId || "") : (eveningId || "");
+      const plannedTime = rec?.planned_time || "13:30";
+      const pMin = parseHHMM(plannedTime);
+      const aMin = parseHHMM(actualTime);
+      const deltaMin = pMin != null && aMin != null ? aMin - pMin : null;
 
-        const plannedTime = (draft?.planned_time ?? rec?.planned_time ?? defaultPlanned).toString();
-        const actualTime = (draft?.actual_time ?? rec?.actual_time ?? "").toString();
-        const stayedId = (draft?.stayed_seller_id ?? rec?.stayed_seller_id ?? defaultStayed) || "";
-        const arrivedId = (draft?.arrived_seller_id ?? rec?.arrived_seller_id ?? defaultArrived) || "";
+      const stayedName = stayedId === "__NONE__" ? "Personne" : (nameFromId(stayedId) || "-");
+      const arrivedName = nameFromId(arrivedId) || "-";
 
-        const pMin = parseHHMM(plannedTime);
-        const aMin = parseHHMM(actualTime);
-        const deltaMin = pMin != null && aMin != null ? aMin - pMin : null;
+      const open = !!handoverOpen[iso];
+      const focused = handoverFocusIso === iso;
 
-        const stayedName = stayedId ? (nameFromId(stayedId) || "-") : "-";
-        const arrivedName = arrivedId ? (nameFromId(arrivedId) || "-") : "-";
+      const candidatesStayed = Array.from(new Set([middayId, morningId].filter(Boolean)));
+      const candidatesArrived = Array.from(new Set([eveningId].filter(Boolean)));
 
-        const open = !!handoverOpen[key];
-        const focused = handoverFocusKey === key;
-
-        const candidatesArrived = Array.from(new Set([(isMorning ? morningId : eveningId)].filter(Boolean)));
-        const candidatesStayed = isMorning ? [] : Array.from(new Set([middayId, morningId].filter(Boolean)));
-
-        return (
-          <div
-            key={boundary}
-            id={handoverDomId(iso, boundary)}
-            className="border rounded-2xl p-3"
-            style={focused ? { boxShadow: "inset 0 0 0 2px rgba(245,158,11,0.55)" } : {}}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-xs uppercase text-gray-500">{isMorning ? "OUVERTURE (MATIN)" : "SOIR"}</div>
-                <div className="text-xs text-gray-600 mt-1">
-                  {deltaMin == null ? (
-                    rec ? (
-                      <span>enregistré</span>
-                    ) : (
-                      <span>-</span>
-                    )
+      return (
+        <div
+          key={iso}
+          id={`handover-${iso}`}
+          className="border rounded-2xl p-3"
+          style={focused ? { boxShadow: "inset 0 0 0 2px rgba(245,158,11,0.55)" } : {}}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
+              <div className="font-semibold">{iso}</div>
+              <div className="text-xs text-gray-600 mt-1">
+                {deltaMin == null ? (
+                  rec ? (
+                    <span>enregistré</span>
                   ) : (
-                    <>
-                      <span className="font-semibold">{fmtDeltaMinutes(deltaMin)}</span>{" "}
-                      <span className="text-gray-500">
-                        ({stayedName} + / {arrivedName} -)
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => setHandoverOpen((prev) => ({ ...prev, [key]: !open }))}
-                  style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
-                >
-                  {open ? "Fermer" : "Ajuster"}
-                </button>
-
-                {rec ? (
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      if (confirm("Supprimer cet ajustement ?")) deleteHandover(iso, boundary);
-                    }}
-                    title="Supprimer l'ajustement enregistré"
-                    style={{
-                      backgroundColor: "#dc2626",
-                      color: "#fff",
-                      borderColor: "transparent",
-                      padding: "0.35rem 0.6rem",
-                      borderRadius: "0.9rem",
-                    }}
-                  >
-                    Supprimer
-                  </button>
-                ) : null}
+                    <span>-</span>
+                  )
+                ) : (
+                  <>
+                    <span className="font-semibold">{fmtDeltaMinutes(deltaMin)}</span>{" "}
+                    <span className="text-gray-500">
+                      {stayedId === "__NONE__" ? (
+                        <> (retard simple: {arrivedName} -)</>
+                      ) : (
+                        <> ({stayedName} + / {arrivedName} -)</>
+                      )}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
-            {open ? (
-              <div className="mt-3 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <div>
-                    <div className="text-xs mb-1 text-gray-600">Heure prévue</div>
-                    <input
-                      type="time"
-                      className="input w-full"
-                      value={plannedTime}
-                      onChange={(e) => {
-                        const v = e.target.value || "";
-                        setHandoverEdit((prev) => ({
-                          ...prev,
-                          [key]: {
-                            ...(prev[key] || {}),
-                            planned_time: v,
-                            actual_time: actualTime,
-                            stayed_seller_id: stayedId,
-                            arrived_seller_id: arrivedId,
-                          },
-                        }));
-                      }}
-                      placeholder={defaultPlanned}
-                    />
-                  </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setHandoverOpen((prev) => ({ ...prev, [iso]: !open }))}
+                style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
+              >
+                {open ? "Fermer" : "Ajuster"}
+              </button>
 
-                  <div>
-                    <div className="text-xs mb-1 text-gray-600">Arrivée réelle</div>
-                    <input
-                      type="time"
-                      className="input w-full"
-                      value={actualTime}
-                      onChange={(e) => {
-                        const v = e.target.value || "";
-                        setHandoverEdit((prev) => ({
-                          ...prev,
-                          [key]: {
-                            ...(prev[key] || {}),
-                            actual_time: v,
-                            planned_time: plannedTime,
-                            stayed_seller_id: stayedId,
-                            arrived_seller_id: arrivedId,
-                          },
-                        }));
-                      }}
-                      placeholder="06:40 / 14:40"
-                    />
-                  </div>
-                </div>
+              {rec ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => deleteHandover(iso)}
+                  title="Supprimer l'ajustement enregistré"
+                  style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent", padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
+                >
+                  Supprimer
+                </button>
+              ) : null}
+            </div>
+          </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <div>
-                    <div className="text-xs mb-1 text-gray-600">Vendeuse qui a couvert (optionnel)</div>
-                    <select
-                      className="select w-full"
-                      value={stayedId || ""}
-                      onChange={(e) => {
-                        const v = e.target.value || "";
-                        setHandoverEdit((prev) => ({
-                          ...prev,
-                          [key]: {
-                            ...(prev[key] || {}),
-                            stayed_seller_id: v,
-                            arrived_seller_id: arrivedId,
-                            actual_time: actualTime,
-                            planned_time: plannedTime,
-                          },
-                        }));
-                      }}
-                    >
-                      <option value="">Aucune (retard simple)</option>
-                      {candidatesStayed.length > 0 ? (
-                        <optgroup label="Depuis planning">
-                          {candidatesStayed.map((id) => (
-                            <option key={id} value={id}>
-                              {nameFromId(id) || id}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ) : null}
-                      <optgroup label="Toutes les vendeuses">
-                        {(sellers || []).map((s) => (
-                          <option key={s.user_id} value={s.user_id}>
-                            {s.full_name}
-                          </option>
-                        ))}
-                      </optgroup>
-                    </select>
-                  </div>
-
-                  <div>
-                    <div className="text-xs mb-1 text-gray-600">{isMorning ? "Vendeuse concernée (ouverture)" : "Vendeuse concernée (soir)"}</div>
-                    <select
-                      className="select w-full"
-                      value={arrivedId || ""}
-                      onChange={(e) => {
-                        const v = e.target.value || "";
-                        setHandoverEdit((prev) => ({
-                          ...prev,
-                          [key]: {
-                            ...(prev[key] || {}),
-                            arrived_seller_id: v,
-                            stayed_seller_id: stayedId,
-                            actual_time: actualTime,
-                            planned_time: plannedTime,
-                          },
-                        }));
-                      }}
-                    >
-                      <option value="" disabled>
-                        Choisir
-                      </option>
-                      {candidatesArrived.length > 0 ? (
-                        <optgroup label="Depuis planning">
-                          {candidatesArrived.map((id) => (
-                            <option key={id} value={id}>
-                              {nameFromId(id) || id}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ) : null}
-                      <optgroup label="Toutes les vendeuses">
-                        {(sellers || []).map((s) => (
-                          <option key={s.user_id} value={s.user_id}>
-                            {s.full_name}
-                          </option>
-                        ))}
-                      </optgroup>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="text-xs text-gray-600">
-                  Delta appliqué automatiquement:{" "}
-                  <span className="font-semibold">{deltaMin == null ? "-" : fmtDeltaMinutes(deltaMin)}</span>{" "}
-                  ( + pour “{stayedName}”, - pour “{arrivedName}” )
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => saveHandover(iso, boundary)}
-                    style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
-                  >
-                    Enregistrer
-                  </button>
-
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      setHandoverEdit((prev) => {
-                        const n = { ...prev };
-                        delete n[key];
-                        return n;
-                      });
+          {open ? (
+            <div className="mt-3 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <div className="text-xs mb-1 text-gray-600">Arrivée soir réelle</div>
+                  <input
+                    type="time"
+                    className="input w-full"
+                    value={actualTime}
+                    onChange={(e) => {
+                      const v = e.target.value || "";
+                      setHandoverEdit((prev) => ({
+                        ...prev,
+                        [iso]: { ...(prev[iso] || {}), actual_time: v, stayed_seller_id: stayedId, arrived_seller_id: arrivedId },
+                      }));
                     }}
-                    title="Annuler les modifications locales"
-                  >
-                    Annuler
-                  </button>
+                    placeholder="14:40"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs mb-1 text-gray-600">Heure prévue</div>
+                  <div className="input w-full" style={{ display: "flex", alignItems: "center" }}>
+                    {plannedTime}
+                  </div>
                 </div>
               </div>
-            ) : null}
-          </div>
-        );
-      };
 
-      return (
-        <div key={iso} className="border rounded-2xl p-3">
-          <div className="font-semibold">{dayLabel}</div>
-          <div className="mt-3 space-y-3">
-            {renderBoundary("MORNING_START")}
-            {renderBoundary("EVENING_START")}
-          </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <div className="text-xs mb-1 text-gray-600">Vendeuse qui est restée</div>
+                  <select
+                    className="select w-full"
+                    value={stayedId || ""}
+                    onChange={(e) => {
+                      const v = e.target.value || "";
+                      setHandoverEdit((prev) => ({
+                        ...prev,
+                        [iso]: { ...(prev[iso] || {}), stayed_seller_id: v, arrived_seller_id: arrivedId, actual_time: actualTime },
+                      }));
+                    }}
+                  >
+                    <option value="" disabled>
+                      Choisir
+                    </option>
+                    <option value="__NONE__">Personne (retard simple)</option>
+                    {candidatesStayed.length > 0 ? (
+                      <optgroup label="Depuis planning">
+                        {candidatesStayed.map((id) => (
+                          <option key={id} value={id}>
+                            {nameFromId(id) || id}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                    <optgroup label="Toutes les vendeuses">
+                      {(sellers || []).map((s) => (
+                        <option key={s.user_id} value={s.user_id}>
+                          {s.full_name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+
+                <div>
+                  <div className="text-xs mb-1 text-gray-600">Vendeuse du soir</div>
+                  <select
+                    className="select w-full"
+                    value={arrivedId || ""}
+                    onChange={(e) => {
+                      const v = e.target.value || "";
+                      setHandoverEdit((prev) => ({
+                        ...prev,
+                        [iso]: { ...(prev[iso] || {}), arrived_seller_id: v, stayed_seller_id: stayedId, actual_time: actualTime },
+                      }));
+                    }}
+                  >
+                    <option value="" disabled>
+                      Choisir
+                    </option>
+                    {candidatesArrived.length > 0 ? (
+                      <optgroup label="Depuis planning">
+                        {candidatesArrived.map((id) => (
+                          <option key={id} value={id}>
+                            {nameFromId(id) || id}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null}
+                    <optgroup label="Toutes les vendeuses">
+                      {(sellers || []).map((s) => (
+                        <option key={s.user_id} value={s.user_id}>
+                          {s.full_name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </div>
+              </div>
+
+              <div className="text-xs text-gray-600">
+                Delta appliqué automatiquement:{" "}
+                <span className="font-semibold">{deltaMin == null ? "-" : fmtDeltaMinutes(deltaMin)}</span>{" "}
+                {stayedId === "__NONE__" ? (<> ( - pour “{arrivedName}” )</>) : (<> ( + pour “{stayedName}”, - pour “{arrivedName}” )</>)}
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => saveHandover(iso)}
+                  style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
+                >
+                  Enregistrer
+                </button>
+
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => {
+                    setHandoverEdit((prev) => {
+                      const n = { ...prev };
+                      delete n[iso];
+                      return n;
+                    });
+                  }}
+                  title="Annuler les modifications locales"
+                >
+                  Annuler
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       );
     })}
   </div>
 </div>
-
 
         <div className="card">
           <div className="hdr mb-2">Choisir le mois pour “Total heures (mois)”</div>
@@ -2396,41 +2262,40 @@ function TotalsGrid({ sellers, monthFrom, monthTo, monthLabel, refreshKey, month
     return dict;
   }
 
-async function fetchHandoversRange(fromIso, toIso) {
-  try {
-    const { data, error } = await supabase
-      .from("shift_handover_adjustments")
-      .select("date, boundary, planned_time, actual_time, stayed_seller_id, arrived_seller_id")
-      .in("boundary", ["MORNING_START", "EVENING_START"])
-      .gte("date", fromIso)
-      .lte("date", toIso);
-    if (error) throw error;
-    return data || [];
-  } catch (e) {
-    return [];
+  async function fetchHandoversRange(fromIso, toIso) {
+    try {
+      const { data, error } = await supabase
+        .from("shift_handover_adjustments")
+        .select("date, boundary, planned_time, actual_time, stayed_seller_id, arrived_seller_id")
+        .eq("boundary", "EVENING_START")
+        .gte("date", fromIso)
+        .lte("date", toIso);
+      if (error) throw error;
+      return data || [];
+    } catch (e) {
+      return [];
+    }
   }
-}
 
-function applyHandovers(dict, handovers) {
-  const out = { ...(dict || {}) };
-  (handovers || []).forEach((h) => {
-    const fallbackPlanned = h.boundary === "MORNING_START" ? "06:30" : "13:30";
-    const planned = parseHHMM(h.planned_time || fallbackPlanned);
-    const actual = parseHHMM(h.actual_time || "");
-    if (planned == null || actual == null) return;
+  function applyHandovers(dict, handovers) {
+    const out = { ...(dict || {}) };
+    const pMin = parseHHMM("13:30");
+    (handovers || []).forEach((h) => {
+      const planned = parseHHMM(h.planned_time || "13:30") ?? pMin;
+      const actual = parseHHMM(h.actual_time || "");
+      if (planned == null || actual == null) return;
 
-    const deltaMin = clamp(actual - planned, -360, 360);
-    const deltaHours = deltaMin / 60;
+      const deltaMin = clamp(actual - planned, -360, 360);
+      const deltaHours = deltaMin / 60;
 
-    const stayed = h.stayed_seller_id;
-    const arrived = h.arrived_seller_id;
+      const stayed = h.stayed_seller_id;
+      const arrived = h.arrived_seller_id;
 
-    if (stayed) out[stayed] = Number(out[stayed] || 0) + deltaHours;
-    if (arrived) out[arrived] = Number(out[arrived] || 0) - deltaHours;
-  });
-  return out;
-}
-
+      if (stayed) out[stayed] = Number(out[stayed] || 0) + deltaHours;
+      if (arrived) out[arrived] = Number(out[arrived] || 0) - deltaHours;
+    });
+    return out;
+  }
 
   // Heures sur une plage : tente l'RPC admin, puis fallback table shifts
   async function fetchHoursRange(fromIso, toIso, sellersList) {
