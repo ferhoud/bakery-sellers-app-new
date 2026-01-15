@@ -129,6 +129,17 @@ function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
 
+
+// ✅ Compat boundaries legacy (anciens enregistrements)
+function canonBoundary(b) {
+  return b === "MORNING" ? "MORNING_START" : b === "EVENING" ? "EVENING_START" : b;
+}
+function boundaryAlternates(canon) {
+  if (canon === "MORNING_START") return ["MORNING_START", "MORNING"];
+  if (canon === "EVENING_START") return ["EVENING_START", "EVENING"];
+  return [canon];
+}
+
 /* ---------- PETITS COMPOSANTS SANS HOOKS ---------- */
 function Chip({ name }) {
   if (!name || name === "-") return <span className="text-sm text-gray-500">-</span>;
@@ -266,26 +277,18 @@ export default function AdminPage() {
   const reloadInFlight = useRef(false);
   const lastWakeRef = useRef(0);
 // UI: Retard / relais (bloc dédié sous le planning)
-const handoverKey = (iso, boundary) => `${iso}|${boundary}`;
-const handoverDomId = (iso, boundary) => `handover-${iso}-${boundary}`;
+  const [handoverDate, setHandoverDate] = useState(todayIso);
 
-const [handoverFocusKey, setHandoverFocusKey] = useState(null); // "YYYY-MM-DD|BOUNDARY"
-const [handoverOpen, setHandoverOpen] = useState({}); // { key: true/false }
-
-const openHandover = useCallback((iso, boundary = "EVENING_START") => {
-  const key = handoverKey(iso, boundary);
-  setHandoverFocusKey(key);
-  setHandoverOpen((prev) => ({ ...prev, [key]: true }));
-  setTimeout(() => {
-    const wrap = document.getElementById("handover-week");
-    if (wrap?.scrollIntoView) wrap.scrollIntoView({ behavior: "smooth", block: "start" });
-    const row = document.getElementById(handoverDomId(iso, boundary));
-    if (row?.scrollIntoView) row.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, 0);
-}, []);
+  const openHandover = useCallback((iso) => {
+    setHandoverDate(iso);
+    setTimeout(() => {
+      const wrap = document.getElementById("handover-day");
+      if (wrap?.scrollIntoView) wrap.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }, []);
 
 
-  // Déconnexion robuste
+// Déconnexion robuste
   const [signingOut, setSigningOut] = useState(false);
   const handleSignOut = useCallback(async () => {
     if (signingOut) return;
@@ -496,7 +499,7 @@ const loadWeekHandovers = useCallback(async () => {
     const { data, error } = await supabase
       .from("shift_handover_adjustments")
       .select("id, date, boundary, planned_time, actual_time, stayed_seller_id, arrived_seller_id, created_at")
-      .in("boundary", ["MORNING_START", "EVENING_START"])
+      .in("boundary", ["MORNING_START", "EVENING_START", "MORNING", "EVENING"])
       .gte("date", from)
       .lte("date", to);
 
@@ -508,7 +511,14 @@ const loadWeekHandovers = useCallback(async () => {
     }
     const map = {};
     (data || []).forEach((r) => {
-      map[`${r.date}|${r.boundary}`] = r;
+      const c = canonBoundary(r.boundary);
+      const key = `${r.date}|${c}`;
+      const isCanon = r.boundary === c;
+      const prev = map[key];
+      // Préfère *_START si doublon
+      if (!prev || (isCanon && prev?._orig_boundary !== c)) {
+        map[key] = { ...r, boundary: c, _orig_boundary: r.boundary };
+      }
     });
     setHandoverByKey(map);
   } catch (e) {
@@ -581,6 +591,15 @@ const saveHandover = useCallback(
         return;
       }
 
+
+      // ✅ Nettoyage legacy : évite les doublons si des anciens enregistrements existent (MORNING/EVENING)
+      try {
+        const legacy = boundary === "MORNING_START" ? "MORNING" : boundary === "EVENING_START" ? "EVENING" : null;
+        if (legacy) {
+          await supabase.from("shift_handover_adjustments").delete().eq("date", iso).eq("boundary", legacy);
+        }
+      } catch (_) {}
+
       // Nettoie le draft local de ce jour/créneau
       setHandoverEdit((prev) => {
         const n = { ...prev };
@@ -605,7 +624,7 @@ const deleteHandover = useCallback(
         .from("shift_handover_adjustments")
         .delete()
         .eq("date", iso)
-        .eq("boundary", boundary);
+        .in("boundary", boundaryAlternates(boundary));
       if (error) {
         console.error("deleteHandover error:", error);
         alert(`Impossible de supprimer l'ajustement. (${error.code || "?"}) ${error.message || ""}`);
@@ -1311,16 +1330,17 @@ const deleteHandover = useCallback(
   </div>
 </div>
 
-      <div className="p-4 max-w-6xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
+      <div className="p-4 max-w-7xl 2xl:max-w-screen-2xl mx-auto space-y-6">
+                <div className="flex items-center justify-between">
           <div className="hdr">
             Compte: {profile?.full_name || "-"} <span className="sub">(admin)</span>
           </div>
 
           <div className="flex items-center gap-2">
             <Link href="/admin/sellers" legacyBehavior>
-              <a className="btn">👥 Gerer les vendeuses</a>
+              <a className="btn">👥 Gérer les vendeuses</a>
             </Link>
+<a className="btn" href="/admin/supervisors">🖥️ Superviseur</a>
 
             {/* ✅ Bouton UNIQUE en haut + badge rouge type notification */}
             <Link href="/admin/monthly-hours" legacyBehavior>
@@ -1365,247 +1385,154 @@ const deleteHandover = useCallback(
               {signingOut ? "Déconnexion…" : "Se déconnecter"}
             </button>
           </div>
+   
         </div>
 
-        <div className="card">
-          <div className="flex flex-col gap-2">
-            <div>
-              <div className="hdr mb-1">Validation heures mensuelles</div>
-              <div className="text-sm text-gray-600">
-                Mois : <span className="font-medium">{labelMonthFR(selectedMonth)}</span>{" "}
-                · À traiter : <span className="font-medium">{mhToReviewCount == null ? "…" : mhToReviewCount}</span>
-                · En attente vendeuses : <span className="font-medium">{mhAwaitingSellerCount == null ? "…" : mhAwaitingSellerCount}</span>
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                “À traiter” = la vendeuse a validé ou corrigé. “En attente vendeuses” = pas encore de réponse.
-              </div>
-              <div className="text-xs text-gray-500 mt-1">
-                Badge bouton (global) : <span className="font-medium">{mhToReviewTotal == null ? "…" : mhToReviewTotal}</span>
-              </div>
-            </div>
 
-            {/* ❌ SUPPRIMÉ: Boutons "Rafraîchir" + "Heures mensuelles" dans la carte */}
-          </div>
 
-          {mhLatestRows && mhLatestRows.length > 0 ? (
-            <div className="mt-3 space-y-2">
-              {mhLatestRows.map((row) => {
-                const name = nameFromId(row.seller_id) || "-";
-                const st = row.seller_status;
-                const tag = st === "accepted" ? "validé" : st === "disputed" ? "corrigé" : "en attente";
-                return (
-                  <div key={row.id} className="flex items-center justify-between border rounded-2xl p-3">
-                    <div className="text-sm">
-                      <div className="font-medium">{name}</div>
-                      <div className="text-gray-600">
-                        {tag} · calculé: {Number(row.computed_hours || 0).toFixed(2)} h
-                        {st === "disputed" ? <> · proposé: {Number(row.seller_correction_hours || 0).toFixed(2)} h</> : null}
-                      </div>
-                    </div>
-                    <div className="text-xs text-gray-500">
-                      {row.updated_at ? String(row.updated_at).replace("T", " ").slice(0, 16) : ""}
-                    </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="card">
+                    <div className="hdr mb-2">Absences aujourd’hui</div>
+                    {absencesToday.length === 0 ? (
+                      <div className="text-sm">Aucune absence aujourd’hui</div>
+                    ) : (
+                      <ul className="list-disc pl-6 space-y-1">
+                        {absencesToday.map((a) => (
+                          <li key={a.id}>
+                            <Chip name={nameFromId(a.seller_id)} /> - {a.status}
+                            {a.reason ? (
+                              <>
+                                <span> · </span>
+                                {a.reason}
+                              </>
+                            ) : (
+                              ""
+                            )}
+                            {a.replacement ? (
+                              <>
+                                {" · "}
+                                <span>Remplacement accepté : </span>
+                                <Chip name={nameFromId(a.replacement.volunteer_id)} />
+                              </>
+                            ) : null}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="text-sm text-gray-600 mt-3">Aucune demande pour ce mois (ou aucune à traiter).</div>
-          )}
-        </div>
-
-        {latestCancel && (
-          <div className="border rounded-2xl p-3 flex items-start justify-between gap-2" style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}>
-            <div className="text-sm">
-              <span className="font-medium">{nameFromId(latestCancel.seller_id) || "-"}</span> a annulé son absence du{" "}
-              <span className="font-medium">{latestCancel.date}</span>.
-            </div>
-          </div>
-        )}
-
-        {latestLeave && (
-          <div
-            className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
-            style={{ backgroundColor: "#fef3c7", borderColor: "#fcd34d" }}
-          >
-            <div className="text-sm">
-              <span className="font-medium">{nameFromId(latestLeave.seller_id) || "-"}</span> demande un congé du{" "}
-              <span className="font-medium">{latestLeave.start_date}</span> au <span className="font-medium">{latestLeave.end_date}</span>
-              {latestLeave.reason ? (
-                <>
-                  <span> - </span>
-                  <span>{latestLeave.reason}</span>
-                </>
-              ) : null}
-              .
-            </div>
-            <div className="flex gap-2">
-              <ApproveBtn onClick={() => approveLeave(latestLeave.id)} />
-              <RejectBtn onClick={() => rejectLeave(latestLeave.id)} />
-            </div>
-          </div>
-        )}
-
-        {latestRepl && (
-          <div
-            className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2"
-            style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}
-          >
-            <div className="text-sm">
-              <span className="font-medium">{nameFromId(latestRepl.volunteer_id) || "-"}</span> veut remplacer{" "}
-              <Chip name={nameFromId(latestRepl.absent_id) || "-"} /> le <span className="font-medium">{latestRepl.date}</span>.
-            </div>
-            <div className="flex flex-col sm:flex-row gap-2 items-start sm:items-center">
-              <ShiftSelect
-                dateStr={latestRepl.date}
-                value={selectedShift[latestRepl.id] || ""}
-                onChange={(val) => setSelectedShift((prev) => ({ ...prev, [latestRepl.id]: val }))}
-              />
-              <ApproveBtn onClick={() => assignVolunteer(latestRepl)}>Approuver</ApproveBtn>
-              <RejectBtn onClick={() => declineVolunteer(latestRepl.id)}>Refuser</RejectBtn>
-            </div>
-          </div>
-        )}
-
-        <div className="card">
-          <div className="hdr mb-2">Absences aujourd’hui</div>
-          {absencesToday.length === 0 ? (
-            <div className="text-sm">Aucune absence aujourd’hui</div>
-          ) : (
-            <ul className="list-disc pl-6 space-y-1">
-              {absencesToday.map((a) => (
-                <li key={a.id}>
-                  <Chip name={nameFromId(a.seller_id)} /> - {a.status}
-                  {a.reason ? (
-                    <>
-                      <span> · </span>
-                      {a.reason}
-                    </>
-                  ) : (
-                    ""
-                  )}
-                  {a.replacement ? (
-                    <>
-                      {" · "}
-                      <span>Remplacement accepté : </span>
-                      <Chip name={nameFromId(a.replacement.volunteer_id)} />
-                    </>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="card">
-          <div className="hdr mb-2">Demandes d’absence - en attente (à venir)</div>
-          {pendingAbs.length === 0 ? (
-            <div className="text-sm text-gray-600">Aucune demande en attente.</div>
-          ) : (
-            <div className="space-y-2">
-              {pendingAbs.map((a) => {
-                const name = nameFromId(a.seller_id);
-                return (
-                  <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                    <div>
-                      <div className="font-medium">{name}</div>
-                      <div className="text-sm text-gray-600">
-                        {a.date}
-                        {a.reason ? (
-                          <>
-                            <span> · </span>
-                            {a.reason}
-                          </>
-                        ) : (
-                          ""
-                        )}
+          
+                  <div className="card">
+                    <div className="hdr mb-2">Demandes d’absence - en attente (à venir)</div>
+                    {pendingAbs.length === 0 ? (
+                      <div className="text-sm text-gray-600">Aucune demande en attente.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {pendingAbs.map((a) => {
+                          const name = nameFromId(a.seller_id);
+                          return (
+                            <div key={a.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                              <div>
+                                <div className="font-medium">{name}</div>
+                                <div className="text-sm text-gray-600">
+                                  {a.date}
+                                  {a.reason ? (
+                                    <>
+                                      <span> · </span>
+                                      {a.reason}
+                                    </>
+                                  ) : (
+                                    ""
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <ApproveBtn onClick={() => approveAbs(a.id)} />
+                                <RejectBtn onClick={() => rejectAbs(a.id)} />
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <ApproveBtn onClick={() => approveAbs(a.id)} />
-                      <RejectBtn onClick={() => rejectAbs(a.id)} />
-                    </div>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <div className="hdr mb-2">Demandes de congé - en attente</div>
-          {pendingLeaves.length === 0 ? (
-            <div className="text-sm text-gray-600">Aucune demande de congé en attente.</div>
-          ) : (
-            <div className="space-y-2">
-              {pendingLeaves.map((l) => {
-                const name = nameFromId(l.seller_id);
-                return (
-                  <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                    <div>
-                      <div className="font-medium">{name}</div>
-                      <div className="text-sm text-gray-600">
-                        Du {l.start_date} au {l.end_date}
-                        {l.reason ? (
-                          <>
-                            <span> · </span>
-                            {l.reason}
-                          </>
-                        ) : (
-                          ""
-                        )}
+          
+                  <div className="card">
+                    <div className="hdr mb-2">Demandes de congé - en attente</div>
+                    {pendingLeaves.length === 0 ? (
+                      <div className="text-sm text-gray-600">Aucune demande de congé en attente.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {pendingLeaves.map((l) => {
+                          const name = nameFromId(l.seller_id);
+                          return (
+                            <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                              <div>
+                                <div className="font-medium">{name}</div>
+                                <div className="text-sm text-gray-600">
+                                  Du {l.start_date} au {l.end_date}
+                                  {l.reason ? (
+                                    <>
+                                      <span> · </span>
+                                      {l.reason}
+                                    </>
+                                  ) : (
+                                    ""
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex gap-2">
+                                <ApproveBtn onClick={() => approveLeave(l.id)} />
+                                <RejectBtn onClick={() => rejectLeave(l.id)} />
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <ApproveBtn onClick={() => approveLeave(l.id)} />
-                      <RejectBtn onClick={() => rejectLeave(l.id)} />
-                    </div>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <div className="hdr mb-2">Congés approuvés - en cours ou à venir</div>
-          {approvedLeaves.length === 0 ? (
-            <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
-          ) : (
-            <div className="space-y-2">
-              {approvedLeaves.map((l) => {
-                const name = nameFromId(l.seller_id);
-                const isOngoing = betweenIso(todayIso, l.start_date, l.end_date);
-                const tag = isOngoing ? "En cours" : "À venir";
-                const tagBg = isOngoing ? "#16a34a" : "#2563eb";
-                return (
-                  <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
-                    <div>
-                      <div className="font-medium">{name}</div>
-                      <div className="text-sm text-gray-600">
-                        Du {l.start_date} au {l.end_date}
+          
+                  <div className="card">
+                    <div className="hdr mb-2">Congés approuvés - en cours ou à venir</div>
+                    {approvedLeaves.length === 0 ? (
+                      <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
+                    ) : (
+                      <div className="space-y-2">
+                        {approvedLeaves.map((l) => {
+                          const name = nameFromId(l.seller_id);
+                          const isOngoing = betweenIso(todayIso, l.start_date, l.end_date);
+                          const tag = isOngoing ? "En cours" : "À venir";
+                          const tagBg = isOngoing ? "#16a34a" : "#2563eb";
+                          return (
+                            <div key={l.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between border rounded-2xl p-3 gap-2">
+                              <div>
+                                <div className="font-medium">{name}</div>
+                                <div className="text-sm text-gray-600">
+                                  Du {l.start_date} au {l.end_date}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>
+                                  {tag}
+                                </span>
+                                {!isOngoing && l.start_date > todayIso ? (
+                                  <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={() => cancelFutureLeave(l.id)}
+                                    style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
+                                  >
+                                    Annuler le congé
+                                  </button>
+                                ) : null}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>
-                        {tag}
-                      </span>
-                      {!isOngoing && l.start_date > todayIso ? (
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={() => cancelFutureLeave(l.id)}
-                          style={{ backgroundColor: "#dc2626", color: "#fff", borderColor: "transparent" }}
-                        >
-                          Annuler le congé
-                        </button>
-                      ) : null}
-                    </div>
+                    )}
                   </div>
-                );
-              })}
-            </div>
-          )}
+          
+                  
         </div>
 
         <TodayColorBlocks today={today} todayIso={todayIso} assign={assign} nameFromId={nameFromId} />
@@ -1625,7 +1552,8 @@ const deleteHandover = useCallback(
             </button>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-7 gap-3">
+          <div className="overflow-x-auto">
+            <div className="md:min-w-[1200px] grid grid-cols-1 md:grid-cols-7 gap-3">
             {days.map((d) => {
               const iso = fmtISODate(d);
               const sunday = isSunday(d);
@@ -1644,6 +1572,8 @@ const recEvening = handoverByKey[`${iso}|EVENING_START`] || null;
 
 const draftMorning = handoverEdit[`${iso}|MORNING_START`] || null;
 const draftEvening = handoverEdit[`${iso}|EVENING_START`] || null;
+
+const handoverCount = (recMorning ? 1 : 0) + (recEvening ? 1 : 0);
 
 // Matin (retard simple possible: stayed = null)
 const plannedMorning = (draftMorning?.planned_time ?? recMorning?.planned_time ?? "06:30").toString();
@@ -1681,7 +1611,30 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                   style={highlight ? { boxShadow: "inset 0 0 0 2px rgba(37,99,235,0.5)" } : {}}
                 >
                   <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
-                  <div className="font-semibold">{iso}</div>
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold">{iso}</div>
+                    {handoverCount > 0 ? (
+                      <span
+                        title={`Retard / relais: ${handoverCount}`}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          minWidth: 22,
+                          height: 22,
+                          padding: "0 7px",
+                          borderRadius: 999,
+                          background: "#dc2626",
+                          color: "#fff",
+                          fontSize: 12,
+                          fontWeight: 800,
+                          lineHeight: "22px",
+                        }}
+                      >
+                        {handoverCount}
+                      </span>
+                    ) : null}
+                  </div>
 
                   {/* Bloc Absents (inline admin) */}
                   <div className="space-y-1">
@@ -1797,70 +1750,7 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                     </div>
                   )}
 
-                  {/* ⏱️ Retard / relais (matin + soir) : résumé + accès (bloc dédié plus bas) */}
-<div
-  className="flex items-center justify-between gap-2 border rounded-2xl px-3 py-2"
-  style={{ background: "#f8fafc", borderColor: "#e2e8f0" }}
->
-  <div className="text-xs text-gray-700 space-y-1">
-    <div>
-      <span className="font-medium">⏱️ Retard :</span>{" "}
-      <span className="text-gray-500">Matin</span>{" "}
-      {deltaMorningMin == null ? (
-        recMorning ? (
-          <span className="text-gray-600">enregistré</span>
-        ) : (
-          <span className="text-gray-500">-</span>
-        )
-      ) : (
-        <>
-          <span className="font-semibold">{fmtDeltaMinutes(deltaMorningMin)}</span>{" "}
-          <span className="text-gray-500">
-            ({stayedMorningName} + / {arrivedMorningName} -)
-          </span>
-        </>
-      )}
-      <span className="text-gray-400"> • </span>
-      <span className="text-gray-500">Soir</span>{" "}
-      {deltaEveningMin == null ? (
-        recEvening ? (
-          <span className="text-gray-600">enregistré</span>
-        ) : (
-          <span className="text-gray-500">-</span>
-        )
-      ) : (
-        <>
-          <span className="font-semibold">{fmtDeltaMinutes(deltaEveningMin)}</span>{" "}
-          <span className="text-gray-500">
-            ({stayedEveningName} + / {arrivedEveningName} -)
-          </span>
-        </>
-      )}
-    </div>
-  </div>
-
-  <div className="flex gap-1">
-    <button
-      type="button"
-      className="btn"
-      onClick={() => openHandover(iso, "MORNING_START")}
-      title="Ouvrir le bloc Retard / relais (matin) en dessous du planning"
-      style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
-    >
-      Matin
-    </button>
-    <button
-      type="button"
-      className="btn"
-      onClick={() => openHandover(iso, "EVENING_START")}
-      title="Ouvrir le bloc Retard / relais (soir) en dessous du planning"
-      style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
-    >
-      Soir
-    </button>
-  </div>
-</div>
-<ShiftRow
+                  <ShiftRow
                     label="Soir (13h30-20h30)"
                     iso={iso}
                     code="EVENING"
@@ -1869,9 +1759,52 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                     sellers={sellers}
                     chipName={nameFromId(assign[`${iso}|EVENING`])}
                   />
-                </div>
+                
+
+                  <div
+                    className="mt-2 flex items-center justify-between gap-2 border rounded-2xl px-3 py-2"
+                    style={{ background: "#f8fafc", borderColor: "#e2e8f0" }}
+                  >
+                    <div className="text-xs text-gray-700">
+                      ⏱️ Retard / relais
+                      {handoverCount > 0 ? (
+                        <span
+                          className="ml-2"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            minWidth: 20,
+                            height: 20,
+                            padding: "0 6px",
+                            borderRadius: 999,
+                            background: "#dc2626",
+                            color: "#fff",
+                            fontSize: 12,
+                            fontWeight: 800,
+                            lineHeight: "20px",
+                          }}
+                        >
+                          {handoverCount}
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => openHandover(iso)}
+                      title="Ajuster un retard / relais pour ce jour"
+                      style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
+                    >
+                      Retard
+                    </button>
+                  </div>
+
+</div>
               );
             })}
+            </div>
           </div>
         </div>
 
@@ -1879,292 +1812,209 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
 
 
 {/* ===================== RETARD / RELAIS (BLOC DÉDIÉ) ===================== */}
-<div className="card" id="handover-week">
-  <div className="hdr mb-2">Retard / relais – ajustements semaine (matin + soir)</div>
-  <div className="text-sm text-gray-600">
-    Ici tu saisis l’heure <span className="font-medium">prévue</span> et l’heure <span className="font-medium">réelle</span>.
-    L’app applique automatiquement <span className="font-medium">+delta</span> à la vendeuse “qui a couvert” (optionnel)
-    et <span className="font-medium">-delta</span> à la vendeuse concernée (celle qui arrive).
-  </div>
+<div className="card" id="handover-day">
+          <div className="hdr mb-2">Retard / relais</div>
+          <div className="text-sm text-gray-600">
+            Sélectionne un jour, puis saisis l’heure <span className="font-medium">prévue</span> et l’heure{" "}
+            <span className="font-medium">réelle</span>. L’app applique automatiquement{" "}
+            <span className="font-medium">+delta</span> à la vendeuse “qui a couvert” (optionnel) et{" "}
+            <span className="font-medium">-delta</span> à la vendeuse concernée (celle qui arrive).
+          </div>
 
-  <div className="mt-4 space-y-4">
-    {days.map((d) => {
-      const iso = fmtISODate(d);
-
-      // defaults depuis le planning
-      const morningId = assign[`${iso}|MORNING`] || "";
-      const middayId = assign[`${iso}|MIDDAY`] || "";
-      const eveningId = assign[`${iso}|EVENING`] || "";
-
-      const dayLabel = `${capFirst(weekdayFR(d))} ${iso}`;
-
-      const renderBoundary = (boundary) => {
-        const isMorning = boundary === "MORNING_START";
-        const key = handoverKey(iso, boundary);
-        const rec = handoverByKey[key] || null;
-        const draft = handoverEdit[key] || null;
-
-        const defaultPlanned = isMorning ? "06:30" : "13:30";
-        const defaultStayed = ""; // retard simple par défaut (aucune vendeuse "restée")
-        const defaultArrived = isMorning ? (morningId || "") : (eveningId || "");
-
-        const plannedTime = (draft?.planned_time ?? rec?.planned_time ?? defaultPlanned).toString();
-        const actualTime = (draft?.actual_time ?? rec?.actual_time ?? "").toString();
-        const stayedId = (draft?.stayed_seller_id ?? rec?.stayed_seller_id ?? defaultStayed) || "";
-        const arrivedId = (draft?.arrived_seller_id ?? rec?.arrived_seller_id ?? defaultArrived) || "";
-
-        const pMin = parseHHMM(plannedTime);
-        const aMin = parseHHMM(actualTime);
-        const deltaMin = pMin != null && aMin != null ? aMin - pMin : null;
-
-        const stayedName = stayedId ? (nameFromId(stayedId) || "-") : "-";
-        const arrivedName = arrivedId ? (nameFromId(arrivedId) || "-") : "-";
-
-        const open = !!handoverOpen[key];
-        const focused = handoverFocusKey === key;
-
-        const candidatesArrived = Array.from(new Set([(isMorning ? morningId : eveningId)].filter(Boolean)));
-        const candidatesStayed = isMorning ? [] : Array.from(new Set([middayId, morningId].filter(Boolean)));
-
-        return (
-          <div
-            key={boundary}
-            id={handoverDomId(iso, boundary)}
-            className="border rounded-2xl p-3"
-            style={focused ? { boxShadow: "inset 0 0 0 2px rgba(245,158,11,0.55)" } : {}}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-xs uppercase text-gray-500">{isMorning ? "OUVERTURE (MATIN)" : "SOIR"}</div>
-                <div className="text-xs text-gray-600 mt-1">
-                  {deltaMin == null ? (
-                    rec ? (
-                      <span>enregistré</span>
-                    ) : (
-                      <span>-</span>
-                    )
-                  ) : (
-                    <>
-                      <span className="font-semibold">{fmtDeltaMinutes(deltaMin)}</span>{" "}
-                      <span className="text-gray-500">
-                        ({stayedName} + / {arrivedName} -)
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => setHandoverOpen((prev) => ({ ...prev, [key]: !open }))}
-                  style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
-                >
-                  {open ? "Fermer" : "Ajuster"}
-                </button>
-
-                {rec ? (
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      if (confirm("Supprimer cet ajustement ?")) deleteHandover(iso, boundary);
-                    }}
-                    title="Supprimer l'ajustement enregistré"
-                    style={{
-                      backgroundColor: "#dc2626",
-                      color: "#fff",
-                      borderColor: "transparent",
-                      padding: "0.35rem 0.6rem",
-                      borderRadius: "0.9rem",
-                    }}
-                  >
-                    Supprimer
-                  </button>
-                ) : null}
-              </div>
+          <div className="mt-4 flex flex-wrap items-end gap-3">
+            <div>
+              <div className="text-sm mb-1">Jour</div>
+              <select className="input" value={handoverDate} onChange={(e) => setHandoverDate(e.target.value)}>
+                {days.map((d) => {
+                  const iso = fmtISODate(d);
+                  return (
+                    <option key={iso} value={iso}>
+                      {capFirst(weekdayFR(d))} {iso}
+                    </option>
+                  );
+                })}
+              </select>
             </div>
 
-            {open ? (
-              <div className="mt-3 space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <div>
-                    <div className="text-xs mb-1 text-gray-600">Heure prévue</div>
-                    <input
-                      type="time"
-                      className="input w-full"
-                      value={plannedTime}
-                      onChange={(e) => {
-                        const v = e.target.value || "";
-                        setHandoverEdit((prev) => ({
-                          ...prev,
-                          [key]: {
-                            ...(prev[key] || {}),
-                            planned_time: v,
-                            actual_time: actualTime,
-                            stayed_seller_id: stayedId,
-                            arrived_seller_id: arrivedId,
-                          },
-                        }));
-                      }}
-                      placeholder={defaultPlanned}
-                    />
+            <button type="button" className="btn" onClick={() => setHandoverDate(todayIso)}>
+              Aujourd’hui
+            </button>
+          </div>
+
+          {(() => {
+            const iso = handoverDate;
+
+            const morningId = assign[`${iso}|MORNING`] || "";
+            const middayId = assign[`${iso}|MIDDAY`] || "";
+            const eveningId = assign[`${iso}|EVENING`] || "";
+
+            const sellerOptions = (sellers || []).map((s) => ({ id: s.user_id, name: s.full_name }));
+
+            const renderBoundary = (boundary) => {
+              const isMorning = boundary === "MORNING_START";
+              const label = isMorning ? "Matin" : "Soir";
+              const defaultPlanned = isMorning ? "06:30" : "13:30";
+              const defaultArrived = isMorning ? (morningId || "") : (eveningId || "");
+
+              const key = `${iso}|${boundary}`;
+              const rec = handoverByKey[key] || null;
+              const cur = handoverEdit[key] || {};
+
+              const planned_time = (cur.planned_time ?? rec?.planned_time ?? defaultPlanned ?? "").toString();
+              const actual_time = (cur.actual_time ?? rec?.actual_time ?? "" ?? "").toString();
+              const stayed_seller_id = (cur.stayed_seller_id ?? rec?.stayed_seller_id ?? "" ?? "") || "";
+              const arrived_seller_id = (cur.arrived_seller_id ?? rec?.arrived_seller_id ?? defaultArrived ?? "") || "";
+
+              const pMin = parseHHMM(planned_time);
+              const aMin = parseHHMM(actual_time);
+              const delta = pMin != null && aMin != null ? aMin - pMin : null;
+
+              const arrivedName = arrived_seller_id ? nameFromId(arrived_seller_id) || "-" : "-";
+              const stayedName = stayed_seller_id ? nameFromId(stayed_seller_id) || "-" : "Aucune (retard simple)";
+
+              return (
+                <div className="border rounded-2xl p-4" style={{ borderColor: "#e5e7eb" }}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-semibold">
+                        {label}{" "}
+                        <span className="text-xs font-normal text-gray-500">
+                          ({isMorning ? "arrivée 6h30" : "arrivée 13h30"})
+                        </span>
+                      </div>
+                      <div className="text-xs text-gray-600 mt-1">
+                        {rec ? (
+                          <span className="text-green-700 font-medium">Enregistré</span>
+                        ) : (
+                          <span className="text-gray-500">Non saisi</span>
+                        )}
+                        {" · "}
+                        Δ{" "}
+                        {delta == null ? (
+                          "-"
+                        ) : (
+                          <span className={delta > 0 ? "text-red-700 font-medium" : "text-gray-800 font-medium"}>
+                            {delta > 0 ? `+${delta}` : `${delta}`} min
+                          </span>
+                        )}
+                        {" · "}
+                        {stayedName} + / {arrivedName} -
+                      </div>
+                    </div>
+
+                    {rec ? (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          if (confirm("Supprimer cet ajustement ?")) deleteHandover(iso, boundary);
+                        }}
+                        title="Supprimer l'ajustement enregistré"
+                        style={{
+                          backgroundColor: "#fff",
+                          color: "#111827",
+                          borderColor: "#ef4444",
+                        }}
+                      >
+                        Supprimer
+                      </button>
+                    ) : null}
                   </div>
 
-                  <div>
-                    <div className="text-xs mb-1 text-gray-600">Arrivée réelle</div>
-                    <input
-                      type="time"
-                      className="input w-full"
-                      value={actualTime}
-                      onChange={(e) => {
-                        const v = e.target.value || "";
-                        setHandoverEdit((prev) => ({
-                          ...prev,
-                          [key]: {
-                            ...(prev[key] || {}),
-                            actual_time: v,
-                            planned_time: plannedTime,
-                            stayed_seller_id: stayedId,
-                            arrived_seller_id: arrivedId,
-                          },
-                        }));
-                      }}
-                      placeholder="06:40 / 14:40"
-                    />
-                  </div>
-                </div>
+                  <div className="mt-4 grid gap-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <div className="text-sm mb-1">Heure prévue</div>
+                        <input
+                          type="time"
+                          className="input"
+                          value={planned_time}
+                          onChange={(e) =>
+                            setHandoverEdit((prev) => ({
+                              ...prev,
+                              [key]: { ...(prev[key] || {}), planned_time: e.target.value },
+                            }))
+                          }
+                        />
+                      </div>
+                      <div>
+                        <div className="text-sm mb-1">Heure réelle</div>
+                        <input
+                          type="time"
+                          className="input"
+                          value={actual_time}
+                          onChange={(e) =>
+                            setHandoverEdit((prev) => ({
+                              ...prev,
+                              [key]: { ...(prev[key] || {}), actual_time: e.target.value },
+                            }))
+                          }
+                        />
+                      </div>
+                    </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <div>
-                    <div className="text-xs mb-1 text-gray-600">Vendeuse qui a couvert (optionnel)</div>
-                    <select
-                      className="select w-full"
-                      value={stayedId || ""}
-                      onChange={(e) => {
-                        const v = e.target.value || "";
-                        setHandoverEdit((prev) => ({
-                          ...prev,
-                          [key]: {
-                            ...(prev[key] || {}),
-                            stayed_seller_id: v,
-                            arrived_seller_id: arrivedId,
-                            actual_time: actualTime,
-                            planned_time: plannedTime,
-                          },
-                        }));
-                      }}
-                    >
-                      <option value="">Aucune (retard simple)</option>
-                      {candidatesStayed.length > 0 ? (
-                        <optgroup label="Depuis planning">
-                          {candidatesStayed.map((id) => (
-                            <option key={id} value={id}>
-                              {nameFromId(id) || id}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ) : null}
-                      <optgroup label="Toutes les vendeuses">
-                        {(sellers || []).map((s) => (
-                          <option key={s.user_id} value={s.user_id}>
-                            {s.full_name}
+                    <div>
+                      <div className="text-sm mb-1">Vendeuse concernée (celle qui arrive)</div>
+                      <select
+                        className="input"
+                        value={arrived_seller_id}
+                        onChange={(e) =>
+                          setHandoverEdit((prev) => ({
+                            ...prev,
+                            [key]: { ...(prev[key] || {}), arrived_seller_id: e.target.value },
+                          }))
+                        }
+                      >
+                        <option value="">— Choisir —</option>
+                        {sellerOptions.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
                           </option>
                         ))}
-                      </optgroup>
-                    </select>
-                  </div>
+                      </select>
+                    </div>
 
-                  <div>
-                    <div className="text-xs mb-1 text-gray-600">{isMorning ? "Vendeuse concernée (ouverture)" : "Vendeuse concernée (soir)"}</div>
-                    <select
-                      className="select w-full"
-                      value={arrivedId || ""}
-                      onChange={(e) => {
-                        const v = e.target.value || "";
-                        setHandoverEdit((prev) => ({
-                          ...prev,
-                          [key]: {
-                            ...(prev[key] || {}),
-                            arrived_seller_id: v,
-                            stayed_seller_id: stayedId,
-                            actual_time: actualTime,
-                            planned_time: plannedTime,
-                          },
-                        }));
-                      }}
-                    >
-                      <option value="" disabled>Choisir</option>
-                      {candidatesArrived.length > 0 ? (
-                        <optgroup label="Depuis planning">
-                          {candidatesArrived.map((id) => (
-                            <option key={id} value={id}>
-                              {nameFromId(id) || id}
-                            </option>
-                          ))}
-                        </optgroup>
-                      ) : null}
-                      <optgroup label="Toutes les vendeuses">
-                        {(sellers || []).map((s) => (
-                          <option key={s.user_id} value={s.user_id}>
-                            {s.full_name}
+                    <div>
+                      <div className="text-sm mb-1">Vendeuse “qui a couvert” (optionnel)</div>
+                      <select
+                        className="input"
+                        value={stayed_seller_id}
+                        onChange={(e) =>
+                          setHandoverEdit((prev) => ({
+                            ...prev,
+                            [key]: { ...(prev[key] || {}), stayed_seller_id: e.target.value },
+                          }))
+                        }
+                      >
+                        <option value="">Aucune / retard simple</option>
+                        {sellerOptions.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
                           </option>
                         ))}
-                      </optgroup>
-                    </select>
+                      </select>
+                    </div>
+
+                    <div className="flex justify-end">
+                      <button type="button" className="btn" onClick={() => saveHandover(iso, boundary)}>
+                        Enregistrer
+                      </button>
+                    </div>
                   </div>
                 </div>
+              );
+            };
 
-                <div className="text-xs text-gray-600">
-                  Delta appliqué automatiquement:{" "}
-                  <span className="font-semibold">{deltaMin == null ? "-" : fmtDeltaMinutes(deltaMin)}</span>{" "}
-                  ( + pour “{stayedName}”, - pour “{arrivedName}” )
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => saveHandover(iso, boundary)}
-                    style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
-                  >
-                    Enregistrer
-                  </button>
-
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      setHandoverEdit((prev) => {
-                        const n = { ...prev };
-                        delete n[key];
-                        return n;
-                      });
-                    }}
-                    title="Annuler les modifications locales"
-                  >
-                    Annuler
-                  </button>
-                </div>
+            return (
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                {renderBoundary("MORNING_START")}
+                {renderBoundary("EVENING_START")}
               </div>
-            ) : null}
-          </div>
-        );
-      };
-
-      return (
-        <div key={iso} className="border rounded-2xl p-3">
-          <div className="font-semibold">{dayLabel}</div>
-          <div className="mt-3 space-y-3">
-            {renderBoundary("MORNING_START")}
-            {renderBoundary("EVENING_START")}
-          </div>
+            );
+          })()}
         </div>
-      );
-    })}
-  </div>
-</div>
+
+
 
 
         <div className="card">
@@ -2399,7 +2249,7 @@ async function fetchHandoversRange(fromIso, toIso) {
     const { data, error } = await supabase
       .from("shift_handover_adjustments")
       .select("date, boundary, planned_time, actual_time, stayed_seller_id, arrived_seller_id")
-      .in("boundary", ["MORNING_START", "EVENING_START"])
+      .in("boundary", ["MORNING_START", "EVENING_START", "MORNING", "EVENING"])
       .gte("date", fromIso)
       .lte("date", toIso);
     if (error) throw error;
@@ -2411,8 +2261,25 @@ async function fetchHandoversRange(fromIso, toIso) {
 
 function applyHandovers(dict, handovers) {
   const out = { ...(dict || {}) };
-  (handovers || []).forEach((h) => {
-    const fallbackPlanned = h.boundary === "MORNING_START" ? "06:30" : "13:30";
+  const list = Array.isArray(handovers) ? [...handovers] : [];
+
+  // ✅ En cas de doublon (MORNING vs MORNING_START), on préfère la version canonique (*_START)
+  list.sort((a, b) => {
+    const aCanon = (a?.boundary || "") === canonBoundary(a?.boundary || "");
+    const bCanon = (b?.boundary || "") === canonBoundary(b?.boundary || "");
+    if (aCanon === bCanon) return 0;
+    return aCanon ? -1 : 1;
+  });
+
+  const seen = new Set();
+
+  list.forEach((h) => {
+    const b = canonBoundary(h.boundary);
+    const k = `${h.date}|${b}`;
+    if (seen.has(k)) return;
+    seen.add(k);
+
+    const fallbackPlanned = b === "MORNING_START" ? "06:30" : "13:30";
     const planned = parseHHMM(h.planned_time || fallbackPlanned);
     const actual = parseHHMM(h.actual_time || "");
     if (planned == null || actual == null) return;
@@ -2426,6 +2293,7 @@ function applyHandovers(dict, handovers) {
     if (stayed) out[stayed] = Number(out[stayed] || 0) + deltaHours;
     if (arrived) out[arrived] = Number(out[arrived] || 0) - deltaHours;
   });
+
   return out;
 }
 
@@ -2573,21 +2441,21 @@ function applyHandovers(dict, handovers) {
     <div className="card">
       <div className="hdr mb-1">Total heures - semaine en cours (jusqu’à aujourd’hui) & mois : {monthLabel}</div>
       {loading && <div className="text-sm text-gray-500 mb-3">Calcul en cours…</div>}
-      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
         {sellers.map((s) => {
           const week = weekTotals[s.user_id] ?? 0;
           const month = monthTotals[s.user_id] ?? 0;
           const absCount = absencesCount[s.user_id] ?? 0;
           const leaveDays = annualLeaveDays[s.user_id] ?? 0;
           return (
-            <div key={s.user_id} className="border rounded-2xl p-3 space-y-2">
-              <div className="flex items-center justify-between">
+            <div key={s.user_id} className="border rounded-2xl p-2.5 space-y-1.5">
+              <div className="flex items-center">
                 <Chip name={s.full_name} />
               </div>
               <div className="text-sm text-gray-600">Semaine (jusqu’à aujourd’hui)</div>
-              <div className="text-2xl font-semibold">{Number(week).toFixed(1)} h</div>
+              <div className="text-xl font-semibold">{Number(week).toFixed(1)} h</div>
               <div className="text-sm text-gray-600 mt-2">Mois ({monthLabel})</div>
-              <div className="text-2xl font-semibold">{Number(month).toFixed(1)} h</div>
+              <div className="text-xl font-semibold">{Number(month).toFixed(1)} h</div>
               <div className="text-sm text-gray-600 mt-2">Absences (mois)</div>
               <div className="text-2xl font-semibold">{absCount}</div>
               <div className="text-sm text-gray-600 mt-2">Congés pris (année)</div>
