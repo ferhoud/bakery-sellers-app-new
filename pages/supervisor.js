@@ -1,6 +1,7 @@
 // pages/supervisor.js
 import { useEffect, useMemo, useRef, useState } from "react";
 import Head from "next/head";
+import Link from "next/link";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
 import WeekNav from "../components/WeekNav";
@@ -225,8 +226,7 @@ export default function SupervisorPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+          Authorization: `Bearer ${token}` },
         body: JSON.stringify({ password: String(logoutPw || "") }),
       });
 
@@ -330,6 +330,12 @@ export default function SupervisorPage() {
             <button className="btn" onClick={() => fetchPlan(focusDate)} disabled={loading}>
               Rafraîchir
             </button>
+
+            {/* ✅ Bouton Pointage */}
+            <Link className="btn" href="/supervisor/checkin">
+              Pointage
+            </Link>
+
             <button className="btn" onClick={openLogout}>
               Déconnexion
             </button>

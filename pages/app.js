@@ -81,7 +81,7 @@ function labelForShift(code) {
     case "MORNING":
       return "Matin (6h30-13h30)";
     case "MIDDAY":
-      return "Midi (7h-13h)";
+      return "Midi (6h30-13h30)";
     case "SUNDAY_EXTRA":
       return "Dimanche 9h-13h30";
     case "EVENING":
@@ -227,6 +227,13 @@ export default function AppSeller() {
   const [myMonthUpcomingAbs, setMyMonthUpcomingAbs] = useState([]);
   const [acceptedByAbsence, setAcceptedByAbsence] = useState({});
   const [myUpcomingRepl, setMyUpcomingRepl] = useState([]);
+
+  // Remplacements disponibles (absences des autres vendeuses)
+  const [openRepls, setOpenRepls] = useState(null); // null = pas encore chargé, [] = aucun
+  const [openReplsLoading, setOpenReplsLoading] = useState(false);
+  const [openReplsErr, setOpenReplsErr] = useState("");
+  const [openReplsMsg, setOpenReplsMsg] = useState("");
+  const [acceptReplBusy, setAcceptReplBusy] = useState({});
 
   // Retard / relais (mois en cours) — affichage permanent
   const [monthDelta, setMonthDelta] = useState({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
@@ -689,7 +696,103 @@ export default function AppSeller() {
     );
   }, [userId]);
 
+  
+  // Remplacements disponibles (autres vendeuses) — via API serveur (service role)
+  const loadOpenReplacements = useCallback(async () => {
+    if (!userId) return;
+    setOpenReplsErr("");
+    setOpenReplsMsg("");
+    setOpenReplsLoading(true);
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token || null;
+      if (!token) return;
+
+      const r = await fetch(
+        `/api/replacements/open?from=${encodeURIComponent(todayIso)}&to=${encodeURIComponent(rangeTo)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.ok) {
+        setOpenRepls(null);
+        setOpenReplsErr(String(j?.error || `HTTP ${r.status}`));
+        return;
+      }
+
+      setOpenRepls(Array.isArray(j.items) ? j.items : []);
+    } catch (e) {
+      setOpenRepls(null);
+      setOpenReplsErr(e?.message || "Impossible de charger les remplacements.");
+    } finally {
+      setOpenReplsLoading(false);
+    }
+  }, [userId, todayIso, rangeTo]);
+
+  const acceptReplacement = useCallback(
+    async (item) => {
+      if (!userId) return;
+      const key = `${item.absence_id}|${item.shift_code}`;
+      setAcceptReplBusy((prev) => ({ ...prev, [key]: true }));
+      setOpenReplsMsg("");
+      setOpenReplsErr("");
+
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token || null;
+        if (!token) {
+          window.location.replace("/login?stay=1&next=/app");
+          return;
+        }
+
+        const r = await fetch("/api/replacements/accept", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ absence_id: item.absence_id, shift_code: item.shift_code }),
+        });
+
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || !j?.ok) {
+          const e = String(j?.error || `HTTP ${r.status}`);
+          if (e === "ALREADY_SCHEDULED") setOpenReplsErr("Impossible : vous êtes déjà planifiée ce jour-là.");
+          else if (e === "TAKEN") setOpenReplsErr("Déjà pris : quelqu’un a déjà remplacé ce créneau.");
+          else if (e === "NOT_APPROVED") setOpenReplsErr("Absence non approuvée.");
+          else if (e === "NO_SHIFT_TO_REPLACE") setOpenReplsErr("Aucun créneau à remplacer pour cette absence.");
+          else if (e === "Missing SUPABASE_SERVICE_ROLE_KEY") setOpenReplsErr("Serveur non configuré (service role).");
+          else setOpenReplsErr(`Erreur: ${e}`);
+          return;
+        }
+
+        setOpenReplsMsg("✅ Remplacement accepté. Le planning est mis à jour.");
+        await loadWeekPlanning();
+        await loadTodayPlan();
+        await reloadAccepted();
+        await loadMyUpcomingRepl();
+        await loadOpenReplacements();
+      } finally {
+        setAcceptReplBusy((prev) => ({ ...prev, [key]: false }));
+      }
+    },
+    [userId, loadWeekPlanning, loadTodayPlan, reloadAccepted, loadMyUpcomingRepl, loadOpenReplacements]
+  );
+
   useEffect(() => {
+    if (!userId) return;
+    loadOpenReplacements().catch(() => {});
+  }, [userId, loadOpenReplacements]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onFocus = () => {
+      if (!userId) return;
+      loadOpenReplacements().catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [userId, loadOpenReplacements]);
+
+useEffect(() => {
     loadMyMonthAbs();
     loadMyMonthUpcomingAbs();
     reloadAccepted();
@@ -1399,7 +1502,63 @@ export default function AppSeller() {
         </div>
       )}
 
-      <div className="card">
+      
+      {role !== "admin" &&
+        (openReplsLoading || openReplsErr || (Array.isArray(openRepls) && openRepls.length > 0)) && (
+          <div className="card">
+            <div className="hdr mb-2">Remplacements disponibles</div>
+
+            {openReplsLoading && <div className="text-sm text-gray-600">Chargement...</div>}
+
+            {openReplsMsg && (
+              <div
+                className="text-sm mb-2 border rounded-xl p-2"
+                style={{ backgroundColor: "#dcfce7", borderColor: "#86efac" }}
+              >
+                {openReplsMsg}
+              </div>
+            )}
+
+            {openReplsErr && (
+              <div
+                className="text-sm mb-2 border rounded-xl p-2"
+                style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}
+              >
+                {openReplsErr}
+              </div>
+            )}
+
+            {!openReplsLoading && Array.isArray(openRepls) && openRepls.length > 0 ? (
+              <div className="space-y-2">
+                {openRepls.map((it) => {
+                  const k = `${it.absence_id}|${it.shift_code}`;
+                  const busy = !!acceptReplBusy?.[k];
+                  return (
+                    <div key={k} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border rounded-2xl p-3">
+                      <div className="text-sm">
+                        <div className="font-medium">
+                          {frDate(it.date)} · {labelForShift(it.shift_code)}
+                        </div>
+                        <div style={{ opacity: 0.85 }}>
+                          Absence de <b>{it.absent_name || "—"}</b>
+                        </div>
+                      </div>
+                      <button className="btn" onClick={() => acceptReplacement(it)} disabled={busy}>
+                        {busy ? "..." : "Je remplace"}
+                      </button>
+                    </div>
+                  );
+                })}
+
+                <div className="text-xs text-gray-500">
+                  Si vous êtes déjà planifiée ce jour-là, l’app refusera le remplacement.
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
+
+<div className="card">
         <div className="hdr mb-4">Planning de la semaine</div>
         <WeekNav
           monday={monday}

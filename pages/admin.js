@@ -1293,6 +1293,46 @@ const deleteHandover = useCallback(
     };
   }, [days, loadSellers, loadWeekAssignments, loadWeekHandovers]);
 
+
+  // Badge bouton "Pointage" : vendeuses planifiées non pointées (alerte après 60 min)
+  const [missingCheckinsCount, setMissingCheckinsCount] = useState(0);
+
+  const loadMissingCheckinsCount = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      if (!token) {
+        setMissingCheckinsCount(0);
+        return;
+      }
+
+      const r = await fetch("/api/admin/checkins/missing", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!r.ok) {
+        // Si l'API n'existe pas encore sur un env, on ne casse pas l'admin
+        setMissingCheckinsCount(0);
+        return;
+      }
+
+      const j = await r.json().catch(() => ({}));
+      const n = Array.isArray(j?.items) ? j.items.length : 0;
+      setMissingCheckinsCount(n);
+    } catch {
+      setMissingCheckinsCount(0);
+    }
+  }, []);
+
+  useEffect(() => {
+    // ✅ Toujours tenter, même si la variable `session` n'est pas encore prête.
+    // L'API est protégée: sans token => count = 0, sans casser l'admin.
+    loadMissingCheckinsCount();
+    const id = setInterval(loadMissingCheckinsCount, 60 * 1000);
+    return () => clearInterval(id);
+  }, [loadMissingCheckinsCount]);
+
+
   /* ---------- RENDER ---------- */
 
   const mhAwaitingSellerCount =
@@ -1340,7 +1380,44 @@ const deleteHandover = useCallback(
             <Link href="/admin/sellers" legacyBehavior>
               <a className="btn">👥 Gérer les vendeuses</a>
             </Link>
-<a className="btn" href="/admin/supervisors">🖥️ Superviseur</a>
+
+            <Link href="/admin/checkins" legacyBehavior>
+              <a
+                className="btn"
+                title="Pointages manquants (alerte après 1h)"
+                style={{ position: "relative", overflow: "visible" }}
+              >
+                ⏱️ Pointage
+                {missingCheckinsCount > 0 ? (
+                  <span
+                    title={`${missingCheckinsCount} pointage(s) manquant(s)`}
+                    style={{
+                      position: "absolute",
+                      top: -6,
+                      right: -6,
+                      minWidth: 20,
+                      height: 20,
+                      padding: "0 6px",
+                      borderRadius: 999,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 12,
+                      fontWeight: 900,
+                      background: "#ef4444",
+                      color: "#fff",
+                      border: "2px solid #fff",
+                      boxShadow: "0 2px 6px rgba(0,0,0,0.18)",
+                      lineHeight: "20px",
+                    }}
+                  >
+                    {missingCheckinsCount}
+                  </span>
+                ) : null}
+              </a>
+            </Link>
+
+            <a className="btn" href="/admin/supervisors">🖥️ Superviseur</a>
 
             {/* ✅ Bouton UNIQUE en haut + badge rouge type notification */}
             <Link href="/admin/monthly-hours" legacyBehavior>
