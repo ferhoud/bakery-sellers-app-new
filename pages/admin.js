@@ -1280,6 +1280,88 @@ const deleteHandover = useCallback(
     return () => navigator.serviceWorker.removeEventListener("message", handler);
   }, [reloadAll]);
 
+  /* 🔔 Notifications admin: auto (sans bouton)
+     - Les navigateurs bloquent la demande d'autorisation sans geste utilisateur.
+     - Donc:
+       1) si permission déjà accordée → on tente de finaliser la souscription
+       2) si permission "default" → on demande à la 1ère interaction (un clic suffit)
+       3) si pas de souscription → on envoie vers /push-setup (throttlé)
+  */
+  const ensureAdminPush = useCallback(
+    async ({ allowPrompt } = { allowPrompt: false }) => {
+      try {
+        if (typeof window === "undefined") return;
+        if (!session) return;
+        if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+
+        const base = supabaseProjectRef || "default";
+        const doneKey = `admin_push_setup_done_${base}`;
+        const attemptKey = `admin_push_setup_attempt_${base}`;
+
+        if (window.localStorage?.getItem(doneKey) === "1") return;
+
+        let perm = Notification.permission;
+        if (perm === "default" && allowPrompt) {
+          try {
+            perm = await Notification.requestPermission();
+          } catch {
+            perm = Notification.permission;
+          }
+        }
+
+        if (perm !== "granted") return;
+
+        // Vérifie si on a déjà une souscription push côté navigateur
+        let reg = await navigator.serviceWorker.getRegistration();
+        if (!reg) {
+          try {
+            reg = await navigator.serviceWorker.ready;
+          } catch {
+            reg = null;
+          }
+        }
+
+        if (reg) {
+          const sub = await reg.pushManager.getSubscription();
+          if (sub) {
+            window.localStorage?.setItem(doneKey, "1");
+            window.localStorage?.removeItem(attemptKey);
+            return;
+          }
+        }
+
+        // Pas de souscription: on laisse /push-setup faire le boulot (1 tentative toutes les 6h)
+        const last = Number(window.localStorage?.getItem(attemptKey) || "0");
+        if (Date.now() - last < 6 * 60 * 60 * 1000) return;
+
+        window.localStorage?.setItem(attemptKey, String(Date.now()));
+        window.location.href = "/push-setup?next=/admin&auto=1";
+      } catch {
+        // silence
+      }
+    },
+    [session, supabaseProjectRef]
+  );
+
+  // Tentative silencieuse si déjà autorisé
+  useEffect(() => {
+    if (!session) return;
+    ensureAdminPush({ allowPrompt: false });
+  }, [session, ensureAdminPush]);
+
+  // Demande l'autorisation à la 1ère interaction si besoin (sans bouton)
+  useEffect(() => {
+    if (!session) return;
+    if (typeof window === "undefined") return;
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "default") return;
+
+    const onFirst = () => ensureAdminPush({ allowPrompt: true });
+    window.addEventListener("pointerdown", onFirst, { once: true });
+    return () => window.removeEventListener("pointerdown", onFirst);
+  }, [session, ensureAdminPush]);
+
+
   // Recalc & refresh when "days" or data loaders change (pass from/to)
   useEffect(() => {
     let isMounted = true;
@@ -1340,6 +1422,21 @@ const deleteHandover = useCallback(
 
   // ✅ Badge bouton: total global à traiter si dispo, sinon mois sélectionné
   const mhBadgeCount = mhToReviewTotal ?? mhToReviewCount;
+  // ✅ Affichage compte au centre (jamais "-")
+  const accountTopLabel = useMemo(() => {
+    const forced = process.env.NEXT_PUBLIC_FORCE_ADMIN === "1";
+    const rawEmail = session?.user?.email || "";
+    const email = String(rawEmail).trim().toLowerCase();
+    const role = String(profile?.role || "").trim().toLowerCase();
+
+    // L'admin voit toujours "admin"
+    const adminish = forced || role === "admin" || isAdminEmail(email);
+    if (adminish) return "Compte : admin";
+
+    // Fallback ultra robuste (ne jamais afficher "-")
+    const who = profile?.full_name || email || "admin";
+    return `Compte : ${who}`;
+  }, [session?.user?.email, profile?.full_name, profile?.role]);
 
   return (
     <>
@@ -1352,122 +1449,165 @@ const deleteHandover = useCallback(
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
       </Head>
       <div
-  style={{
-    padding: "8px",
-    background: "#111",
-    color: "#fff",
-    fontWeight: 700,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "10px",
-    flexWrap: "wrap",
-  }}
->
-  <div>{BUILD_TAG}</div>
-  <div style={{ fontWeight: 400, fontSize: "12px", opacity: 0.85 }}>
-    Supabase: {supabaseProjectRef || "?"}
-  </div>
-</div>
-
-      <div className="p-4 max-w-7xl 2xl:max-w-screen-2xl mx-auto space-y-6">
-                <div className="flex items-center justify-between">
-          <div className="hdr">
-            Compte: {profile?.full_name || "-"} <span className="sub">(admin)</span>
+        style={{
+          padding: "6px 10px",
+          background: "#fff",
+          color: "#111827",
+          borderBottom: "1px solid #e5e7eb",
+          position: "sticky",
+          top: 0,
+          zIndex: 50,
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) auto minmax(0, 1fr)",
+            alignItems: "center",
+            gap: 8,
+            width: "100%",
+            lineHeight: 1.15,
+          }}
+        >
+          <div
+            style={{
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              fontWeight: 700,
+              fontSize: "13px",
+            }}
+          >
+            {BUILD_TAG}
           </div>
 
-          <div className="flex items-center gap-2">
-            <Link href="/admin/sellers" legacyBehavior>
-              <a className="btn">👥 Gérer les vendeuses</a>
-            </Link>
-
-            <Link href="/admin/checkins" legacyBehavior>
-              <a
-                className="btn"
-                title="Pointages manquants (alerte après 1h)"
-                style={{ position: "relative", overflow: "visible" }}
-              >
-                ⏱️ Pointage
-                {missingCheckinsCount > 0 ? (
-                  <span
-                    title={`${missingCheckinsCount} pointage(s) manquant(s)`}
-                    style={{
-                      position: "absolute",
-                      top: -6,
-                      right: -6,
-                      minWidth: 20,
-                      height: 20,
-                      padding: "0 6px",
-                      borderRadius: 999,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 12,
-                      fontWeight: 900,
-                      background: "#ef4444",
-                      color: "#fff",
-                      border: "2px solid #fff",
-                      boxShadow: "0 2px 6px rgba(0,0,0,0.18)",
-                      lineHeight: "20px",
-                    }}
-                  >
-                    {missingCheckinsCount}
-                  </span>
-                ) : null}
-              </a>
-            </Link>
-
-            <a className="btn" href="/admin/supervisors">🖥️ Superviseur</a>
-
-            {/* ✅ Bouton UNIQUE en haut + badge rouge type notification */}
-            <Link href="/admin/monthly-hours" legacyBehavior>
-              <a className="btn" title="Validation des heures mensuelles" style={{ position: "relative", overflow: "visible" }}>
-                🧾 Heures mensuelles
-
-                {mhBadgeCount != null && mhBadgeCount > 0 ? (
-                  <span
-                    title={`${mhBadgeCount} à valider/refuser`}
-                    style={{
-                      position: "absolute",
-                      top: -6,
-                      right: -6,
-                      minWidth: 20,
-                      height: 20,
-                      padding: "0 6px",
-                      borderRadius: 999,
-                      background: "#dc2626",
-                      color: "#fff",
-                      fontSize: 12,
-                      fontWeight: 800,
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      lineHeight: "20px",
-                      border: "2px solid #fff",
-                      boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
-                      zIndex: 20,
-                    }}
-                  >
-                    {mhBadgeCount > 99 ? "99+" : mhBadgeCount}
-                  </span>
-                ) : null}
-              </a>
-            </Link>
-
-            <Link href="/push-setup" legacyBehavior>
-              <a className="btn">🔔 Activer les notifications</a>
-            </Link>
-
-            <button type="button" className="btn" onClick={handleSignOut} disabled={signingOut}>
-              {signingOut ? "Déconnexion…" : "Se déconnecter"}
-            </button>
+          <div
+            style={{
+              textAlign: "center",
+              whiteSpace: "nowrap",
+              fontWeight: 800,
+              color: "#16a34a",
+              fontSize: "12px",
+              padding: "2px 10px",
+              borderRadius: 9999,
+              border: "1px solid #bbf7d0",
+              background: "#f0fdf4",
+              fontFamily:
+                "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+            }}
+          >
+            {accountTopLabel}
           </div>
-   
+
+          <div
+            style={{
+              justifySelf: "end",
+              fontWeight: 600,
+              fontSize: "11px",
+              whiteSpace: "nowrap",
+              opacity: 0.85,
+            }}
+          >
+            Supabase: {supabaseProjectRef || "?"}
+          </div>
         </div>
+      </div>
 
+      <div className="p-3 max-w-7xl 2xl:max-w-screen-2xl mx-auto space-y-5">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Link href="/admin/sellers" legacyBehavior>
+                          <a className="btn">👥 Gérer les vendeuses</a>
+                        </Link>
 
+                        <Link href="/admin/checkins" legacyBehavior>
+                          <a
+                            className="btn"
+                            title="Pointages manquants (alerte après 1h)"
+                            style={{ position: "relative", overflow: "visible" }}
+                          >
+                            ⏱️ Pointage
+                            {missingCheckinsCount > 0 ? (
+                              <span
+                                title={`${missingCheckinsCount} pointage(s) manquant(s)`}
+                                style={{
+                                  position: "absolute",
+                                  top: -6,
+                                  right: -6,
+                                  minWidth: 20,
+                                  height: 20,
+                                  padding: "0 6px",
+                                  borderRadius: 999,
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  fontSize: 12,
+                                  fontWeight: 900,
+                                  background: "#ef4444",
+                                  color: "#fff",
+                                  border: "2px solid #fff",
+                                  boxShadow: "0 2px 6px rgba(0,0,0,0.18)",
+                                  lineHeight: "20px",
+                                }}
+                              >
+                                {missingCheckinsCount}
+                              </span>
+                            ) : null}
+                          </a>
+                        </Link>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <a className="btn" href="/admin/supervisors">🖥️ Superviseur</a>
+
+                        {/* ✅ Bouton UNIQUE en haut + badge rouge type notification */}
+                        <Link href="/admin/monthly-hours" legacyBehavior>
+                          <a className="btn" title="Validation des heures mensuelles" style={{ position: "relative", overflow: "visible" }}>
+                            🧾 Heures mensuelles
+
+                            {mhBadgeCount != null && mhBadgeCount > 0 ? (
+                              <span
+                                title={`${mhBadgeCount} à valider/refuser`}
+                                style={{
+                                  position: "absolute",
+                                  top: -6,
+                                  right: -6,
+                                  minWidth: 20,
+                                  height: 20,
+                                  padding: "0 6px",
+                                  borderRadius: 999,
+                                  background: "#dc2626",
+                                  color: "#fff",
+                                  fontSize: 12,
+                                  fontWeight: 800,
+                                  display: "inline-flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  lineHeight: "20px",
+                                  border: "2px solid #fff",
+                                  boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+                                  zIndex: 20,
+                                }}
+                              >
+                                {mhBadgeCount > 99 ? "99+" : mhBadgeCount}
+                              </span>
+                            ) : null}
+                          </a>
+                        </Link>
+          </div>
+
+          <button
+            type="button"
+            className="btn"
+            onClick={handleSignOut}
+            disabled={signingOut}
+            style={{
+              backgroundColor: "#dc2626",
+              borderColor: "transparent",
+              color: "#fff",
+            }}
+          >
+            {signingOut ? "Déconnexion…" : "Se déconnecter"}
+          </button>
+        </div><div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="card">
                     <div className="hdr mb-2">Absences aujourd’hui</div>
                     {absencesToday.length === 0 ? (
