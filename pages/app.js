@@ -235,6 +235,15 @@ export default function AppSeller() {
   const [openReplsMsg, setOpenReplsMsg] = useState("");
   const [acceptReplBusy, setAcceptReplBusy] = useState({});
 
+  // Pointage (checkins) — côté vendeuse
+  const [checkinsUnsupported, setCheckinsUnsupported] = useState(false);
+  const [checkinsLoading, setCheckinsLoading] = useState(false);
+  const [checkinsErr, setCheckinsErr] = useState("");
+  const [checkinsMsg, setCheckinsMsg] = useState("");
+  const [checkinsByBoundary, setCheckinsByBoundary] = useState({}); // { BOUNDARY: row }
+  const [checkinBusy, setCheckinBusy] = useState({}); // { BOUNDARY: boolean }
+
+
   // Retard / relais (mois en cours) — affichage permanent
   const [monthDelta, setMonthDelta] = useState({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
   const [monthDeltaLoading, setMonthDeltaLoading] = useState(false);
@@ -499,6 +508,206 @@ export default function AppSeller() {
   useEffect(() => {
     loadTodayPlan();
   }, [loadTodayPlan]);
+
+  // ----------------------------
+  // Pointage (checkins) — vendeuse
+  // ----------------------------
+  const myCheckinSlots = useMemo(() => {
+    if (!userId) return [];
+    const morningAssigned =
+      todayPlan?.MORNING?.seller_id === userId || todayPlan?.SUNDAY_EXTRA?.seller_id === userId;
+    const eveningAssigned = todayPlan?.EVENING?.seller_id === userId;
+
+    const slots = [];
+    if (morningAssigned) slots.push({ label: "Matin", primary: "MORNING_START", alt: "MORNING" });
+    if (eveningAssigned) slots.push({ label: "Soir", primary: "EVENING_START", alt: "EVENING" });
+    return slots;
+  }, [todayPlan, userId]);
+
+  const fmtTimeHM = (iso) => {
+    try {
+      const d = new Date(String(iso));
+      if (Number.isNaN(d.getTime())) return "";
+      return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    } catch {
+      return "";
+    }
+  };
+
+  const parseCheckinsToMap = (payload) => {
+    const j = payload || {};
+    const items = Array.isArray(j.items)
+      ? j.items
+      : Array.isArray(j.data)
+      ? j.data
+      : Array.isArray(j)
+      ? j
+      : [];
+
+    const map = {};
+    for (const it of items) {
+      if (!it) continue;
+      const b = String(it.boundary || it.shift_boundary || it.code || it.type || "").toUpperCase();
+      if (b) map[b] = it;
+    }
+
+    // Variante: { byBoundary: {...} }
+    if (j.byBoundary && typeof j.byBoundary === "object") {
+      for (const [k, v] of Object.entries(j.byBoundary)) {
+        const b = String(k || "").toUpperCase();
+        if (b) map[b] = v;
+      }
+    }
+
+    return map;
+  };
+
+  const loadCheckinsStatus = useCallback(async () => {
+    if (!userId || role === "admin" || checkinsUnsupported) return;
+
+    // Si pas planifiée sur matin/soir => rien à afficher
+    if (!myCheckinSlots.length) {
+      setCheckinsByBoundary({});
+      return;
+    }
+
+    setCheckinsErr("");
+    setCheckinsMsg("");
+    setCheckinsLoading(true);
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token || null;
+      if (!token) {
+        window.location.replace("/login?stay=1&next=/app");
+        return;
+      }
+
+      const urls = [
+        `/api/checkins/status?date=${encodeURIComponent(todayIso)}`,
+        `/api/checkins/status?d=${encodeURIComponent(todayIso)}`,
+      ];
+
+      let r = null;
+      for (const u of urls) {
+        const rr = await fetch(u, { headers: { Authorization: `Bearer ${token}` } });
+        if (rr.status === 404) continue;
+        r = rr;
+        break;
+      }
+
+      if (!r) {
+        setCheckinsUnsupported(true);
+        setCheckinsByBoundary({});
+        return;
+      }
+
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j?.ok === false) {
+        setCheckinsErr(String(j?.error || `HTTP ${r.status}`));
+        return;
+      }
+
+      setCheckinsByBoundary(parseCheckinsToMap(j));
+    } catch (e) {
+      setCheckinsErr(e?.message || "Impossible de charger le pointage.");
+    } finally {
+      setCheckinsLoading(false);
+    }
+  }, [userId, role, checkinsUnsupported, myCheckinSlots.length, todayIso]);
+
+  const confirmCheckin = useCallback(
+    async (slot) => {
+      if (!userId || role === "admin" || checkinsUnsupported) return;
+      const busyKey = slot?.primary || "CHECKIN";
+      setCheckinBusy((prev) => ({ ...prev, [busyKey]: true }));
+      setCheckinsErr("");
+      setCheckinsMsg("");
+
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token || null;
+        if (!token) {
+          window.location.replace("/login?stay=1&next=/app");
+          return;
+        }
+
+        const paths = ["/api/checkins/confirm", "/api/checkins/cofirm"]; // (cofirm = tolérance faute de frappe)
+        const tryOnce = async (path, boundary) => {
+          const r = await fetch(path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ date: todayIso, boundary, source: "seller" }),
+          });
+          const j = await r.json().catch(() => ({}));
+          return { r, j };
+        };
+
+        let ok = false;
+        let lastErr = "";
+        let usedPath = null;
+
+        for (const path of paths) {
+          // ignore 404 and try next
+          const first = await tryOnce(path, slot.primary);
+          if (first.r.status === 404) continue;
+
+          usedPath = path;
+
+          if (first.r.ok && first.j?.ok !== false) {
+            ok = true;
+            break;
+          }
+
+          // Si boundary "START" non supportée, on tente alt
+          const err = String(first.j?.error || `HTTP ${first.r.status}`);
+          lastErr = err;
+
+          const eLower = err.toLowerCase();
+          const boundaryIssue = eLower.includes("boundary") || eLower.includes("invalid") || eLower.includes("unknown");
+          if (boundaryIssue && slot.alt && slot.alt !== slot.primary) {
+            const second = await tryOnce(path, slot.alt);
+            if (second.r.ok && second.j?.ok !== false) {
+              ok = true;
+              break;
+            }
+            lastErr = String(second.j?.error || `HTTP ${second.r.status}`);
+          }
+
+          // sinon stop, on ne boucle pas inutilement
+          break;
+        }
+
+        if (!usedPath) {
+          setCheckinsUnsupported(true);
+          setCheckinsErr("Pointage indisponible (API /api/checkins/* absente).");
+          return;
+        }
+
+        if (!ok) {
+          setCheckinsErr(lastErr || "Pointage impossible.");
+          return;
+        }
+
+        setCheckinsMsg("✅ Pointage enregistré.");
+        await loadCheckinsStatus();
+      } catch (e) {
+        setCheckinsErr(e?.message || "Pointage impossible (exception).");
+      } finally {
+        setCheckinBusy((prev) => ({ ...prev, [busyKey]: false }));
+      }
+    },
+    [userId, role, checkinsUnsupported, todayIso, loadCheckinsStatus]
+  );
+
+  useEffect(() => {
+    if (!userId || role === "admin") return;
+    if (!myCheckinSlots.length) return;
+    loadCheckinsStatus();
+    const id = setInterval(loadCheckinsStatus, 60 * 1000);
+    return () => clearInterval(id);
+  }, [userId, role, myCheckinSlots.length, loadCheckinsStatus]);
+
 
   // Realtime shifts
   useEffect(() => {
@@ -1214,6 +1423,101 @@ useEffect(() => {
           </button>
         </div>
       </div>
+
+
+      {role !== "admin" && myCheckinSlots.length > 0 && !absentToday && (
+        <div className="card">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="hdr">⏱️ Pointage du jour</div>
+              <div className="text-xs text-gray-500">{frDate(todayIso)}</div>
+            </div>
+            <button className="btn" onClick={loadCheckinsStatus} disabled={checkinsLoading}>
+              {checkinsLoading ? "Actualisation..." : "Rafraîchir"}
+            </button>
+          </div>
+
+          {checkinsUnsupported ? (
+            <div
+              className="text-sm mt-3 border rounded-xl p-2"
+              style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}
+            >
+              Pointage indisponible sur cet environnement (API /api/checkins/* manquante).
+            </div>
+          ) : (
+            <>
+              {checkinsErr && (
+                <div
+                  className="text-sm mt-3 border rounded-xl p-2"
+                  style={{ backgroundColor: "#fee2e2", borderColor: "#fca5a5" }}
+                >
+                  ⚠️ {checkinsErr}
+                </div>
+              )}
+
+              {checkinsMsg && (
+                <div
+                  className="text-sm mt-3 border rounded-xl p-2"
+                  style={{ backgroundColor: "#dcfce7", borderColor: "#86efac" }}
+                >
+                  {checkinsMsg}
+                </div>
+              )}
+
+              <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {myCheckinSlots.map((slot) => {
+                  const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
+                  const at =
+                    rec?.checked_at ||
+                    rec?.checked_in_at ||
+                    rec?.checkin_at ||
+                    rec?.confirmed_at ||
+                    rec?.created_at ||
+                    rec?.at ||
+                    null;
+                  const done =
+                    !!at ||
+                    rec?.checked === true ||
+                    rec?.ok === true ||
+                    rec?.status === "done" ||
+                    rec?.status === "confirmed";
+
+                  return (
+                    <div key={slot.primary} className="border rounded-2xl p-3 flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium">{slot.label}</div>
+                        <div className="text-xs text-gray-500">
+                          {done ? `✅ Pointé à ${fmtTimeHM(at)}` : "Pas encore pointé"}
+                        </div>
+                      </div>
+
+                      {!done ? (
+                        <button
+                          className="btn"
+                          onClick={() => confirmCheckin(slot)}
+                          disabled={!!checkinBusy?.[slot.primary]}
+                          style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}
+                        >
+                          {checkinBusy?.[slot.primary] ? "..." : "Je pointe"}
+                        </button>
+                      ) : (
+                        <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>
+                          OK
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="text-xs text-gray-500 mt-2">
+                Le pointage sert à enregistrer l’heure d’arrivée. Si tu as un souci, dis-le à l’administrateur.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
 
 
       {role !== "admin" &&
