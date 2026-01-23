@@ -243,6 +243,19 @@ export default function AppSeller() {
   const [checkinsByBoundary, setCheckinsByBoundary] = useState({}); // { BOUNDARY: row }
   const [checkinBusy, setCheckinBusy] = useState({}); // { BOUNDARY: boolean }
 
+const [checkinCode, setCheckinCode] = useState("");
+const [checkinLocalAtByBoundary, setCheckinLocalAtByBoundary] = useState({}); // fallback immédiat (sans attendre status)
+const [clockNow, setClockNow] = useState(() => new Date());
+
+const sanitize6Digits = (v) => String(v || "").replace(/\D/g, "").slice(0, 6);
+const isValidCheckinCode = useMemo(() => /^\d{6}$/.test(checkinCode), [checkinCode]);
+
+useEffect(() => {
+  const id = setInterval(() => setClockNow(new Date()), 1000);
+  return () => clearInterval(id);
+}, []);
+
+
 
   // Retard / relais (mois en cours) — affichage permanent
   const [monthDelta, setMonthDelta] = useState({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
@@ -528,7 +541,7 @@ export default function AppSeller() {
     try {
       const d = new Date(String(iso));
       if (Number.isNaN(d.getTime())) return "";
-      return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+      return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     } catch {
       return "";
     }
@@ -624,6 +637,12 @@ export default function AppSeller() {
       setCheckinsErr("");
       setCheckinsMsg("");
 
+const code6 = String(checkinCode || "").trim();
+if (!/^\d{6}$/.test(code6)) {
+  setCheckinsErr("Saisis le code à 6 chiffres avant de pointer.");
+  return;
+}
+
       try {
         const { data } = await supabase.auth.getSession();
         const token = data?.session?.access_token || null;
@@ -637,7 +656,7 @@ export default function AppSeller() {
           const r = await fetch(path, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ date: todayIso, boundary, source: "seller" }),
+            body: JSON.stringify({ date: todayIso, boundary, source: "seller", code: code6 }),
           });
           const j = await r.json().catch(() => ({}));
           return { r, j };
@@ -689,7 +708,9 @@ export default function AppSeller() {
           return;
         }
 
-        setCheckinsMsg("✅ Pointage enregistré.");
+        const clickedAt = new Date();
+        setCheckinLocalAtByBoundary((prev) => ({ ...prev, [slot.primary]: clickedAt.toISOString() }));
+        setCheckinsMsg(`✅ Pointage enregistré à ${clickedAt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.`);
         await loadCheckinsStatus();
       } catch (e) {
         setCheckinsErr(e?.message || "Pointage impossible (exception).");
@@ -697,7 +718,7 @@ export default function AppSeller() {
         setCheckinBusy((prev) => ({ ...prev, [busyKey]: false }));
       }
     },
-    [userId, role, checkinsUnsupported, todayIso, loadCheckinsStatus]
+    [userId, role, checkinsUnsupported, todayIso, loadCheckinsStatus, checkinCode]
   );
 
   useEffect(() => {
@@ -1430,7 +1451,7 @@ useEffect(() => {
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="hdr">⏱️ Pointage du jour</div>
-              <div className="text-xs text-gray-500">{frDate(todayIso)}</div>
+              <div className="text-xs text-gray-500">{frDate(todayIso)} • {clockNow.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
             </div>
             <button className="btn" onClick={loadCheckinsStatus} disabled={checkinsLoading}>
               {checkinsLoading ? "Actualisation..." : "Rafraîchir"}
@@ -1467,6 +1488,10 @@ useEffect(() => {
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {myCheckinSlots.map((slot) => {
                   const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
+                  const localAt =
+                    checkinLocalAtByBoundary?.[slot.primary] ||
+                    checkinLocalAtByBoundary?.[slot.alt] ||
+                    null;
                   const at =
                     rec?.checked_at ||
                     rec?.checked_in_at ||
@@ -1474,6 +1499,7 @@ useEffect(() => {
                     rec?.confirmed_at ||
                     rec?.created_at ||
                     rec?.at ||
+                    localAt ||
                     null;
                   const done =
                     !!at ||
@@ -1492,15 +1518,39 @@ useEffect(() => {
                       </div>
 
                       {!done ? (
-                        <button
-                          className="btn"
-                          onClick={() => confirmCheckin(slot)}
-                          disabled={!!checkinBusy?.[slot.primary]}
-                          style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}
-                        >
-                          {checkinBusy?.[slot.primary] ? "..." : "Je pointe"}
-                        </button>
-                      ) : (
+  <div className="flex items-center gap-2">
+    <input
+      value={checkinCode}
+      onChange={(e) => setCheckinCode(sanitize6Digits(e.target.value))}
+      inputMode="numeric"
+      pattern="[0-9]*"
+      placeholder="Code (6 chiffres)"
+      className="border rounded-xl px-3 py-2 text-sm"
+      style={{
+        width: 150,
+        textAlign: "center",
+        letterSpacing: "0.12em",
+        borderColor: isValidCheckinCode ? "#d1d5db" : "#fca5a5",
+        background: "#fff",
+      }}
+    />
+    <button
+      className="btn"
+      onClick={() => confirmCheckin(slot)}
+      disabled={!!checkinBusy?.[slot.primary] || !isValidCheckinCode}
+      style={{
+        backgroundColor:
+          !!checkinBusy?.[slot.primary] || !isValidCheckinCode ? "#9ca3af" : "#16a34a",
+        color: "#fff",
+        borderColor: "transparent",
+        cursor:
+          !!checkinBusy?.[slot.primary] || !isValidCheckinCode ? "not-allowed" : "pointer",
+      }}
+    >
+      {checkinBusy?.[slot.primary] ? "..." : "Je pointe"}
+    </button>
+  </div>
+) : (
                         <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>
                           OK
                         </span>
@@ -1509,6 +1559,12 @@ useEffect(() => {
                   );
                 })}
               </div>
+
+              {!isValidCheckinCode && (
+                <div className="text-xs mt-2" style={{ color: "#b91c1c" }}>
+                  Saisis le code à 6 chiffres pour activer « Je pointe ».
+                </div>
+              )}
 
               <div className="text-xs text-gray-500 mt-2">
                 Le pointage sert à enregistrer l’heure d’arrivée. Si tu as un souci, dis-le à l’administrateur.
