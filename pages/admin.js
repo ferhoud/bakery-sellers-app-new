@@ -1379,6 +1379,9 @@ const deleteHandover = useCallback(
   // Badge bouton "Pointage" : vendeuses planifiées non pointées (alerte après 60 min)
   const [missingCheckinsCount, setMissingCheckinsCount] = useState(0);
 
+  // Notifications UI (évite de spammer)
+  const lastMissingCheckinsNotifiedRef = useRef({ count: 0, ts: 0 });
+
   const loadMissingCheckinsCount = useCallback(async () => {
     try {
       const { data } = await supabase.auth.getSession();
@@ -1413,6 +1416,53 @@ const deleteHandover = useCallback(
     const id = setInterval(loadMissingCheckinsCount, 60 * 1000);
     return () => clearInterval(id);
   }, [loadMissingCheckinsCount]);
+
+
+  // Rafraîchir immédiatement quand on revient sur l'onglet (évite badge qui reste "bloqué")
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const onFocus = () => loadMissingCheckinsCount();
+    const onVis = () => {
+      try {
+        if (document.visibilityState === "visible") loadMissingCheckinsCount();
+      } catch {}
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [loadMissingCheckinsCount]);
+
+  // ✅ Notification même depuis l'accueil admin (pas uniquement sur /admin/checkins)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const n = Number(missingCheckinsCount || 0);
+    if (n <= 0) return;
+
+    const now = Date.now();
+    const last = lastMissingCheckinsNotifiedRef.current || { count: 0, ts: 0 };
+
+    // Notifier si le nombre augmente, ou toutes les 30 min si ça persiste
+    const shouldNotify = n > (last.count || 0) || now - (last.ts || 0) > 30 * 60 * 1000;
+    if (!shouldNotify) return;
+
+    lastMissingCheckinsNotifiedRef.current = { count: n, ts: now };
+
+    // Notification navigateur (si permission déjà accordée)
+    if ("Notification" in window && Notification.permission === "granted") {
+      try {
+        new Notification("⏱️ Pointage manquant", {
+          body: `${n} pointage(s) manquant(s). Ouvre “Pointage” pour traiter.`,
+        });
+      } catch {
+        // silence
+      }
+    }
+  }, [missingCheckinsCount]);
 
 
   /* ---------- RENDER ---------- */
@@ -1607,7 +1657,30 @@ const deleteHandover = useCallback(
           >
             {signingOut ? "Déconnexion…" : "Se déconnecter"}
           </button>
-        </div><div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        </div>
+        {missingCheckinsCount > 0 ? (
+          <div
+            className="card"
+            style={{
+              borderColor: "#fecaca",
+              background: "#fff1f2",
+              padding: "10px 12px",
+            }}
+          >
+            <div className="text-sm" style={{ fontWeight: 800, color: "#991b1b" }}>
+              ⚠️ {missingCheckinsCount} pointage(s) manquant(s)
+            </div>
+            <div className="text-sm" style={{ marginTop: 4, color: "#7f1d1d" }}>
+              Tu peux les traiter depuis{" "}
+              <Link href="/admin/checkins" legacyBehavior>
+                <a style={{ textDecoration: "underline", fontWeight: 800 }}>Pointage</a>
+              </Link>
+              .
+            </div>
+          </div>
+        ) : null}
+
+<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="card">
                     <div className="hdr mb-2">Absences aujourd’hui</div>
                     {absencesToday.length === 0 ? (
