@@ -53,10 +53,15 @@ export default function AdminCheckinsPage() {
   const [notifState, setNotifState] = useState("…");
 
   const seenRef = useRef(new Set());
+  const notifiedRef = useRef(new Set());
   const lastKeyRef = useRef("");
 
   const storageKey = useMemo(() => {
     return day ? `seen_missing_checkins_${day}` : "";
+  }, [day]);
+
+  const notifiedKey = useMemo(() => {
+    return day ? `notified_missing_checkins_${day}` : "";
   }, [day]);
 
   // Mount: init date + Notification.permission (client-only)
@@ -71,7 +76,7 @@ export default function AdminCheckinsPage() {
     }
   }, []);
 
-  // Load seen from localStorage (quand day est connu)
+  // Load "seen" (ACK) from localStorage (quand day est connu)
   useEffect(() => {
     if (!storageKey) return;
     try {
@@ -83,10 +88,29 @@ export default function AdminCheckinsPage() {
     }
   }, [storageKey]);
 
+  // Load "notified" from localStorage (évite spam de notifications)
+  useEffect(() => {
+    if (!notifiedKey) return;
+    try {
+      const raw = localStorage.getItem(notifiedKey) || "[]";
+      const arr = JSON.parse(raw);
+      notifiedRef.current = new Set(Array.isArray(arr) ? arr : []);
+    } catch {
+      notifiedRef.current = new Set();
+    }
+  }, [notifiedKey]);
+
   function saveSeen() {
     if (!storageKey) return;
     try {
       localStorage.setItem(storageKey, JSON.stringify(Array.from(seenRef.current)));
+    } catch {}
+  }
+
+  function saveNotified() {
+    if (!notifiedKey) return;
+    try {
+      localStorage.setItem(notifiedKey, JSON.stringify(Array.from(notifiedRef.current)));
     } catch {}
   }
 
@@ -121,15 +145,28 @@ export default function AdminCheckinsPage() {
       return;
     }
 
-    const list = Array.isArray(j.items) ? j.items : [];
+    const listAll = Array.isArray(j.items) ? j.items : [];
+
+    // Affichage: on cache immédiatement ceux déjà "vus" (ACK) par l'admin
+    const list = listAll.filter((it) => {
+      const key = `${it.day}:${it.seller_id}:${it.shift_code}`;
+      return !seenRef.current.has(key);
+    });
+
     setItems(list);
     setLoading(false);
 
-    // Browser notifications for new items
-    if (mounted && typeof Notification !== "undefined" && Notification.permission === "granted" && list.length) {
-      for (const it of list) {
+    // Browser notifications for NEW missing checkins (sans marquer "vu")
+    if (
+      mounted &&
+      typeof Notification !== "undefined" &&
+      Notification.permission === "granted" &&
+      listAll.length
+    ) {
+      for (const it of listAll) {
         const key = `${it.day}:${it.seller_id}:${it.shift_code}`;
-        if (seenRef.current.has(key)) continue;
+        if (seenRef.current.has(key)) continue; // déjà ACK, pas besoin
+        if (notifiedRef.current.has(key)) continue; // déjà notifié, pas spam
 
         const name = it.full_name || "Vendeuse";
         const label = SHIFT_LABEL[it.shift_code] || it.shift_code;
@@ -138,9 +175,9 @@ export default function AdminCheckinsPage() {
         // eslint-disable-next-line no-new
         new Notification("⚠️ Pointage manquant", { body });
 
-        seenRef.current.add(key);
+        notifiedRef.current.add(key);
       }
-      saveSeen();
+      saveNotified();
     }
 
     lastKeyRef.current = `${day}:${list.length}:${Date.now()}`;
@@ -163,9 +200,31 @@ export default function AdminCheckinsPage() {
 
   function markSeen(it) {
     const key = `${it.day}:${it.seller_id}:${it.shift_code}`;
+
+    // 1) UI instantanée: on retire la ligne tout de suite
+    setItems((cur) =>
+      Array.isArray(cur)
+        ? cur.filter((x) => `${x.day}:${x.seller_id}:${x.shift_code}` !== key)
+        : []
+    );
+
+    // 2) On garde en mémoire "vu" (ACK) pour ne plus le revoir aujourd'hui
     seenRef.current.add(key);
+
+    // Bonus: si on l'a vu, on ne veut plus être re-notifié non plus
+    notifiedRef.current.add(key);
+
     saveSeen();
-    setItems((cur) => [...cur]);
+    saveNotified();
+
+    // 3) Petit refresh de sécurité (sans attendre) pour recalculer les minutes, et sync si besoin
+    setTimeout(() => {
+      fetchMissing();
+      // ping autres onglets/pages (badge admin) via event storage
+      try {
+        localStorage.setItem(`missing_checkins_ping_${day || "today"}`, String(Date.now()));
+      } catch {}
+    }, 50);
   }
 
   return (
@@ -238,7 +297,7 @@ export default function AdminCheckinsPage() {
             <div style={{ display: "grid", gap: 10 }}>
               {items.map((it) => {
                 const key = `${it.day}:${it.seller_id}:${it.shift_code}`;
-                const alreadySeen = seenRef.current.has(key);
+                const wasNotified = notifiedRef.current.has(key);
                 return (
                   <div
                     key={key}
@@ -265,7 +324,7 @@ export default function AdminCheckinsPage() {
                     </div>
 
                     <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <span style={{ fontSize: 12, opacity: 0.7 }}>{alreadySeen ? "vu" : "nouveau"}</span>
+                      <span style={{ fontSize: 12, opacity: 0.7 }}>{wasNotified ? "alerte envoyée" : "nouveau"}</span>
                       <button className="btn" onClick={() => markSeen(it)}>Marquer vu</button>
                     </div>
                   </div>
