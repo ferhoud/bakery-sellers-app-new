@@ -8,6 +8,18 @@ function pad2(n) { return String(n).padStart(2, "0"); }
 function localISODate(d = new Date()) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
+function frDateFromISO(iso) {
+  // iso: YYYY-MM-DD -> JJ-MM-YYYY
+  const s = (iso || "").toString();
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return s;
+  const [, y, mo, d] = m;
+  return `${d}-${mo}-${y}`;
+}
+function fmtTime(d) {
+  if (!d) return "--:--:--";
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
 
 const SHIFT_LABELS = {
   MORNING: "Matin (6h30–13h30)",
@@ -30,6 +42,8 @@ function uniqBy(arr, keyFn) {
 
 export default function SupervisorCheckinPage() {
   const today = useMemo(() => localISODate(new Date()), []);
+  const [now, setNow] = useState(null);
+
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [plan, setPlan] = useState(null);
@@ -39,6 +53,13 @@ export default function SupervisorCheckinPage() {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null); // {code, late_minutes,...}
   const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    // Horloge HH:MM:SS (client only, évite les soucis d’hydration)
+    setNow(new Date());
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   async function fetchPlan() {
     setLoading(true);
@@ -139,7 +160,9 @@ export default function SupervisorCheckinPage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div>
             <div style={{ fontSize: 22, fontWeight: 800 }}>Pointage du jour</div>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>Date: {today}</div>
+            <div style={{ fontSize: 12, opacity: 0.75 }}>
+              Date: {frDateFromISO(today)} · Heure: {fmtTime(now)}
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -231,6 +254,9 @@ export default function SupervisorCheckinPage() {
                       <div style={{ fontSize: 44, fontWeight: 900, letterSpacing: 6 }}>{result.code}</div>
                       <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
                         Retard détecté: <b>{result.late_minutes} min</b>
+                      </div>
+                      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.75 }}>
+                        Date: {frDateFromISO(today)} · Heure: {fmtTime(now)}
                       </div>
                       <div style={{ height: 10 }} />
                       <button className="btn" onClick={copyCode}>Copier le code</button>
