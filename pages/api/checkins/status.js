@@ -38,6 +38,20 @@ function parisTodayISO() {
   return `${y}-${m}-${d}`;
 }
 
+function parisTimeHMSS(d = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Paris",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(d);
+  const hh = parts.find((p) => p.type === "hour")?.value || "00";
+  const mm = parts.find((p) => p.type === "minute")?.value || "00";
+  const ss = parts.find((p) => p.type === "second")?.value || "00";
+  return `${hh}:${mm}:${ss}`;
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "GET") return json(res, 405, { ok: false, error: "Method not allowed" });
@@ -74,17 +88,19 @@ export default async function handler(req, res) {
       return json(res, 200, {
         ok: true,
         day,
+        now_hms: parisTimeHMSS(),
         scheduled: false,
         issued: false,
         confirmed: false,
         late_minutes: 0,
+        early_minutes: 0,
         shift_code: null,
       });
     }
 
     const { data: row, error: rErr } = await admin
       .from("daily_checkins")
-      .select("confirmed_at, late_minutes, shift_code")
+      .select("confirmed_at, late_minutes, early_minutes, shift_code")
       .eq("day", day)
       .eq("seller_id", user.id)
       .maybeSingle();
@@ -94,10 +110,12 @@ export default async function handler(req, res) {
     return json(res, 200, {
       ok: true,
       day,
+      now_hms: parisTimeHMSS(),
       scheduled: true,
       issued: !!row,
       confirmed: !!row?.confirmed_at,
       late_minutes: Number(row?.late_minutes || 0) || 0,
+      early_minutes: Number(row?.early_minutes || 0) || 0,
       shift_code: row?.shift_code || shiftCode,
     });
   } catch (e) {
