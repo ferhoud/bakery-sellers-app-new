@@ -242,6 +242,8 @@ export default function AppSeller() {
   const [checkinsMsg, setCheckinsMsg] = useState("");
   const [checkinsByBoundary, setCheckinsByBoundary] = useState({}); // { BOUNDARY: row }
   const [checkinBusy, setCheckinBusy] = useState({}); // { BOUNDARY: boolean }
+  const [checkinsStats, setCheckinsStats] = useState({ monthDelay: 0, monthExtra: 0, todayDelay: 0, todayExtra: 0 });
+
 
 const [checkinCode, setCheckinCode] = useState("");
 const [checkinLocalAtByBoundary, setCheckinLocalAtByBoundary] = useState({}); // fallback immédiat (sans attendre status)
@@ -546,6 +548,35 @@ useEffect(() => {
     return slots;
   }, [todayPlan, userId]);
 
+  const hasPendingCheckin = useMemo(() => {
+    if (!myCheckinSlots.length) return false;
+
+    return myCheckinSlots.some((slot) => {
+      const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
+      const localAt =
+        checkinLocalAtByBoundary?.[slot.primary] ||
+        checkinLocalAtByBoundary?.[slot.alt] ||
+        null;
+      const at =
+        rec?.checked_at ||
+        rec?.checked_in_at ||
+        rec?.checkin_at ||
+        rec?.confirmed_at ||
+        rec?.created_at ||
+        rec?.at ||
+        localAt ||
+        null;
+      const done =
+        !!at ||
+        rec?.checked === true ||
+        rec?.ok === true ||
+        rec?.status === "done" ||
+        rec?.status === "confirmed";
+      return !done;
+    });
+  }, [myCheckinSlots, checkinsByBoundary, checkinLocalAtByBoundary]);
+
+
   const fmtTimeHM = (iso) => {
     try {
       const d = new Date(String(iso));
@@ -581,6 +612,44 @@ useEffect(() => {
       }
     }
 
+
+    // Fallback ancien format: { confirmed, confirmed_at, shift_code, late_minutes, early_minutes }
+    const confirmedFlag =
+      j?.confirmed === true ||
+      j?.already_confirmed === true ||
+      j?.status === "confirmed" ||
+      j?.status === "done" ||
+      !!j?.confirmed_at ||
+      !!j?.confirmedAt ||
+      !!j?.checked_at ||
+      !!j?.checked_in_at ||
+      !!j?.at;
+
+    if (confirmedFlag) {
+      const sc = String(j?.shift_code || "").toUpperCase();
+      const boundary =
+        sc === "EVENING" || sc === "EVENING_START" ? "EVENING_START" : "MORNING_START";
+
+      const it = {
+        boundary,
+        shift_code: sc || null,
+        confirmed_at:
+          j?.confirmed_at ||
+          j?.confirmedAt ||
+          j?.checked_at ||
+          j?.checked_in_at ||
+          j?.at ||
+          new Date().toISOString(),
+        late_minutes: Number(j?.late_minutes || 0) || 0,
+        early_minutes: Number(j?.early_minutes || 0) || 0,
+        ok: true,
+        status: "confirmed",
+      };
+
+      if (!map[boundary]) map[boundary] = it;
+      if (sc && !map[sc]) map[sc] = it;
+    }
+
     return map;
   };
 
@@ -607,6 +676,7 @@ useEffect(() => {
 
       const urls = [
         `/api/checkins/status?date=${encodeURIComponent(todayIso)}`,
+        `/api/checkins/status?day=${encodeURIComponent(todayIso)}`,
         `/api/checkins/status?d=${encodeURIComponent(todayIso)}`,
       ];
 
@@ -631,6 +701,14 @@ useEffect(() => {
       }
 
       setCheckinsByBoundary(parseCheckinsToMap(j));
+      // Totaux pointage (retard/avance) utiles pour afficher "ce mois-ci"
+      setCheckinsStats({
+        monthDelay: Number(j?.month_delay_minutes || 0) || 0,
+        monthExtra: Number(j?.month_extra_minutes || 0) || 0,
+        todayDelay: Number(j?.today_delay_minutes ?? j?.late_minutes ?? 0) || 0,
+        todayExtra: Number(j?.today_extra_minutes ?? j?.early_minutes ?? 0) || 0,
+      });
+
     } catch (e) {
       setCheckinsErr(e?.message || "Impossible de charger le pointage.");
     } finally {
@@ -649,6 +727,7 @@ useEffect(() => {
 const code6 = String(checkinCode || "").trim();
 if (!/^\d{6}$/.test(code6)) {
   setCheckinsErr("Saisis le code à 6 chiffres avant de pointer.");
+  setCheckinBusy((prev) => ({ ...prev, [busyKey]: false }));
   return;
 }
 
@@ -1524,6 +1603,19 @@ useEffect(() => {
                         <div className="text-xs text-gray-500">
                           {done ? `✅ Pointé à ${fmtTimeHM(at)}` : "Pas encore pointé"}
                         </div>
+                        {done && ((Number(rec?.late_minutes || 0) || 0) > 0 || (Number(rec?.early_minutes || 0) || 0) > 0) && (
+                          <div
+                            className="text-xs mt-1"
+                            style={{
+                              color: (Number(rec?.late_minutes || 0) || 0) > 0 ? "#b91c1c" : "#065f46",
+                            }}
+                          >
+                            {(Number(rec?.late_minutes || 0) || 0) > 0
+                              ? `⏰ Retard: +${Number(rec?.late_minutes || 0) || 0} min`
+                              : `✅ Avance: +${Number(rec?.early_minutes || 0) || 0} min`}
+                          </div>
+                        )}
+
                       </div>
 
                       {!done ? (
@@ -1569,7 +1661,12 @@ useEffect(() => {
                 })}
               </div>
 
-              {!isValidCheckinCode && (
+              <div className="text-xs text-gray-600 mt-2">
+                Ce mois-ci (pointage):
+                {` retard ${checkinsStats.monthDelay} min`}{checkinsStats.monthExtra > 0 ? ` • avance ${checkinsStats.monthExtra} min` : ""}
+              </div>
+
+              {hasPendingCheckin && checkinCode.length > 0 && !isValidCheckinCode && (
                 <div className="text-xs mt-2" style={{ color: "#b91c1c" }}>
                   Saisis le code à 6 chiffres pour activer « Je pointe ».
                 </div>
