@@ -1383,6 +1383,25 @@ const deleteHandover = useCallback(
   const lastMissingCheckinsNotifiedRef = useRef({ count: 0, ts: 0 });
 
   const loadMissingCheckinsCount = useCallback(async () => {
+    // Compte "Pointage" = uniquement les pointages manquants NON ACK (Marquer vu)
+    // + on arrête de notifier/afficher après 2h (sinon ça spamme inutilement)
+    function parisTodayISO() {
+      try {
+        const parts = new Intl.DateTimeFormat("en-CA", {
+          timeZone: "Europe/Paris",
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+        }).formatToParts(new Date());
+        const y = parts.find((p) => p.type === "year")?.value;
+        const m = parts.find((p) => p.type === "month")?.value;
+        const d = parts.find((p) => p.type === "day")?.value;
+        return `${y}-${m}-${d}`;
+      } catch {
+        return "";
+      }
+    }
+
     try {
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
@@ -1402,8 +1421,37 @@ const deleteHandover = useCallback(
       }
 
       const j = await r.json().catch(() => ({}));
-      const n = Array.isArray(j?.items) ? j.items.length : 0;
-      setMissingCheckinsCount(n);
+      const items = Array.isArray(j?.items) ? j.items : [];
+
+      // ACK local (Marquer vu) stocké par /admin/checkins
+      let seen = new Set();
+      let day = "";
+      try {
+        day = (items[0]?.day || "") || parisTodayISO();
+      } catch {
+        day = parisTodayISO();
+      }
+
+      if (typeof window !== "undefined" && day) {
+        try {
+          const raw = window.localStorage?.getItem(`seen_missing_checkins_${day}`) || "[]";
+          const arr = JSON.parse(raw);
+          if (Array.isArray(arr)) seen = new Set(arr);
+        } catch {}
+      }
+
+      // Règle: on ignore après 2h (120 min) pour éviter badge/notifications "fantômes"
+      const filtered = items.filter((it) => {
+        const k = `${it.day || day}:${it.seller_id}:${it.shift_code}`;
+        if (seen.has(k)) return false;
+
+        const mins = Number(it?.minutes_since_start ?? it?.minutes_since ?? 0);
+        if (Number.isFinite(mins) && mins >= 120) return false;
+
+        return true;
+      });
+
+      setMissingCheckinsCount(filtered.length);
     } catch {
       setMissingCheckinsCount(0);
     }
@@ -1436,6 +1484,25 @@ const deleteHandover = useCallback(
       document.removeEventListener("visibilitychange", onVis);
     };
   }, [loadMissingCheckinsCount]);
+
+  // Sync instant badge si /admin/checkins "Marquer vu" (autre onglet / autre fenêtre)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const onStorage = (e) => {
+      try {
+        const k = e?.key || "";
+        if (!k) return;
+        if (k.startsWith("missing_checkins_ping_") || k.startsWith("seen_missing_checkins_")) {
+          loadMissingCheckinsCount();
+        }
+      } catch {}
+    };
+
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [loadMissingCheckinsCount]);
+
 
   // ✅ Notification même depuis l'accueil admin (pas uniquement sur /admin/checkins)
   useEffect(() => {
