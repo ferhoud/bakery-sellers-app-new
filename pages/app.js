@@ -1534,6 +1534,22 @@ useEffect(() => {
       </div>
 
 
+
+      {(role !== "admin" && (checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0)) && (
+        <div className={`rounded-xl border p-3 ${
+          checkinsStats.monthDelay > 0 ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"
+        }`}>
+          <div className={`text-sm font-semibold ${
+            checkinsStats.monthDelay > 0 ? "text-red-800" : "text-green-800"
+          }`}>
+            {checkinsStats.monthDelay > 0
+              ? `Vous avez ${checkinsStats.monthDelay} min de retard ce mois-ci.`
+              : `Vous avez ${checkinsStats.monthExtra} min d'avance ce mois-ci.`}
+            {checkinsStats.monthDelay > 0 && checkinsStats.monthExtra > 0 ? ` (Avance: ${checkinsStats.monthExtra} min)` : ""}
+          </div>
+        </div>
+      )}
+
       {role !== "admin" && myCheckinSlots.length > 0 && !absentToday && (
         <div className="card">
           <div className="flex items-center justify-between gap-3">
