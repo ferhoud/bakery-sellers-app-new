@@ -527,13 +527,22 @@ useEffect(() => {
   // ----------------------------
   const myCheckinSlots = useMemo(() => {
     if (!userId) return [];
-    const morningAssigned =
-      todayPlan?.MORNING?.seller_id === userId || todayPlan?.SUNDAY_EXTRA?.seller_id === userId;
-    const eveningAssigned = todayPlan?.EVENING?.seller_id === userId;
+
+    const isMorning = todayPlan?.MORNING?.seller_id === userId;
+    const isMidday = todayPlan?.MIDDAY?.seller_id === userId;
+    const isEvening = todayPlan?.EVENING?.seller_id === userId;
+    const isSundayExtra = todayPlan?.SUNDAY_EXTRA?.seller_id === userId;
 
     const slots = [];
-    if (morningAssigned) slots.push({ label: "Matin", primary: "MORNING_START", alt: "MORNING" });
-    if (eveningAssigned) slots.push({ label: "Soir", primary: "EVENING_START", alt: "EVENING" });
+
+    // Matin / Midi / Dimanche utilisent la même "fenêtre d'arrivée" (START)
+    // On garde primary=*_START pour les APIs qui l'acceptent, et alt=shift_code en fallback.
+    if (isMorning) slots.push({ label: "Matin", primary: "MORNING_START", alt: "MORNING" });
+    if (isMidday) slots.push({ label: "Midi", primary: "MORNING_START", alt: "MIDDAY" });
+    if (isSundayExtra) slots.push({ label: "Dimanche", primary: "MORNING_START", alt: "SUNDAY_EXTRA" });
+
+    if (isEvening) slots.push({ label: "Soir", primary: "EVENING_START", alt: "EVENING" });
+
     return slots;
   }, [todayPlan, userId]);
 
