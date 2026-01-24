@@ -548,6 +548,32 @@ useEffect(() => {
     return slots;
   }, [todayPlan, userId]);
 
+  const CHECKIN_OPEN_BEFORE_MIN = 30; // 30 min avant l'heure prévue (évite de demander un code trop tôt)
+  const CHECKIN_HIDE_AFTER_MIN = 120; // 2h après l'heure prévue (après, on masque le code => oubli ≠ retard)
+
+  const plannedMinutesFromShift = (shiftCode) => {
+    const sc = String(shiftCode || "").toUpperCase();
+    if (sc === "EVENING") return 13 * 60 + 30; // 13:30
+    if (sc === "SUNDAY_EXTRA") return 9 * 60;  // 09:00
+    // MORNING + MIDDAY => même arrivée 06:30
+    return 6 * 60 + 30;
+  };
+
+  const nowMinLocal = useMemo(() => (clockNow.getHours() * 60 + clockNow.getMinutes()), [clockNow]);
+
+  const getCheckinPhase = (shiftCode) => {
+    const planned = plannedMinutesFromShift(shiftCode);
+    const start = planned - CHECKIN_OPEN_BEFORE_MIN;
+    const end = planned + CHECKIN_HIDE_AFTER_MIN;
+    if (nowMinLocal < start) return { phase: "before", planned, start, end };
+    if (nowMinLocal > end) return { phase: "closed", planned, start, end };
+    return { phase: "open", planned, start, end };
+  };
+
+  const isCheckinWindowOpen = (shiftCode) => getCheckinPhase(shiftCode).phase === "open";
+
+
+
   const hasPendingCheckin = useMemo(() => {
     if (!myCheckinSlots.length) return false;
 
@@ -575,6 +601,40 @@ useEffect(() => {
       return !done;
     });
   }, [myCheckinSlots, checkinsByBoundary, checkinLocalAtByBoundary]);
+
+
+  const hasPendingCheckinOpen = useMemo(() => {
+    if (!myCheckinSlots.length) return false;
+
+    return myCheckinSlots.some((slot) => {
+      const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
+      const localAt =
+        checkinLocalAtByBoundary?.[slot.primary] ||
+        checkinLocalAtByBoundary?.[slot.alt] ||
+        null;
+      const at =
+        rec?.checked_at ||
+        rec?.checked_in_at ||
+        rec?.checkin_at ||
+        rec?.confirmed_at ||
+        rec?.created_at ||
+        rec?.at ||
+        localAt ||
+        null;
+      const done =
+        !!at ||
+        rec?.checked === true ||
+        rec?.ok === true ||
+        rec?.status === "done" ||
+        rec?.status === "confirmed";
+
+      if (done) return false;
+
+      // Si la fenêtre est dépassée (>2h), on ne considère plus "en attente"
+      const sc = slot.alt || slot.primary || "";
+      return isCheckinWindowOpen(sc);
+    });
+  }, [myCheckinSlots, checkinsByBoundary, checkinLocalAtByBoundary, nowMinLocal]);
 
 
   const fmtTimeHM = (iso) => {
@@ -1612,7 +1672,16 @@ useEffect(() => {
                     rec?.status === "done" ||
                     rec?.status === "confirmed";
 
-                  return (
+                                    const phaseInfo = getCheckinPhase(slot.alt || slot.primary);
+                  const phase = phaseInfo.phase;
+                  const fmtHMFromMinutes = (min) => {
+                    const m = ((min % (24 * 60)) + (24 * 60)) % (24 * 60);
+                    const hh = String(Math.floor(m / 60)).padStart(2, "0");
+                    const mm = String(m % 60).padStart(2, "0");
+                    return `${hh}:${mm}`;
+                  };
+
+return (
                     <div key={slot.primary} className="border rounded-2xl p-3 flex items-center justify-between gap-3">
                       <div>
                         <div className="text-sm font-medium">{slot.label}</div>
@@ -1634,7 +1703,7 @@ useEffect(() => {
 
                       </div>
 
-                      {!done ? (
+                      {!done && phase === "open" ? (
   <div className="flex items-center gap-2">
     <input
       value={checkinCode}
@@ -1667,10 +1736,17 @@ useEffect(() => {
       {checkinBusy?.[slot.primary] ? "..." : "Je pointe"}
     </button>
   </div>
-) : (
+
+) : done ? (
                         <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>
                           OK
                         </span>
+                      
+                      ) : (
+                        <span className="text-xs px-2 py-1 rounded-full" style={{ background: phase === "before" ? "#e0e7ff" : "#fee2e2", color: phase === "before" ? "#1e3a8a" : "#991b1b" }}>
+                          {phase === "before" ? `À partir de ${fmtHMFromMinutes(phaseInfo.start)}` : "Fermé"}
+                        </span>
+
                       )}
                     </div>
                   );
@@ -1682,7 +1758,7 @@ useEffect(() => {
                 {` retard ${checkinsStats.monthDelay} min`}{checkinsStats.monthExtra > 0 ? ` • avance ${checkinsStats.monthExtra} min` : ""}
               </div>
 
-              {hasPendingCheckin && checkinCode.length > 0 && !isValidCheckinCode && (
+              {hasPendingCheckinOpen && checkinCode.length > 0 && !isValidCheckinCode && (
                 <div className="text-xs mt-2" style={{ color: "#b91c1c" }}>
                   Saisis le code à 6 chiffres pour activer « Je pointe ».
                 </div>

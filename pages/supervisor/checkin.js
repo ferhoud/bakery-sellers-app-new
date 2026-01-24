@@ -28,6 +28,24 @@ const SHIFT_LABELS = {
   SUNDAY_EXTRA: "Dimanche (9h–13h30)",
 };
 
+
+const CHECKIN_OPEN_BEFORE_MIN = 30; // 30 min avant
+const CHECKIN_HIDE_AFTER_MIN = 120; // 2h
+
+function plannedMinutesFromShift(shiftCode) {
+  const sc = String(shiftCode || "").toUpperCase();
+  if (sc === "EVENING") return 13 * 60 + 30; // 13:30
+  if (sc === "SUNDAY_EXTRA") return 9 * 60;  // 09:00
+  // MORNING + MIDDAY => même arrivée 06:30
+  return 6 * 60 + 30;
+}
+
+function minutesNowLocal(d) {
+  if (!d) return null;
+  return d.getHours() * 60 + d.getMinutes();
+}
+
+
 function uniqBy(arr, keyFn) {
   const seen = new Set();
   const out = [];
@@ -61,18 +79,22 @@ export default function SupervisorCheckinPage() {
     return () => clearInterval(t);
   }, []);
 
-  async function fetchPlan() {
+  async function fetchPlan(opts = {}) {
+    const soft = !!opts.soft;
     setLoading(true);
     setErr("");
-    setMsg("");
-    setResult(null);
-    setSelected(null);
-    setPw("");
+    if (!soft) {
+      setMsg("");
+      setResult(null);
+      setSelected(null);
+      setPw("");
+    }
 
     const { data: sess } = await supabase.auth.getSession();
     const token = sess?.session?.access_token;
     if (!token) {
       window.location.href = `/login?next=/supervisor/checkin&stay=1`;
+      setLoading(false);
       return;
     }
 
@@ -96,15 +118,53 @@ export default function SupervisorCheckinPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+
+  useEffect(() => {
+    // Refresh léger pour que les noms disparaissent dès qu’un pointage est confirmé
+    const t = setInterval(() => {
+      fetchPlan({ soft: true });
+    }, 5000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const todayAssignments = plan?.assignments?.[today] || {};
+
+  const checkinsBySellerId = useMemo(() => {
+    const m = {};
+    const items = Array.isArray(plan?.checkins_today) ? plan.checkins_today : [];
+    for (const it of items) {
+      if (it?.seller_id) m[it.seller_id] = it;
+    }
+    return m;
+  }, [plan]);
+
+  const nowMin = useMemo(() => minutesNowLocal(now), [now]);
   const todays = useMemo(() => {
     const rows = [];
     for (const code of ["MORNING", "MIDDAY", "EVENING", "SUNDAY_EXTRA"]) {
       const a = todayAssignments?.[code];
       if (a?.seller_id) rows.push({ seller_id: a.seller_id, full_name: a.full_name || "", shift_code: code });
     }
-    return uniqBy(rows, (x) => x.seller_id);
-  }, [todayAssignments]);
+
+    // 1) un seul bouton par vendeuse
+    const uniq = uniqBy(rows, (x) => x.seller_id);
+
+    // 2) on masque celles déjà pointées, et celles pour lesquelles la fenêtre est dépassée (>2h)
+    return uniq.filter((s) => {
+      const ck = checkinsBySellerId?.[s.seller_id] || null;
+      if (ck?.confirmed_at) return false;
+
+      if (nowMin != null) {
+        const planned = plannedMinutesFromShift(s.shift_code);
+        const start = planned - CHECKIN_OPEN_BEFORE_MIN;
+        const end = planned + CHECKIN_HIDE_AFTER_MIN;
+        if (nowMin < start || nowMin > end) return false;
+      }
+
+      return true;
+    });
+  }, [todayAssignments, checkinsBySellerId, nowMin]);
 
   async function generateCode() {
     if (!selected?.seller_id) return;
@@ -185,7 +245,7 @@ export default function SupervisorCheckinPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button className="btn" onClick={fetchPlan} disabled={loading}>Rafraîchir</button>
+            <button className="btn" onClick={() => fetchPlan({ soft: true })} disabled={loading}>Rafraîchir</button>
             <Link className="btn" href="/supervisor">Retour planning</Link>
           </div>
         </div>
@@ -206,7 +266,7 @@ export default function SupervisorCheckinPage() {
               <div style={{ height: 10 }} />
 
               {todays.length === 0 ? (
-                <div style={{ opacity: 0.7 }}>Aucune vendeuse planifiée aujourd’hui.</div>
+                <div style={{ opacity: 0.7 }}>Tout est pointé ✅ (ou fenêtre dépassée).</div>
               ) : (
                 <div style={{ display: "grid", gap: 10 }}>
                   {todays.map((s) => {
