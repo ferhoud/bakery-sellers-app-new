@@ -69,15 +69,18 @@ function adminClient() {
 }
 
 async function isSupervisor(admin, userId) {
-  const { data, error } = await admin.from("supervisors").select("user_id").eq("user_id", userId).maybeSingle();
+  const { data, error } = await admin
+    .from("supervisors")
+    .select("user_id")
+    .eq("user_id", userId)
+    .maybeSingle();
   if (error) return false;
   return !!data?.user_id;
 }
 
 function bestNameFromUser(u) {
   const md = u?.user_metadata || {};
-  const full =
-    (md.full_name || md.name || md.display_name || md.username || "").toString().trim();
+  const full = (md.full_name || md.name || md.display_name || md.username || "").toString().trim();
   if (full) return full;
   const email = (u?.email || "").toString().trim();
   if (email) return email.split("@")[0];
@@ -86,14 +89,10 @@ function bestNameFromUser(u) {
 
 async function buildNameMap(admin, ids) {
   const nameMap = {};
-
   if (!ids.length) return nameMap;
 
   // 1) profiles.full_name (rapide)
-  const { data: profs } = await admin
-    .from("profiles")
-    .select("user_id,full_name")
-    .in("user_id", ids);
+  const { data: profs } = await admin.from("profiles").select("user_id,full_name").in("user_id", ids);
 
   for (const p of profs || []) {
     const n = (p.full_name || "").toString().trim();
@@ -115,6 +114,21 @@ async function buildNameMap(admin, ids) {
   }
 
   return nameMap;
+}
+
+function uniqAbsencesForDay(list) {
+  // si doublons, on garde 'approved' en priorité
+  const map = new Map();
+  for (const a of list || []) {
+    const prev = map.get(a.seller_id);
+    if (!prev) {
+      map.set(a.seller_id, a);
+      continue;
+    }
+    const score = (s) => (s === "approved" ? 2 : s === "pending" ? 1 : 0);
+    if (score(a.status) >= score(prev.status)) map.set(a.seller_id, a);
+  }
+  return Array.from(map.values());
 }
 
 export default async function handler(req, res) {
@@ -154,7 +168,24 @@ export default async function handler(req, res) {
 
     if (e1) return json(res, 500, { ok: false, error: e1.message });
 
-    const ids = Array.from(new Set((shifts || []).map((s) => s.seller_id).filter(Boolean)));
+    // Absences (pour bannière d’info) — on ne renvoie PAS la raison (volontaire)
+    const { data: absRows, error: eAbs } = await admin
+      .from("absences")
+      .select("date,seller_id,status")
+      .gte("date", monday)
+      .lte("date", sunday)
+      .in("status", ["approved", "pending"])
+      .order("date", { ascending: true });
+
+    if (eAbs) return json(res, 500, { ok: false, error: eAbs.message });
+
+    const ids = Array.from(
+      new Set([
+        ...(shifts || []).map((s) => s.seller_id).filter(Boolean),
+        ...(absRows || []).map((a) => a.seller_id).filter(Boolean),
+      ])
+    );
+
     const nameMap = await buildNameMap(admin, ids);
 
     const rows = (shifts || []).map((s) => ({
@@ -175,6 +206,24 @@ export default async function handler(req, res) {
       }
     }
 
+    // absencesByDate: { YYYY-MM-DD: [{seller_id, full_name, status}] }
+    const absences = {};
+    for (const d of dates) absences[d] = [];
+    for (const a of absRows || []) {
+      const d = (a.date || "").toString().slice(0, 10);
+      if (!d) continue;
+      if (!absences[d]) absences[d] = [];
+      absences[d].push({
+        seller_id: a.seller_id ?? null,
+        full_name: nameMap[a.seller_id] || "",
+        status: a.status || "",
+      });
+    }
+    // dédoublonnage par jour
+    for (const d of Object.keys(absences)) {
+      absences[d] = uniqAbsencesForDay(absences[d]).filter((x) => !!x.seller_id);
+    }
+
     return json(res, 200, {
       ok: true,
       role: allowAdmin ? "admin" : "supervisor",
@@ -183,6 +232,8 @@ export default async function handler(req, res) {
       sunday,
       dates,
       assignments,
+      absences, // <-- sans raison
+      absences_today: absences[date] || [],
     });
   } catch (e) {
     return json(res, 500, { ok: false, error: e?.message || "Server error" });

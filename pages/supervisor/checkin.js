@@ -163,6 +163,25 @@ export default function SupervisorCheckinPage() {
             <div style={{ fontSize: 12, opacity: 0.75 }}>
               Date: {frDateFromISO(today)} · Heure: {fmtTime(now)}
             </div>
+            {Array.isArray(plan?.absences_today) && plan.absences_today.length > 0 ? (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: "10px 12px",
+                  borderRadius: 14,
+                  border: "1px solid #fecaca",
+                  background: "#fff7ed",
+                }}
+              >
+                <div style={{ fontWeight: 800 }}>Absence(s) aujourd’hui</div>
+                <div style={{ marginTop: 4, opacity: 0.9 }}>
+                  {plan.absences_today
+                    .map((a) => (a.full_name || "").trim())
+                    .filter(Boolean)
+                    .join(", ") || "—"}
+                </div>
+              </div>
+            ) : null}
           </div>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>

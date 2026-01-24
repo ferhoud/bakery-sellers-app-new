@@ -14,17 +14,18 @@ function localISODate(d = new Date()) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-// Affichage FR: JJ-MM-YYYY (sans toucher aux ISO internes)
-function fmtFRDate(iso) {
-  const s = String(iso || "");
+
+function frDateFromISO(iso) {
+  const s = (iso || "").toString();
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return s || "—";
-  return `${m[3]}-${m[2]}-${m[1]}`;
+  if (!m) return s;
+  const [, y, mo, d] = m;
+  return `${d}-${mo}-${y}`;
 }
-function fmtTimeHMS(d = new Date()) {
+function fmtTime(d) {
+  if (!d) return "--:--:--";
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
-
 const SHIFT_DAY = ["MORNING", "MIDDAY", "EVENING"];
 
 const SHIFT_TEXT = {
@@ -154,18 +155,10 @@ export default function SupervisorPage() {
   const todayISO = useMemo(() => localISODate(new Date()), []);
   const [focusDate, setFocusDate] = useState(todayISO);
 
-// Horloge (HH:MM:SS) pour rendre le planning plus clair
-const [now, setNow] = useState(() => new Date());
-useEffect(() => {
-  const t = setInterval(() => setNow(new Date()), 1000);
-  return () => clearInterval(t);
-}, []);
-const nowHMS = useMemo(() => fmtTimeHMS(now), [now]);
-
-
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [payload, setPayload] = useState(null);
+  const [now, setNow] = useState(null);
 
   // Largeur écran -> sur desktop on passe en GRID (pas de scroll horizontal)
   const [isWide, setIsWide] = useState(false);
@@ -175,6 +168,14 @@ const nowHMS = useMemo(() => fmtTimeHMS(now), [now]);
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
+
+  // Horloge HH:MM:SS (client only, évite les soucis d’hydration)
+  useEffect(() => {
+    setNow(new Date());
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
 
   const monday = useMemo(() => fmtISODate(startOfWeek(new Date(`${focusDate}T12:00:00`))), [focusDate]);
 
@@ -341,8 +342,8 @@ const nowHMS = useMemo(() => fmtTimeHMS(now), [now]);
           <div>
             <div style={{ fontSize: 22, fontWeight: 800 }}>Écran superviseur</div>
             <div style={{ fontSize: 12, opacity: 0.75 }}>
-              Lecture seule · Jour: {fmtFRDate(focusDate)} · Heure: {nowHMS}
-              {payload?.monday ? ` · Semaine: ${fmtFRDate(payload.monday)} → ${fmtFRDate(payload.sunday)}` : ""}
+              Lecture seule · Jour: {focusDate}
+              {payload?.monday ? ` · Semaine: ${payload.monday} → ${payload.sunday}` : ""}
             </div>
           </div>
 
@@ -374,50 +375,30 @@ const nowHMS = useMemo(() => fmtTimeHMS(now), [now]);
         ) : (
           <>
             <div className="card">
-              <div className="hdr">Planning du jour - {fmtFRDate(focusDate)} <span style={{ fontSize: 14, fontWeight: 700, opacity: 0.8 }}>({nowHMS})</span></div>
+              <div className="hdr">Planning du jour - {frDateFromISO(focusDate)} · {fmtTime(now)}</div>
 
               <div style={{ height: 12 }} />
-
-              {/* Optionnel: bannière d’absence(s) du jour si l’API fournit payload.absences */}
-              {(() => {
-                const list = Array.isArray(payload?.absences) ? payload.absences : [];
-                const todayAbs = list.filter((a) => {
-                  const iso = String(a?.date || a?.day || a?.iso_date || "");
-                  if (iso !== focusDate) return false;
-                  const st = String(a?.status || "").toLowerCase();
-                  return st !== "cancelled" && st !== "canceled" && st !== "rejected";
-                });
-
-                if (!todayAbs.length) return null;
-
-                return (
-                  <div
-                    style={{
-                      marginBottom: 12,
-                      padding: "10px 12px",
-                      borderRadius: 12,
-                      border: "1px solid #f59e0b",
-                      background: "rgba(245,158,11,.10)",
-                    }}
-                  >
-                    <div style={{ fontWeight: 900 }}>Absence(s) aujourd’hui</div>
-                    <div style={{ marginTop: 4, fontSize: 13, opacity: 0.9 }}>
-                      {todayAbs.map((a, i) => {
-                        const nm = (a?.full_name || a?.seller_name || a?.name || "Vendeuse").toString();
-                        const reason = (a?.reason || a?.motif || "").toString().trim();
-                        // ⚠️ Conseil: éviter d’afficher des détails médicaux. On montre le motif seulement s’il est court.
-                        const extra = reason && reason.length <= 24 ? ` • ${reason}` : "";
-                        return (
-                          <div key={`${nm}-${i}`}>
-                            • {nm}
-                            {extra}
-                          </div>
-                        );
-                      })}
-                    </div>
+              {Array.isArray(payload?.absences?.[focusDate]) && payload.absences[focusDate].length > 0 ? (
+                <div
+                  style={{
+                    marginTop: 10,
+                    marginBottom: 6,
+                    padding: "10px 12px",
+                    borderRadius: 14,
+                    border: "1px solid #fecaca",
+                    background: "#fff7ed",
+                  }}
+                >
+                  <div style={{ fontWeight: 800 }}>Absence(s) aujourd’hui</div>
+                  <div style={{ marginTop: 4, opacity: 0.9 }}>
+                    {(payload.absences[focusDate] || [])
+                      .map((a) => (a.full_name || "").trim())
+                      .filter(Boolean)
+                      .join(", ") || "—"}
                   </div>
-                );
-              })()}
+                </div>
+              ) : null}
+
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(220px, 1fr))", gap: 12 }}>
                 {SHIFT_DAY.map((code) => {
@@ -485,7 +466,7 @@ const nowHMS = useMemo(() => fmtTimeHMS(now), [now]);
                       title="Cliquer pour afficher le planning du jour"
                     >
                       <div style={{ fontSize: 12, opacity: 0.6, letterSpacing: 0.6 }}>{dayLabelFR(d)}</div>
-                      <div style={{ marginTop: 6, fontSize: 18, fontWeight: 800 }}>{fmtFRDate(d)}</div>
+                      <div style={{ marginTop: 6, fontSize: 18, fontWeight: 800 }}>{d}</div>
 
                       <div style={{ height: 10 }} />
 
