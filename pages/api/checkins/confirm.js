@@ -1,5 +1,12 @@
 ﻿// pages/api/checkins/confirm.js
-import crypto from "crypto";
+//
+// Confirme un pointage vendeuse via code 6 chiffres.
+// Règle importante : si la vendeuse pointe "trop tard", on refuse (sinon ça crée des retards absurdes).
+// - Matin/Midi : heure prévue 06:30, fenêtre autorisée jusqu'à 08:30 (2h)
+// - Soir      : heure prévue 13:30, fenêtre autorisée jusqu'à 15:30 (2h)
+// - Dimanche  : heure prévue 09:00, fenêtre autorisée jusqu'à 11:00 (2h)
+// Si la vendeuse oublie de pointer, on ne compte rien (pas de retard).
+//
 import { createClient } from "@supabase/supabase-js";
 
 function json(res, status, body) {
@@ -26,69 +33,59 @@ function adminClient() {
   return createClient(url, srv, { auth: { persistSession: false } });
 }
 
-function parisTodayISO() {
+function parisNowParts() {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Paris",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date());
-  const y = parts.find((p) => p.type === "year")?.value;
-  const m = parts.find((p) => p.type === "month")?.value;
-  const d = parts.find((p) => p.type === "day")?.value;
-  return `${y}-${m}-${d}`;
-}
-
-function parisTimeHMSS(d = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Europe/Paris",
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(d);
-  const hh = parts.find((p) => p.type === "hour")?.value || "00";
-  const mm = parts.find((p) => p.type === "minute")?.value || "00";
-  const ss = parts.find((p) => p.type === "second")?.value || "00";
-  return `${hh}:${mm}:${ss}`;
+    hour12: false,
+  }).formatToParts(new Date());
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  return {
+    y: get("year"),
+    m: get("month"),
+    d: get("day"),
+    hh: get("hour"),
+    mm: get("minute"),
+    ss: get("second"),
+  };
 }
 
-function hmFromHmss(t) {
-  const s = (t || "").toString().trim();
-  const m = /^([0-2]\d):([0-5]\d)/.exec(s);
-  if (!m) return null;
-  return `${m[1]}:${m[2]}`;
+function parisTodayISO() {
+  const p = parisNowParts();
+  return `${p.y}-${p.m}-${p.d}`;
 }
 
-function parseHMToMinutes(t) {
-  const s = (t || "").toString().trim();
-  const m = /^([0-2]\d):([0-5]\d)(?::([0-5]\d))?$/.exec(s);
-  if (!m) return null;
-  const hh = Number(m[1]);
-  const mm = Number(m[2]);
-  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
-  return hh * 60 + mm;
+function nowParisMinutes() {
+  const p = parisNowParts();
+  return (parseInt(p.hh || "0", 10) || 0) * 60 + (parseInt(p.mm || "0", 10) || 0);
 }
 
-function defaultPlannedTime(shiftCode) {
-  // Valeurs par défaut (tu peux ensuite les rendre configurables si tu veux)
-  if (shiftCode === "MORNING") return "06:30";
-  if (shiftCode === "EVENING") return "13:30";
-  if (shiftCode === "SUNDAY_EXTRA") return "09:00";
-  if (shiftCode === "MIDDAY") return "11:30";
-  return null;
+function plannedMinutesFromShift(shiftCode) {
+  const sc = String(shiftCode || "").toUpperCase();
+  if (sc === "EVENING") return 13 * 60 + 30; // 13:30
+  if (sc === "SUNDAY_EXTRA") return 9 * 60;  // 09:00
+  // MORNING + MIDDAY -> même arrivée 06:30
+  return 6 * 60 + 30; // 06:30
 }
 
-function boundaryForShift(shiftCode) {
-  if (shiftCode === "MORNING" || shiftCode === "SUNDAY_EXTRA") return "MORNING_START";
-  if (shiftCode === "EVENING") return "EVENING_START";
-  // MIDDAY: pas de boundary standard chez toi (on ne force pas)
-  return null;
+function windowEndMinutes(planned) {
+  // 2h de tolérance (120 minutes) — ajustable
+  return planned + 120;
 }
 
-function sha256Hex(s) {
-  return crypto.createHash("sha256").update(s).digest("hex");
+function windowStartMinutes(planned) {
+  // 30 min avant l'heure prévue (ex 06:00 pour une arrivée prévue 06:30)
+  return planned - 30;
 }
+
+
+function maxLateAllowed() { return 120; }
+function maxEarlyAllowed(){ return 30; }
 
 export default async function handler(req, res) {
   try {
@@ -108,144 +105,105 @@ export default async function handler(req, res) {
     const admin = adminClient();
     if (!admin) return json(res, 500, { ok: false, error: "Missing SUPABASE_SERVICE_ROLE_KEY" });
 
-    const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
+    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+    const day = (body.day || body.date || body.d || parisTodayISO()).toString().slice(0, 10);
     const code = (body.code || "").toString().trim();
-    const day = (body.day || parisTodayISO()).toString().slice(0, 10);
 
-    if (!code) return json(res, 400, { ok: false, error: "Missing code" });
+    if (!/^\d{6}$/.test(code)) return json(res, 400, { ok: false, error: "BAD_CODE_FORMAT" });
 
-    // Doit être planifiée ce jour-là
-    const { data: shifts, error: shErr } = await admin
-      .from("shifts")
-      .select("shift_code")
-      .eq("date", day)
-      .eq("seller_id", user.id)
-      .limit(1);
+    // Refuse si ce n'est pas le jour courant (heure Paris)
+    const todayParis = parisTodayISO();
+    if (day !== todayParis) {
+      return json(res, 400, { ok: false, error: "CHECKIN_NOT_TODAY" });
+    }
 
-    if (shErr) return json(res, 500, { ok: false, error: shErr.message });
-    const scheduledShift = shifts?.[0]?.shift_code || null;
-    if (!scheduledShift) return json(res, 403, { ok: false, error: "NOT_SCHEDULED_TODAY" });
-
-    const pepper = (process.env.CHECKIN_CODE_PEPPER || "").toString();
-    const codeHash = sha256Hex(`${pepper}:${code}`);
-
+    // On récupère le "code du jour" émis (daily_checkins existe quand le superviseur génère un code)
     const { data: row, error: rErr } = await admin
       .from("daily_checkins")
-      .select("id,code_hash,confirmed_at,late_minutes,early_minutes,shift_code")
+      .select("id, day, seller_id, shift_code, code_hash, confirmed_at, late_minutes, early_minutes")
       .eq("day", day)
       .eq("seller_id", user.id)
       .maybeSingle();
 
     if (rErr) return json(res, 500, { ok: false, error: rErr.message });
-    if (!row?.id) return json(res, 404, { ok: false, error: "NO_CODE_ISSUED" });
+    if (!row) return json(res, 400, { ok: false, error: "NO_CODE_ISSUED" });
 
-    if (row.code_hash !== codeHash) return json(res, 403, { ok: false, error: "BAD_CODE" });
-
-    const shift_code = row.shift_code || scheduledShift;
-
-    // Déjà confirmé ? on renvoie l'état existant
+    // Déjà confirmé => idempotent
     if (row.confirmed_at) {
       return json(res, 200, {
         ok: true,
+        already_confirmed: true,
         day,
-        shift_code,
+        shift_code: row.shift_code,
         late_minutes: Number(row.late_minutes || 0) || 0,
         early_minutes: Number(row.early_minutes || 0) || 0,
-        already_confirmed: true,
+      });
+    }
+    }
+
+    // Vérification du hash du code (compat: si code_hash absent, on ne valide pas)
+    const expected = (row.code_hash || "").toString();
+    if (!expected) return json(res, 500, { ok: false, error: "MISSING_CODE_HASH" });
+
+    // Hash simple: sha256(code + secret). On reproduit le même côté serveur.
+    const secret = process.env.CHECKIN_CODE_SECRET || "";
+    if (!secret) return json(res, 500, { ok: false, error: "MISSING_CHECKIN_CODE_SECRET" });
+
+    const enc = new TextEncoder();
+    const buf = await crypto.subtle.digest("SHA-256", enc.encode(`${code}:${secret}`));
+    const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+
+    if (hex !== expected) return json(res, 400, { ok: false, error: "BAD_CODE" });
+
+    // Fenêtre autorisée
+    const planned = plannedMinutesFromShift(row.shift_code);
+    const start = windowStartMinutes(planned);
+    const end = windowEndMinutes(planned);
+    const nowMin = nowParisMinutes();
+    if (nowMin < start) {
+      return json(res, 400, {
+        ok: false,
+        error: "CHECKIN_TOO_EARLY",
+        opens_at: `${String(Math.floor(start / 60)).padStart(2, "0")}:${String(start % 60).padStart(2, "0")}`,
       });
     }
 
+    if (nowMin > end) {
+      // Trop tard => on refuse et on ne compte pas de retard.
+      return json(res, 400, {
+        ok: false,
+        error: "CHECKIN_WINDOW_CLOSED",
+        planned_hhmm: `${String(Math.floor(planned / 60)).padStart(2, "0")}:${String(planned % 60).padStart(2, "0")}`,
+        window_end_hhmm: `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`,
+      });
+    }
+
+    // Calcul retard/avance
+    const delta = nowMin - planned;
+    const late = delta > 0 ? Math.min(delta, 120) : 0;
+    const early = delta < 0 ? Math.min(Math.abs(delta), 30) : 0;
+
     const now = new Date();
-    const nowIso = now.toISOString();
-    const actualHMSS = parisTimeHMSS(now);
-    const actualHM = hmFromHmss(actualHMSS);
 
-    // Calcul retard/avance vs heure prévue
-    let plannedHM = defaultPlannedTime(shift_code);
-    const boundary = boundaryForShift(shift_code);
+    // Confirme
+    const { error: upErr } = await admin
+      .from("daily_checkins")
+      .update({
+        confirmed_at: now.toISOString(),
+        late_minutes: late,
+        early_minutes: early,
+      })
+      .eq("id", row.id);
 
-    // Si un réglage existe déjà (admin a modifié l'heure prévue), on le respecte
-    let existingH = null;
-    if (boundary) {
-      try {
-        const { data: hRow, error: hErr } = await admin
-          .from("shift_handover_adjustments")
-          .select("planned_time, stayed_seller_id, arrived_seller_id")
-          .eq("date", day)
-          .eq("boundary", boundary)
-          .maybeSingle();
-
-        if (!hErr && hRow) existingH = hRow;
-        const maybePlanned = hmFromHmss(hRow?.planned_time) || hmFromHmss(hRow?.planned_time?.toString?.()) || null;
-        if (maybePlanned) plannedHM = maybePlanned;
-        else if (typeof hRow?.planned_time === "string" && /^\d{2}:\d{2}/.test(hRow.planned_time)) plannedHM = hRow.planned_time.slice(0, 5);
-      } catch (_) {}
-    }
-
-    // Si on n'a rien du tout, on calcule sans retard
-    let late = 0;
-    let early = 0;
-    let delta = 0;
-
-    const pMin = parseHMToMinutes(plannedHM);
-    const aMin = parseHMToMinutes(actualHM);
-
-    if (pMin != null && aMin != null) {
-      delta = aMin - pMin;
-      if (delta > 0) late = delta;
-      else if (delta < 0) early = -delta;
-    }
-
-    // 1) Confirme le check-in + stocke minutes retard/avance
-    {
-      const { error: uErr } = await admin
-        .from("daily_checkins")
-        .update({
-          confirmed_at: nowIso,
-          updated_at: nowIso,
-          late_minutes: late,
-          early_minutes: early,
-        })
-        .eq("id", row.id);
-
-      if (uErr) return json(res, 500, { ok: false, error: uErr.message });
-    }
-
-    // 2) Alimente le système "retard/relais" (pour le message vendeuse + impact heures mensuelles)
-    //    On écrit un enregistrement MORNING_START / EVENING_START avec planned_time + actual_time.
-    let handover_saved = false;
-    if (boundary && plannedHM && actualHM) {
-      try {
-        const payload = {
-          date: day,
-          boundary,
-          planned_time: plannedHM,
-          actual_time: actualHM,
-          // important: ne pas écraser un "stayed_seller_id" déjà posé par l'admin
-          stayed_seller_id: existingH?.stayed_seller_id ?? null,
-          arrived_seller_id: user.id,
-        };
-
-        const { error: hSaveErr } = await admin
-          .from("shift_handover_adjustments")
-          .upsert(payload, { onConflict: "date,boundary" });
-
-        if (!hSaveErr) handover_saved = true;
-      } catch (_) {}
-    }
+    if (upErr) return json(res, 500, { ok: false, error: upErr.message });
 
     return json(res, 200, {
       ok: true,
       day,
-      shift_code,
-      planned_time: plannedHM || null,
-      actual_time: actualHM || null,
-      actual_time_hms: actualHMSS || null,
-      delta_minutes: delta || 0,
-      late_minutes: late || 0,
-      early_minutes: early || 0,
-      handover_saved,
-      already_confirmed: false,
+      shift_code: row.shift_code,
+      confirmed_at: now.toISOString(),
+      late_minutes: late,
+      early_minutes: early,
     });
   } catch (e) {
     return json(res, 500, { ok: false, error: e?.message || "Server error" });

@@ -1,4 +1,10 @@
 // pages/api/checkins/status.js
+//
+// Retourne l'état de pointage du jour (vendeuse).
+// - Ne pénalise pas une vendeuse qui n'a pas pointé.
+// - Protège contre des retards absurdes (ex: 11:03 -> 301 min) : si un vieux record existe,
+//   on le "clamp" à une fenêtre max et on peut ignorer côté UI si besoin.
+//
 import { createClient } from "@supabase/supabase-js";
 
 function json(res, status, body) {
@@ -38,50 +44,97 @@ function parisTodayISO() {
   return `${y}-${m}-${d}`;
 }
 
+function parisPartsFromDate(dt) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Paris",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(dt);
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  return {
+    y: get("year"),
+    m: get("month"),
+    d: get("day"),
+    hh: get("hour"),
+    mm: get("minute"),
+    ss: get("second"),
+  };
+}
+
+function parisMinutesOfDay(dt) {
+  const p = parisPartsFromDate(dt);
+  const hh = Number(p.hh || 0) || 0;
+  const mm = Number(p.mm || 0) || 0;
+  return hh * 60 + mm;
+}
+
+function startOfMonthISO(dayIso) {
+  const [y, m] = String(dayIso || "").split("-").slice(0, 2);
+  if (!y || !m) return null;
+  return `${y}-${m}-01`;
+}
+
+function clampMinutes({ late, early }) {
+  const maxLate = maxLateAllowed();
+  const maxEarly = maxEarlyAllowed();
+  let ignored = false;
+  let l = Number(late || 0) || 0;
+  let e = Number(early || 0) || 0;
+  if (l > maxLate) {
+    ignored = true;
+    l = 0;
+  }
+  if (e > maxEarly) {
+    ignored = true;
+    e = 0;
+  }
+  return { late: l, early: e, ignored };
+}
+
+function recomputeFromConfirmedAt(confirmedAt, plannedMinutes) {
+  if (!confirmedAt) return { late: 0, early: 0, ignored: false, has: false };
+  const mins = parisMinutesOfDay(new Date(confirmedAt));
+  const delta = mins - plannedMinutes;
+  const maxLate = maxLateAllowed();
+  const maxEarly = maxEarlyAllowed();
+  if (delta > 0) {
+    if (delta > maxLate) return { late: 0, early: 0, ignored: true, has: true };
+    return { late: delta, early: 0, ignored: false, has: true };
+  }
+  if (delta < 0) {
+    const e = -delta;
+    if (e > maxEarly) return { late: 0, early: 0, ignored: true, has: true };
+    return { late: 0, early: e, ignored: false, has: true };
+  }
+  return { late: 0, early: 0, ignored: false, has: true };
+}
+
 function boundaryFromShift(shiftCode) {
   const sc = String(shiftCode || "").toUpperCase();
-  if (sc === "EVENING" || sc === "EVENING_START") return "EVENING_START";
-  // Matin/Midi/Dimanche => même fenêtre d’arrivée
+  if (sc === "EVENING") return "EVENING_START";
   return "MORNING_START";
 }
 
-function plannedStartHHMM(shiftCode) {
+function plannedMinutesFromShift(shiftCode) {
   const sc = String(shiftCode || "").toUpperCase();
-  if (sc === "EVENING" || sc === "EVENING_START") return "13:30";
-  if (sc === "SUNDAY_EXTRA") return "09:00";
-  // MORNING / MIDDAY (et défaut)
-  return "06:30";
+  if (sc === "EVENING") return 13 * 60 + 30;
+  if (sc === "SUNDAY_EXTRA") return 9 * 60;
+  return 6 * 60 + 30; // MORNING / MIDDAY
 }
 
-function hhmmToMinutes(hhmm) {
-  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(hhmm || "").trim());
-  if (!m) return null;
-  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+function maxEarlyAllowed() {
+  // tolérance "arriver en avance" (ex: 06:00→06:30 => +30 min)
+  return 30;
 }
 
-function parisHHMMFromISO(iso) {
-  try {
-    const d = new Date(String(iso));
-    if (Number.isNaN(d.getTime())) return null;
-    const parts = new Intl.DateTimeFormat("fr-FR", {
-      timeZone: "Europe/Paris",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).formatToParts(d);
-    const hh = parts.find((p) => p.type === "hour")?.value;
-    const mm = parts.find((p) => p.type === "minute")?.value;
-    if (!hh || !mm) return null;
-    return `${hh}:${mm}`;
-  } catch {
-    return null;
-  }
-}
-
-function monthStartISO(dayISO) {
-  const s = String(dayISO || "").slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
-  return `${s.slice(0, 8)}01`;
+function maxLateAllowed() {
+  // Doit matcher confirm.js (2h)
+  return 120;
 }
 
 export default async function handler(req, res) {
@@ -105,7 +158,7 @@ export default async function handler(req, res) {
     const q = req.query || {};
     const day = (q.day || q.date || q.d || parisTodayISO()).toString().slice(0, 10);
 
-    // Planning du jour (peut aider à deviner le shift_code si daily_checkins ne le contient pas)
+    // shifts du jour (pour savoir quel shift la vendeuse fait)
     const { data: shifts, error: shErr } = await admin
       .from("shifts")
       .select("shift_code")
@@ -118,7 +171,7 @@ export default async function handler(req, res) {
     const scheduled = scheduledShiftCodes.length > 0;
     const scheduledMain = scheduledShiftCodes[0] || null;
 
-    // Ligne daily_checkins (créée quand le superviseur génère le code)
+    // daily_checkins du jour (créée quand le superviseur génère le code)
     const { data: row, error: rErr } = await admin
       .from("daily_checkins")
       .select("day, shift_code, confirmed_at, late_minutes, early_minutes, created_at, updated_at")
@@ -128,69 +181,52 @@ export default async function handler(req, res) {
 
     if (rErr) return json(res, 500, { ok: false, error: rErr.message });
 
-    const effectiveShift = (row?.shift_code || scheduledMain || null) ? String(row?.shift_code || scheduledMain || "").toUpperCase() : null;
+    const effectiveShift = row?.shift_code || scheduledMain || null;
     const boundary = boundaryFromShift(effectiveShift);
 
-    // ✅ Calcule/normalise late_minutes & early_minutes à partir de confirmed_at (heure réelle)
-    let lateMinutes = Number(row?.late_minutes || 0) || 0;
-    let earlyMinutes = Number(row?.early_minutes || 0) || 0;
+    const plannedMinutes = plannedMinutesFromShift(effectiveShift);
 
-    if (row?.confirmed_at) {
-      const planned = plannedStartHHMM(effectiveShift);
-      const plannedMin = hhmmToMinutes(planned);
-      const actualHHMM = parisHHMMFromISO(row.confirmed_at);
-      const actualMin = actualHHMM ? hhmmToMinutes(actualHHMM) : null;
 
-      if (plannedMin != null && actualMin != null) {
-        const delta = Math.max(-360, Math.min(360, actualMin - plannedMin)); // borne de sécurité
-        const newLate = delta > 0 ? delta : 0;
-        const newEarly = delta < 0 ? -delta : 0;
+    // Clamp contre valeurs absurdes + backfill (anciennes versions)
+const maxLate = maxLateAllowed();
+const maxEarly = maxEarlyAllowed();
 
-        // Si différent, on met à jour la DB (utile pour admin / exports)
-        if (newLate !== lateMinutes || newEarly !== earlyMinutes) {
-          lateMinutes = newLate;
-          earlyMinutes = newEarly;
-          try {
-            await admin
-              .from("daily_checkins")
-              .update({ late_minutes: lateMinutes, early_minutes: earlyMinutes })
-              .eq("day", day)
-              .eq("seller_id", user.id);
-          } catch {}
-        }
-      }
+let late = Number(row?.late_minutes || 0) || 0;
+let early = Number(row?.early_minutes || 0) || 0;
+let ignored = false;
+
+// Si un pointage est confirmé mais que late/early sont vides ou incohérents,
+// on recalcule à partir de confirmed_at (heure Paris) et de l'heure prévue.
+if (row?.confirmed_at) {
+  const rec = recomputeFromConfirmedAt(row.confirmed_at, plannedMinutes);
+  if (rec.has) {
+    // Si les valeurs stockées sont 0/0 mais qu'on peut calculer mieux, on prend le calcul.
+    const storedZero = (late === 0 && early === 0);
+    const storedOutOfRange = (late > maxLate || early > maxEarly);
+    if (storedZero || storedOutOfRange) {
+      late = rec.late;
+      early = rec.early;
+      ignored = rec.ignored;
     }
+  }
+}
 
-    // ✅ Sommes du mois (retard/avance cumulés)
-    const mStart = monthStartISO(day);
-    let monthDelay = 0;
-    let monthExtra = 0;
+// Clamp final
+const cl = clampMinutes({ late, early });
+late = cl.late;
+early = cl.early;
+ignored = ignored || cl.ignored;
 
-    if (mStart) {
-      const { data: monthRows } = await admin
-        .from("daily_checkins")
-        .select("late_minutes, early_minutes, confirmed_at, day")
-        .eq("seller_id", user.id)
-        .gte("day", mStart)
-        .lte("day", day);
-
-      for (const rr of monthRows || []) {
-        // On compte seulement si confirmé (sinon late/early peut rester à 0)
-        if (!rr?.confirmed_at) continue;
-        monthDelay += Number(rr.late_minutes || 0) || 0;
-        monthExtra += Number(rr.early_minutes || 0) || 0;
-      }
-    }
-
-    const item = row
+const item = row
       ? {
           boundary,
           shift_code: effectiveShift,
           confirmed_at: row.confirmed_at,
-          late_minutes: lateMinutes,
-          early_minutes: earlyMinutes,
+          late_minutes: late,
+          early_minutes: early,
           created_at: row.created_at,
           updated_at: row.updated_at,
+          ignored,
         }
       : null;
 
@@ -200,21 +236,60 @@ export default async function handler(req, res) {
       if (item.shift_code) byBoundary[String(item.shift_code).toUpperCase()] = item;
     }
 
+// Totaux du mois (pointage) — uniquement les jours confirmés
+const monthStart = startOfMonthISO(day);
+let monthDelay = 0;
+let monthExtra = 0;
+
+if (monthStart) {
+  const { data: monthRows, error: mErr } = await admin
+    .from("daily_checkins")
+    .select("day, shift_code, confirmed_at, late_minutes, early_minutes")
+    .eq("seller_id", user.id)
+    .gte("day", monthStart)
+    .lte("day", day)
+    .not("confirmed_at", "is", null);
+
+  if (!mErr && Array.isArray(monthRows)) {
+    for (const r of monthRows) {
+      const eff = r?.shift_code || null;
+      const pm = plannedMinutesFromShift(eff);
+      // Recalc si besoin
+      let l = Number(r?.late_minutes || 0) || 0;
+      let e = Number(r?.early_minutes || 0) || 0;
+      const rec = recomputeFromConfirmedAt(r?.confirmed_at, pm);
+      const storedZero = (l === 0 && e === 0);
+      const storedOutOfRange = (l > maxLateAllowed() || e > maxEarlyAllowed());
+      if (rec.has && (storedZero || storedOutOfRange)) {
+        l = rec.late;
+        e = rec.early;
+      }
+      const cl2 = clampMinutes({ late: l, early: e });
+      monthDelay += cl2.late;
+      monthExtra += cl2.early;
+    }
+  }
+}
+
+const todayDelay = late;
+const todayExtra = early;
+
+
     return json(res, 200, {
       ok: true,
       day,
+      month_delay_minutes: monthDelay,
+      month_extra_minutes: monthExtra,
+      today_delay_minutes: todayDelay,
+      today_extra_minutes: todayExtra,
       scheduled,
       scheduled_shift_codes: scheduledShiftCodes,
       issued: !!row,
       confirmed: !!row?.confirmed_at,
       shift_code: effectiveShift,
-      late_minutes: lateMinutes,
-      early_minutes: earlyMinutes,
-      // ✅ totaux utiles pour l'UI vendeuse
-      today_delay_minutes: lateMinutes,
-      today_extra_minutes: earlyMinutes,
-      month_delay_minutes: monthDelay,
-      month_extra_minutes: monthExtra,
+      late_minutes: late,
+      early_minutes: early,
+      ignored,
       byBoundary,
       items: item ? [item] : [],
     });
