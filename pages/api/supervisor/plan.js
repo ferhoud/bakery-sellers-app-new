@@ -1,6 +1,10 @@
 // pages/api/supervisor/plan.js
+//
+// Donne au superviseur (ou admin) le planning + état des pointages.
+// Auth: Bearer <jwt> (comme le reste des routes), pas de cookies requis.
+//
 import { createClient } from "@supabase/supabase-js";
-import { isAdminEmail } from "../../../lib/admin";
+import { isAdminEmail } from "@/lib/admin";
 
 function json(res, status, body) {
   res.status(status).json(body);
@@ -10,48 +14,6 @@ function getBearer(req) {
   const h = req.headers.authorization || req.headers.Authorization || "";
   const m = /^Bearer\s+(.+)$/i.exec(h);
   return m?.[1] || "";
-}
-
-function isoFromDateUTC(d) {
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const da = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${da}`;
-}
-
-function startOfWeekISO(iso) {
-  const d = new Date(`${iso}T12:00:00Z`);
-  const day = d.getUTCDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day; // Monday
-  d.setUTCDate(d.getUTCDate() + diff);
-  return isoFromDateUTC(d);
-}
-
-function addDaysISO(iso, n) {
-  const d = new Date(`${iso}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return isoFromDateUTC(d);
-}
-
-function enumerateWeek(mondayISO) {
-  const out = [];
-  for (let i = 0; i < 7; i++) out.push(addDaysISO(mondayISO, i));
-  return out;
-}
-
-function normalizeAssignments(dates, rows) {
-  const out = {};
-  for (const d of dates) out[d] = {};
-  for (const r of rows || []) {
-    const date = (r.date || "").slice(0, 10);
-    if (!date) continue;
-    out[date] ||= {};
-    out[date][r.shift_code] = {
-      seller_id: r.seller_id ?? null,
-      full_name: r.full_name ?? "",
-    };
-  }
-  return out;
 }
 
 function anonClient() {
@@ -68,205 +30,169 @@ function adminClient() {
   return createClient(url, srv, { auth: { persistSession: false } });
 }
 
-async function isSupervisor(admin, userId) {
-  const { data, error } = await admin
-    .from("supervisors")
-    .select("user_id")
-    .eq("user_id", userId)
-    .maybeSingle();
-  if (error) return false;
-  return !!data?.user_id;
+function parisTodayISO() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Paris",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+  return `${y}-${m}-${d}`;
 }
 
-function bestNameFromUser(u) {
-  const md = u?.user_metadata || {};
-  const full = (md.full_name || md.name || md.display_name || md.username || "").toString().trim();
-  if (full) return full;
-  const email = (u?.email || "").toString().trim();
-  if (email) return email.split("@")[0];
-  return "";
+function toISODate(x) {
+  return (x || "").toString().slice(0, 10);
 }
 
-async function buildNameMap(admin, ids) {
-  const nameMap = {};
-  if (!ids.length) return nameMap;
-
-  // 1) profiles.full_name (rapide)
-  const { data: profs } = await admin.from("profiles").select("user_id,full_name").in("user_id", ids);
-
-  for (const p of profs || []) {
-    const n = (p.full_name || "").toString().trim();
-    if (n) nameMap[p.user_id] = n;
-  }
-
-  // 2) fallback Auth (quand profiles est vide ou absent)
-  const missing = ids.filter((id) => !nameMap[id]);
-  for (const id of missing) {
-    try {
-      const { data, error } = await admin.auth.admin.getUserById(id);
-      if (!error && data?.user) {
-        const n = bestNameFromUser(data.user);
-        if (n) nameMap[id] = n;
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  return nameMap;
+function uniq(arr) {
+  return Array.from(new Set((arr || []).filter(Boolean)));
 }
 
-function uniqAbsencesForDay(list) {
-  // si doublons, on garde 'approved' en priorité
-  const map = new Map();
-  for (const a of list || []) {
-    const prev = map.get(a.seller_id);
-    if (!prev) {
-      map.set(a.seller_id, a);
-      continue;
-    }
-    const score = (s) => (s === "approved" ? 2 : s === "pending" ? 1 : 0);
-    if (score(a.status) >= score(prev.status)) map.set(a.seller_id, a);
-  }
-  return Array.from(map.values());
+function startOfWeekMonday(iso) {
+  // iso: YYYY-MM-DD
+  const [y, m, d] = toISODate(iso).split("-").map((n) => parseInt(n, 10));
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  // JS: 0=Sun..6=Sat ; on veut lundi
+  const dow = (dt.getUTCDay() + 6) % 7; // 0=lundi..6=dimanche
+  dt.setUTCDate(dt.getUTCDate() - dow);
+  return dt.toISOString().slice(0, 10);
+}
+
+function addDaysISO(iso, n) {
+  const [y, m, d] = toISODate(iso).split("-").map((x) => parseInt(x, 10));
+  const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
+  dt.setUTCDate(dt.getUTCDate() + (Number(n) || 0));
+  return dt.toISOString().slice(0, 10);
 }
 
 export default async function handler(req, res) {
   try {
+    res.setHeader("Cache-Control", "no-store");
+
+    if (req.method !== "GET") return json(res, 405, { ok: false, error: "Method not allowed" });
+
     const jwt = getBearer(req);
-    if (!jwt) return json(res, 401, { ok: false, error: "Missing Authorization Bearer token" });
+    if (!jwt) return json(res, 401, { ok: false, error: "Auth session missing!" });
 
-    const sb = anonClient();
-    if (!sb) return json(res, 500, { ok: false, error: "Missing NEXT_PUBLIC_SUPABASE_URL/ANON_KEY" });
+    const sbAnon = anonClient();
+    if (!sbAnon) return json(res, 500, { ok: false, error: "Missing NEXT_PUBLIC_SUPABASE_URL/ANON_KEY" });
 
-    const { data: authData, error: authErr } = await sb.auth.getUser(jwt);
-    if (authErr || !authData?.user) return json(res, 401, { ok: false, error: authErr?.message || "Unauthorized" });
+    const { data: au, error: auErr } = await sbAnon.auth.getUser(jwt);
+    if (auErr || !au?.user) return json(res, 401, { ok: false, error: auErr?.message || "Unauthorized" });
 
-    const user = authData.user;
+    const user = au.user;
+    const email = (user.email || "").toLowerCase();
 
     const admin = adminClient();
     if (!admin) return json(res, 500, { ok: false, error: "Missing SUPABASE_SERVICE_ROLE_KEY" });
 
-    // Autorisation : admin ou supervisor
-    const email = (user.email || "").toLowerCase();
-    const allowAdmin = isAdminEmail(email);
-    const allowSupervisor = !allowAdmin ? await isSupervisor(admin, user.id) : true;
-    if (!allowAdmin && !allowSupervisor) return json(res, 403, { ok: false, error: "Forbidden" });
+    // Autorisation: admin OU user présent dans table supervisors
+    let allowed = false;
+    if (email && isAdminEmail(email)) {
+      allowed = true;
+    } else {
+      const { data: supRow, error: supErr } = await admin
+        .from("supervisors")
+        .select("user_id")
+        .eq("user_id", user.id)
+        .maybeSingle();
+      if (supErr) return json(res, 500, { ok: false, error: supErr.message });
+      allowed = !!supRow;
+    }
 
-    const date = String(req.query.date || isoFromDateUTC(new Date())).slice(0, 10);
-    const monday = startOfWeekISO(date);
+    if (!allowed) return json(res, 403, { ok: false, error: "FORBIDDEN" });
+
+    const q = req.query || {};
+    const day = toISODate(q.date || q.day || q.d || parisTodayISO());
+    const monday = startOfWeekMonday(day);
     const sunday = addDaysISO(monday, 6);
-    const dates = enumerateWeek(monday);
 
-    // Source canonique = shifts (évite view incomplète)
-    const { data: shifts, error: e1 } = await admin
+    // Planning semaine (pour compat avec /supervisor) + le checkin page utilise juste assignments[day]
+    const { data: shifts, error: shErr } = await admin
       .from("shifts")
-      .select("date,shift_code,seller_id")
+      .select("date, shift_code, seller_id")
       .gte("date", monday)
-      .lte("date", sunday)
-      .order("date", { ascending: true });
+      .lte("date", sunday);
 
-    if (e1) return json(res, 500, { ok: false, error: e1.message });
+    if (shErr) return json(res, 500, { ok: false, error: shErr.message });
 
-    // Absences (pour bannière d’info) — on ne renvoie PAS la raison (volontaire)
-    const { data: absRows, error: eAbs } = await admin
+    // Absences semaine
+    const { data: absRows, error: abErr } = await admin
       .from("absences")
-      .select("date,seller_id,status")
+      .select("seller_id, date, status, reason")
       .gte("date", monday)
       .lte("date", sunday)
-      .in("status", ["approved", "pending"])
-      .order("date", { ascending: true });
+      .in("status", ["pending", "approved"]);
 
-    if (eAbs) return json(res, 500, { ok: false, error: eAbs.message });
+    if (abErr) return json(res, 500, { ok: false, error: abErr.message });
 
-    const ids = Array.from(
-      new Set([
-        ...(shifts || []).map((s) => s.seller_id).filter(Boolean),
-        ...(absRows || []).map((a) => a.seller_id).filter(Boolean),
-      ])
-    );
+    // Checkins semaine (codes générés + pointés)
+    const { data: ckRows, error: ckErr } = await admin
+      .from("daily_checkins")
+      .select("id, day, seller_id, shift_code, confirmed_at, late_minutes, early_minutes")
+      .gte("day", monday)
+      .lte("day", sunday);
 
-    const nameMap = await buildNameMap(admin, ids);
+    if (ckErr) return json(res, 500, { ok: false, error: ckErr.message });
 
-    const rows = (shifts || []).map((s) => ({
-      date: s.date,
-      shift_code: s.shift_code,
-      seller_id: s.seller_id,
-      full_name: nameMap[s.seller_id] || "",
-    }));
+    const sellerIds = uniq([
+      ...(Array.isArray(shifts) ? shifts.map((s) => s.seller_id) : []),
+      ...(Array.isArray(absRows) ? absRows.map((a) => a.seller_id) : []),
+      ...(Array.isArray(ckRows) ? ckRows.map((c) => c.seller_id) : []),
+    ]);
 
-    const assignments = normalizeAssignments(dates, rows);
+    // Noms
+    let names = {};
+    if (sellerIds.length) {
+      const { data: profs, error: pErr } = await admin
+        .from("profiles")
+        .select("user_id, full_name")
+        .in("user_id", sellerIds);
 
-    // Clés stables
-    const SHIFT_ORDER = ["MORNING", "MIDDAY", "EVENING", "SUNDAY_EXTRA"];
-    for (const d of dates) {
-      assignments[d] ||= {};
-      for (const code of SHIFT_ORDER) {
-        assignments[d][code] ||= { seller_id: null, full_name: "" };
+      if (pErr) return json(res, 500, { ok: false, error: pErr.message });
+
+      for (const p of profs || []) {
+        if (!p?.user_id) continue;
+        names[p.user_id] = (p.full_name || "").toString();
       }
     }
 
-    // absencesByDate: { YYYY-MM-DD: [{seller_id, full_name, status}] }
-    const absences = {};
-    for (const d of dates) absences[d] = [];
-    for (const a of absRows || []) {
-      const d = (a.date || "").toString().slice(0, 10);
-      if (!d) continue;
-      if (!absences[d]) absences[d] = [];
-      absences[d].push({
-        seller_id: a.seller_id ?? null,
-        full_name: nameMap[a.seller_id] || "",
-        status: a.status || "",
-      });
-    }
-    // dédoublonnage par jour
-    for (const d of Object.keys(absences)) {
-      absences[d] = uniqAbsencesForDay(absences[d]).filter((x) => !!x.seller_id);
+    // assignments[YYYY-MM-DD][SHIFT_CODE] = {seller_id, full_name}
+    const assignments = {};
+    for (const s of shifts || []) {
+      const d = toISODate(s?.date);
+      const sc = String(s?.shift_code || "").toUpperCase();
+      if (!d || !sc || !s?.seller_id) continue;
+      if (!assignments[d]) assignments[d] = {};
+      assignments[d][sc] = { seller_id: s.seller_id, full_name: (names[s.seller_id] || "").trim() };
     }
 
-    // Checkins du jour (pour masquer les vendeuses déjà pointées dans /supervisor/checkin)
-    // On ne renvoie que l'essentiel.
-    const todayAssign = assignments[date] || {};
-    const todayIds = Array.from(
-      new Set(
-        ["MORNING", "MIDDAY", "EVENING", "SUNDAY_EXTRA"]
-          .map((c) => todayAssign?.[c]?.seller_id)
-          .filter(Boolean)
-      )
-    );
+    const checkins_week = (ckRows || []).map((c) => ({
+      ...c,
+      full_name: (names[c.seller_id] || "").trim(),
+    }));
+    const checkins_today = checkins_week.filter((c) => toISODate(c?.day) === day);
 
-    let checkins_today = [];
-    if (todayIds.length) {
-      const { data: ckRows, error: eCk } = await admin
-        .from("daily_checkins")
-        .select("seller_id,shift_code,confirmed_at,late_minutes,early_minutes,created_at")
-        .eq("day", date)
-        .in("seller_id", todayIds);
-
-      if (eCk) return json(res, 500, { ok: false, error: eCk.message });
-
-      checkins_today = (ckRows || []).map((r) => ({
-        seller_id: r.seller_id,
-        shift_code: r.shift_code,
-        confirmed_at: r.confirmed_at,
-        late_minutes: Number(r.late_minutes || 0) || 0,
-        early_minutes: Number(r.early_minutes || 0) || 0,
-created_at: r.created_at,
-      }));
-    }
-
+    const absences_week = (absRows || []).map((a) => ({
+      ...a,
+      full_name: (names[a.seller_id] || "").trim(),
+    }));
+    const absences_today = absences_week.filter((a) => toISODate(a?.date) === day);
 
     return json(res, 200, {
       ok: true,
-      role: allowAdmin ? "admin" : "supervisor",
-      date,
-      monday,
-      sunday,
-      dates,
+      day,
+      week_start: monday,
+      week_end: sunday,
       assignments,
-      absences, // <-- sans raison
-      absences_today: absences[date] || [],
       checkins_today,
+      checkins_week,
+      absences_today,
+      absences_week,
+      server_now: new Date().toISOString(),
     });
   } catch (e) {
     return json(res, 500, { ok: false, error: e?.message || "Server error" });

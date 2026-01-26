@@ -308,9 +308,18 @@ useEffect(() => {
       return;
     }
 
-    // Admin => /admin
+    // Empêche un appareil "vendeuse" de rester connecté en ADMIN (ex: tablette partagée)
+    // Si une session admin est détectée sur /app, on déconnecte et on renvoie vers /login.
     if (role === "admin") {
-      r.replace("/admin");
+      (async () => {
+        try {
+          await supabase.auth.signOut();
+        } catch (_) {}
+        if (typeof window !== "undefined") {
+          window.location.replace("/login?stay=1&next=/app");
+        }
+      })();
+      return;
     }
   }, [authChecked, userId, role, r]);
 
@@ -1595,22 +1604,18 @@ useEffect(() => {
 
 
 
-      {role !== "admin" && (checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0) && (
-        <div className="space-y-2">
-          {checkinsStats.monthDelay > 0 && (
-            <div className="rounded-xl border p-3 border-red-200 bg-red-50">
-              <div className="text-sm font-semibold text-red-800">
-                ⏱️ Vous avez <b>{fmtMinutesHM(checkinsStats.monthDelay)}</b> de retard ce mois-ci (pointage).
-              </div>
-            </div>
-          )}
-          {checkinsStats.monthExtra > 0 && (
-            <div className="rounded-xl border p-3 border-green-200 bg-green-50">
-              <div className="text-sm font-semibold text-green-800">
-                ➕ Vous avez <b>{fmtMinutesHM(checkinsStats.monthExtra)}</b> de travail en plus ce mois-ci (pointage).
-              </div>
-            </div>
-          )}
+      {(role !== "admin" && (checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0)) && (
+        <div className={`rounded-xl border p-3 ${
+          checkinsStats.monthDelay > 0 ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"
+        }`}>
+          <div className={`text-sm font-semibold ${
+            checkinsStats.monthDelay > 0 ? "text-red-800" : "text-green-800"
+          }`}>
+            {checkinsStats.monthDelay > 0
+              ? `Vous avez ${checkinsStats.monthDelay} min de retard ce mois-ci.`
+              : `Vous avez ${checkinsStats.monthExtra} min d'avance ce mois-ci.`}
+            {checkinsStats.monthDelay > 0 && checkinsStats.monthExtra > 0 ? ` (Avance: ${checkinsStats.monthExtra} min)` : ""}
+          </div>
         </div>
       )}
 
@@ -1758,9 +1763,25 @@ return (
               </div>
 
               <div className="text-xs text-gray-600 mt-2">
-                Ce mois-ci (pointage): retard {fmtMinutesHM(checkinsStats.monthDelay)}
-                {checkinsStats.monthExtra > 0 ? <> • travail en plus {fmtMinutesHM(checkinsStats.monthExtra)}</> : null}
+                Ce mois-ci (pointage):
+                {` retard ${checkinsStats.monthDelay} min`}{checkinsStats.monthExtra > 0 ? ` • travail en plus ${checkinsStats.monthExtra} min` : ""}
               </div>
+
+              {(checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0) && (
+                <div
+                  className="mt-3 text-sm px-3 py-2 rounded-lg"
+                  style={{
+                    background: checkinsStats.monthDelay > 0 ? "#fee2e2" : "#dcfce7",
+                    color: checkinsStats.monthDelay > 0 ? "#991b1b" : "#166534",
+                    border: `1px solid ${checkinsStats.monthDelay > 0 ? "#fecaca" : "#bbf7d0"}`,
+                    fontWeight: 700,
+                  }}
+                >
+                  {checkinsStats.monthDelay > 0
+                    ? `Vous avez ${checkinsStats.monthDelay} min de retard ce mois-ci (pointage).`
+                    : `Vous avez ${checkinsStats.monthExtra} min de travail en plus ce mois-ci (pointage).`}
+                </div>
+              )}
 
 
               {hasPendingCheckinOpen && checkinCode.length > 0 && !isValidCheckinCode && (
