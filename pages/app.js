@@ -1595,18 +1595,22 @@ useEffect(() => {
 
 
 
-      {(role !== "admin" && (checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0)) && (
-        <div className={`rounded-xl border p-3 ${
-          checkinsStats.monthDelay > 0 ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"
-        }`}>
-          <div className={`text-sm font-semibold ${
-            checkinsStats.monthDelay > 0 ? "text-red-800" : "text-green-800"
-          }`}>
-            {checkinsStats.monthDelay > 0
-              ? `Vous avez ${checkinsStats.monthDelay} min de retard ce mois-ci.`
-              : `Vous avez ${checkinsStats.monthExtra} min d'avance ce mois-ci.`}
-            {checkinsStats.monthDelay > 0 && checkinsStats.monthExtra > 0 ? ` (Avance: ${checkinsStats.monthExtra} min)` : ""}
-          </div>
+      {role !== "admin" && (checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0) && (
+        <div className="space-y-2">
+          {checkinsStats.monthDelay > 0 && (
+            <div className="rounded-xl border p-3 border-red-200 bg-red-50">
+              <div className="text-sm font-semibold text-red-800">
+                ⏱️ Vous avez <b>{fmtMinutesHM(checkinsStats.monthDelay)}</b> de retard ce mois-ci (pointage).
+              </div>
+            </div>
+          )}
+          {checkinsStats.monthExtra > 0 && (
+            <div className="rounded-xl border p-3 border-green-200 bg-green-50">
+              <div className="text-sm font-semibold text-green-800">
+                ➕ Vous avez <b>{fmtMinutesHM(checkinsStats.monthExtra)}</b> de travail en plus ce mois-ci (pointage).
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1697,7 +1701,7 @@ return (
                           >
                             {(Number(rec?.late_minutes || 0) || 0) > 0
                               ? `⏰ Retard: +${Number(rec?.late_minutes || 0) || 0} min`
-                              : `✅ Avance: +${Number(rec?.early_minutes || 0) || 0} min`}
+                              : `✅ Travail en plus: +${Number(rec?.early_minutes || 0) || 0} min`}
                           </div>
                         )}
 
@@ -1754,9 +1758,10 @@ return (
               </div>
 
               <div className="text-xs text-gray-600 mt-2">
-                Ce mois-ci (pointage):
-                {` retard ${checkinsStats.monthDelay} min`}{checkinsStats.monthExtra > 0 ? ` • avance ${checkinsStats.monthExtra} min` : ""}
+                Ce mois-ci (pointage): retard {fmtMinutesHM(checkinsStats.monthDelay)}
+                {checkinsStats.monthExtra > 0 ? <> • travail en plus {fmtMinutesHM(checkinsStats.monthExtra)}</> : null}
               </div>
+
 
               {hasPendingCheckinOpen && checkinCode.length > 0 && !isValidCheckinCode && (
                 <div className="text-xs mt-2" style={{ color: "#b91c1c" }}>

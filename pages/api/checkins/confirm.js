@@ -139,7 +139,6 @@ export default async function handler(req, res) {
         early_minutes: Number(row.early_minutes || 0) || 0,
       });
     }
-    }
 
     // Vérification du hash du code (compat: si code_hash absent, on ne valide pas)
     const expected = (row.code_hash || "").toString();

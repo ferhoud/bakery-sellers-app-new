@@ -68,6 +68,7 @@ export default function SupervisorCheckinPage() {
 
   const [selected, setSelected] = useState(null); // {seller_id, full_name, shift_code}
   const [pw, setPw] = useState("");
+  const [pwFocused, setPwFocused] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null); // {code, late_minutes,...}
   const [msg, setMsg] = useState("");
@@ -120,13 +121,19 @@ export default function SupervisorCheckinPage() {
 
 
   useEffect(() => {
-    // Refresh léger pour que les noms disparaissent dès qu’un pointage est confirmé
+    // Refresh léger (sans casser la saisie du mot de passe)
     const t = setInterval(() => {
+      // Si on tape le mot de passe, on laisse tranquille.
+      if (pwFocused) return;
+      // Si un mot de passe est en cours de saisie et qu\'on n\'a pas encore de résultat, on ne refresh pas.
+      if (pw && !result) return;
+      // Évite de lancer plusieurs fetch en même temps
+      if (loading) return;
       fetchPlan({ soft: true });
-    }, 5000);
+    }, 30000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [pwFocused, pw, result, loading]);
 
   const todayAssignments = plan?.assignments?.[today] || {};
 
@@ -315,6 +322,8 @@ export default function SupervisorCheckinPage() {
                     type="password"
                     value={pw}
                     onChange={(e) => setPw(e.target.value)}
+                    onFocus={() => setPwFocused(true)}
+                    onBlur={() => setPwFocused(false)}
                     placeholder="Mot de passe de la vendeuse"
                     autoComplete="off"
                   />

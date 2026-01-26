@@ -224,6 +224,38 @@ export default async function handler(req, res) {
       absences[d] = uniqAbsencesForDay(absences[d]).filter((x) => !!x.seller_id);
     }
 
+    // Checkins du jour (pour masquer les vendeuses déjà pointées dans /supervisor/checkin)
+    // On ne renvoie que l'essentiel.
+    const todayAssign = assignments[date] || {};
+    const todayIds = Array.from(
+      new Set(
+        ["MORNING", "MIDDAY", "EVENING", "SUNDAY_EXTRA"]
+          .map((c) => todayAssign?.[c]?.seller_id)
+          .filter(Boolean)
+      )
+    );
+
+    let checkins_today = [];
+    if (todayIds.length) {
+      const { data: ckRows, error: eCk } = await admin
+        .from("daily_checkins")
+        .select("seller_id,shift_code,confirmed_at,late_minutes,early_minutes,created_at")
+        .eq("day", date)
+        .in("seller_id", todayIds);
+
+      if (eCk) return json(res, 500, { ok: false, error: eCk.message });
+
+      checkins_today = (ckRows || []).map((r) => ({
+        seller_id: r.seller_id,
+        shift_code: r.shift_code,
+        confirmed_at: r.confirmed_at,
+        late_minutes: Number(r.late_minutes || 0) || 0,
+        early_minutes: Number(r.early_minutes || 0) || 0,
+created_at: r.created_at,
+      }));
+    }
+
+
     return json(res, 200, {
       ok: true,
       role: allowAdmin ? "admin" : "supervisor",
@@ -234,6 +266,7 @@ export default async function handler(req, res) {
       assignments,
       absences, // <-- sans raison
       absences_today: absences[date] || [],
+      checkins_today,
     });
   } catch (e) {
     return json(res, 500, { ok: false, error: e?.message || "Server error" });
