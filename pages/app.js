@@ -1,4 +1,4 @@
-/* eslint-disable react/no-unescaped-entities */
+﻿/* eslint-disable react/no-unescaped-entities */
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
@@ -314,6 +314,22 @@ useEffect(() => {
     const d = new Date(monthStartPrev + "T00:00:00");
     return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
   }, [monthStartPrev]);
+
+
+  const monthEndPrev = useMemo(() => {
+    try {
+      const d = new Date(monthStartPrev + "T00:00:00");
+      return fmtISODate(lastDayOfMonth(d));
+    } catch {
+      return monthStartPrev;
+    }
+  }, [monthStartPrev]);
+
+  // Retards / relais pour le mois à valider (mois précédent)
+  const [prevDelta, setPrevDelta] = useState({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
+  const [prevDeltaLoading, setPrevDeltaLoading] = useState(false);
+  const [prevDeltaErr, setPrevDeltaErr] = useState("");
+  const [prevDeltaUnsupported, setPrevDeltaUnsupported] = useState(false);
 
   const [monthlyRow, setMonthlyRow] = useState(null);
   const [monthlyLoading, setMonthlyLoading] = useState(false);
@@ -1370,6 +1386,126 @@ useEffect(() => {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [loadMyMonthDelta]);
+  // Retards / relais pour le mois à valider (mois précédent)
+  const loadPrevMonthDelta = useCallback(async () => {
+    if (!userId || role === "admin") return;
+    setPrevDeltaErr("");
+    setPrevDeltaLoading(true);
+
+    try {
+      // 1) RPC (recommandée) : seller_handover_month_summary(p_month_start)
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("seller_handover_month_summary", {
+        p_month_start: monthStartPrev,
+      });
+
+      if (!rpcErr && rpcData != null) {
+        const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+        const extra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
+        const delay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
+        const net = Number(row?.net_minutes ?? row?.netMinutes ?? (extra - delay) ?? 0) || 0;
+
+        setPrevDelta({ extraMinutes: extra, delayMinutes: delay, netMinutes: net });
+        setPrevDeltaUnsupported(false);
+        return;
+      }
+
+      const msg = String(rpcErr?.message || "");
+      const codeE = String(rpcErr?.code || "");
+      const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
+
+      // 2) fallback direct table si RPC absente
+      if (missingFn) {
+        const { data: rows, error: e2 } = await supabase
+          .from("shift_handover_adjustments")
+          .select("*")
+          .gte("date", monthStartPrev)
+          .lte("date", monthEndPrev)
+          .or(`staying_seller_id.eq.${userId},evening_seller_id.eq.${userId},seller_id.eq.${userId}`);
+
+        if (e2) {
+          const m2 = String(e2?.message || "");
+          const c2 = String(e2?.code || "");
+          const forbidden =
+            m2.toLowerCase().includes("permission") ||
+            m2.toLowerCase().includes("rls") ||
+            m2.toLowerCase().includes("not allowed");
+          const missingTbl = c2 === "42P01" || m2.toLowerCase().includes("does not exist");
+          const missingCol = c2 === "42703" || m2.toLowerCase().includes("column");
+
+          if (forbidden || missingTbl || missingCol) {
+            setPrevDeltaUnsupported(true);
+            setPrevDelta({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
+            return;
+          }
+          throw e2;
+        }
+
+        let extra = 0;
+        let delay = 0;
+        let net = 0;
+
+        (rows || []).forEach((row) => {
+          const raw =
+            row?.delta_minutes ??
+            row?.delta ??
+            row?.minutes ??
+            row?.minute_delta ??
+            row?.delta_min ??
+            row?.deltaMinutes ??
+            null;
+
+          const base = Number(raw);
+          if (!Number.isFinite(base) || base === 0) return;
+
+          let signed = null;
+
+          // Cas 1 : table déjà normalisée (seller_id + minutes signées)
+          if (row?.seller_id && row.seller_id === userId) {
+            signed = base;
+          }
+
+          // Cas 2 : une ligne = 2 vendeuses (celle qui reste / celle du soir)
+          if (signed == null) {
+            if (row?.staying_seller_id && row.staying_seller_id === userId) signed = Math.abs(base);
+            else if (row?.evening_seller_id && row.evening_seller_id === userId) signed = -Math.abs(base);
+          }
+
+          // Cas 3 : variantes to/from
+          if (signed == null) {
+            if (row?.to_seller_id && row.to_seller_id === userId) signed = Math.abs(base);
+            else if (row?.from_seller_id && row.from_seller_id === userId) signed = -Math.abs(base);
+          }
+
+          if (signed == null) return;
+
+          net += signed;
+          if (signed >= 0) extra += signed;
+          else delay += -signed;
+        });
+
+        setPrevDelta({
+          extraMinutes: Math.round(extra),
+          delayMinutes: Math.round(delay),
+          netMinutes: Math.round(net),
+        });
+        setPrevDeltaUnsupported(false);
+        return;
+      }
+
+      // RPC existante mais erreur réelle
+      if (rpcErr) throw rpcErr;
+    } catch (e) {
+      setPrevDeltaErr(e?.message || "Impossible de charger les retards/relais du mois.");
+    } finally {
+      setPrevDeltaLoading(false);
+    }
+  }, [userId, role, monthStartPrev, monthEndPrev]);
+
+  useEffect(() => {
+    loadPrevMonthDelta();
+  }, [loadPrevMonthDelta]);
+
+
   // Validation mensuelle (si RPC existent)
   const ensureMonthlyRow = useCallback(async () => {
   // ✅ On ne crée/charge jamais d'attestation mensuelle pour un admin/non-seller
@@ -1918,6 +2054,45 @@ return (
                 Total calculé sur le planning :{" "}
                 <span className="font-semibold">{Number(monthlyRow.computed_hours || 0).toFixed(2)} h</span>
               </div>
+
+              <div className="mt-2">
+                {prevDeltaLoading ? (
+                  <div className="text-xs text-gray-600">Calcul des retards/relais du mois...</div>
+                ) : prevDeltaUnsupported ? (
+                  <div className="text-xs text-gray-500">Retards/relais non disponibles pour ce mois.</div>
+                ) : prevDeltaErr ? (
+                  <div className="text-xs text-red-600">{prevDeltaErr}</div>
+                ) : (
+                  (() => {
+                    const computed = Number(monthlyRow?.computed_hours || 0);
+                    const extraH = (Number(prevDelta?.extraMinutes || 0) || 0) / 60;
+                    const delayH = (Number(prevDelta?.delayMinutes || 0) || 0) / 60;
+                    const netH = computed + ((Number(prevDelta?.netMinutes || 0) || 0) / 60);
+
+                    return (
+                      <div className="space-y-1">
+                        <div className="text-xs text-gray-700">
+                          Retards / relais sur le mois :{" "}
+                          <span className="font-semibold" style={{ color: "#16a34a" }}>
+                            +{extraH.toFixed(2)} h
+                          </span>{" "}
+                          •{" "}
+                          <span className="font-semibold" style={{ color: "#dc2626" }}>
+                            -{delayH.toFixed(2)} h
+                          </span>
+                        </div>
+                        <div className="text-sm">
+                          Total net estimé : <span className="font-semibold">{netH.toFixed(2)} h</span>
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          Total net = planning + retards/relais. C’est ce total qui correspond à l’affichage admin.
+                        </div>
+                      </div>
+                    );
+                  })()
+                )}
+              </div>
+
 
               {(() => {
                 const computed = Number(monthlyRow?.computed_hours || 0);
