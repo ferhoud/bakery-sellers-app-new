@@ -1,7 +1,7 @@
 {
   "name": "Bakery Sellers",
   "short_name": "Sellers",
-  "start_url": "/supervisor/checkin?stay=1",
+  "start_url": "/login?stay=1&next=/supervisor/checkin",
   "display": "standalone",
   "background_color": "#111111",
   "theme_color": "#111111",
@@ -17,5 +17,6 @@
       "sizes": "512x512",
       "type": "image/png"
     }
-  ]
+  ],
+  "scope": "/"
 }

@@ -47,25 +47,41 @@ export default function LoginPage() {
   }
 
   async function redirectAfterLogin(accessToken) {
-    const role = await getRole(accessToken);
+  const role = await getRole(accessToken);
 
-    // Supervisor: on respecte nextPath si ça reste dans /supervisor (ex: /supervisor/checkin)
-    if (role === "supervisor") {
-      if (nextPath && nextPath.startsWith("/supervisor")) {
-        router.replace(nextPath);
-      } else {
-        router.replace("/supervisor");
-      }
-      return;
+  // Supervisor: respecter nextPath si c'est une route superviseur (ex: /supervisor/checkin)
+  if (role === "supervisor") {
+    if (nextPath && nextPath.startsWith("/supervisor")) {
+      router.replace(nextPath);
+    } else {
+      // par défaut, on va directement à l'écran pointage (tablette)
+      router.replace("/supervisor/checkin?stay=1");
     }
+    return;
+  }
 
-    // Admin: on respecte nextPath si ça reste dans /admin
+  // Admin: respecter nextPath si c'est une route admin
+  if (role === "admin") {
+    if (nextPath && nextPath.startsWith("/admin")) {
+      router.replace(nextPath);
+    } else {
+      router.replace("/admin");
+    }
+    return;
+  }
+
+  // Vendeur : si nextPath est fourni on le respecte (path interne uniquement)
+  if (nextPath) {
+    router.replace(nextPath);
+    return;
+  }
+
+  router.replace(pickDefaultRedirect(role));
+}
+
+    // Admin -> /admin
     if (role === "admin") {
-      if (nextPath && nextPath.startsWith("/admin")) {
-        router.replace(nextPath);
-      } else {
-        router.replace("/admin");
-      }
+      router.replace("/admin");
       return;
     }
 
