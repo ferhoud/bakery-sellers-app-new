@@ -49,15 +49,23 @@ export default function LoginPage() {
   async function redirectAfterLogin(accessToken) {
     const role = await getRole(accessToken);
 
-    // PRIORITÉ ABSOLUE : supervisor -> /supervisor (même si next=/app existe)
+    // Supervisor: on respecte nextPath si ça reste dans /supervisor (ex: /supervisor/checkin)
     if (role === "supervisor") {
-      router.replace("/supervisor");
+      if (nextPath && nextPath.startsWith("/supervisor")) {
+        router.replace(nextPath);
+      } else {
+        router.replace("/supervisor");
+      }
       return;
     }
 
-    // Admin -> /admin
+    // Admin: on respecte nextPath si ça reste dans /admin
     if (role === "admin") {
-      router.replace("/admin");
+      if (nextPath && nextPath.startsWith("/admin")) {
+        router.replace(nextPath);
+      } else {
+        router.replace("/admin");
+      }
       return;
     }
 
