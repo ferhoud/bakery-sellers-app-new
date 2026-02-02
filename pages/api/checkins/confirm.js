@@ -1,4 +1,4 @@
-﻿// pages/api/checkins/confirm.js
+// pages/api/checkins/confirm.js
 //
 // Confirme un pointage vendeuse via code 6 chiffres.
 // Règle importante : si la vendeuse pointe "trop tard", on refuse (sinon ça crée des retards absurdes).
@@ -8,6 +8,7 @@
 // Si la vendeuse oublie de pointer, on ne compte rien (pas de retard).
 //
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "crypto";
 
 function json(res, status, body) {
   res.status(status).json(body);
@@ -83,12 +84,19 @@ function windowStartMinutes(planned) {
   return planned - 30;
 }
 
-
-function maxLateAllowed() { return 120; }
-function maxEarlyAllowed(){ return 30; }
+function safeParseBody(req) {
+  try {
+    if (typeof req.body === "string") return JSON.parse(req.body);
+    return req.body || {};
+  } catch {
+    return {};
+  }
+}
 
 export default async function handler(req, res) {
   try {
+    res.setHeader("Cache-Control", "no-store");
+
     if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
 
     const jwt = getBearer(req);
@@ -105,7 +113,7 @@ export default async function handler(req, res) {
     const admin = adminClient();
     if (!admin) return json(res, 500, { ok: false, error: "Missing SUPABASE_SERVICE_ROLE_KEY" });
 
-    const body = typeof req.body === "string" ? JSON.parse(req.body) : (req.body || {});
+    const body = safeParseBody(req);
     const day = (body.day || body.date || body.d || parisTodayISO()).toString().slice(0, 10);
     const code = (body.code || "").toString().trim();
 
@@ -144,14 +152,11 @@ export default async function handler(req, res) {
     const expected = (row.code_hash || "").toString();
     if (!expected) return json(res, 500, { ok: false, error: "MISSING_CODE_HASH" });
 
-    // Hash simple: sha256(code + secret). On reproduit le même côté serveur.
+    // Hash: sha256(code + secret). Reproduit côté serveur.
     const secret = process.env.CHECKIN_CODE_SECRET || "";
     if (!secret) return json(res, 500, { ok: false, error: "MISSING_CHECKIN_CODE_SECRET" });
 
-    const enc = new TextEncoder();
-    const buf = await crypto.subtle.digest("SHA-256", enc.encode(`${code}:${secret}`));
-    const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
-
+    const hex = createHash("sha256").update(`${code}:${secret}`).digest("hex");
     if (hex !== expected) return json(res, 400, { ok: false, error: "BAD_CODE" });
 
     // Fenêtre autorisée
@@ -159,6 +164,7 @@ export default async function handler(req, res) {
     const start = windowStartMinutes(planned);
     const end = windowEndMinutes(planned);
     const nowMin = nowParisMinutes();
+
     if (nowMin < start) {
       return json(res, 400, {
         ok: false,
@@ -168,10 +174,29 @@ export default async function handler(req, res) {
     }
 
     if (nowMin > end) {
-      // Trop tard => on refuse et on ne compte pas de retard.
-      return json(res, 400, {
-        ok: false,
-        error: "CHECKIN_WINDOW_CLOSED",
+      // Trop tard => on VALIDE mais SANS compter de retard (late=0).
+      // Objectif: éviter qu'une vendeuse perde son pointage parce qu'elle a oublié/retardé.
+      const now = new Date();
+
+      const { error: upErrLate } = await admin
+        .from("daily_checkins")
+        .update({
+          confirmed_at: now.toISOString(),
+          late_minutes: 0,
+          early_minutes: 0,
+        })
+        .eq("id", row.id);
+
+      if (upErrLate) return json(res, 500, { ok: false, error: upErrLate.message });
+
+      return json(res, 200, {
+        ok: true,
+        day,
+        shift_code: row.shift_code,
+        confirmed_at: now.toISOString(),
+        late_minutes: 0,
+        early_minutes: 0,
+        window_closed: true,
         planned_hhmm: `${String(Math.floor(planned / 60)).padStart(2, "0")}:${String(planned % 60).padStart(2, "0")}`,
         window_end_hhmm: `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`,
       });

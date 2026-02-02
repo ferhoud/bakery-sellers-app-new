@@ -28,9 +28,9 @@ const SHIFT_LABELS = {
   SUNDAY_EXTRA: "Dimanche (9h–13h30)",
 };
 
-
 const CHECKIN_OPEN_BEFORE_MIN = 30; // 30 min avant
 const CHECKIN_HIDE_AFTER_MIN = 120; // 2h
+const SOFT_REFRESH_MS = 30000; // 30s
 
 function plannedMinutesFromShift(shiftCode) {
   const sc = String(shiftCode || "").toUpperCase();
@@ -44,7 +44,6 @@ function minutesNowLocal(d) {
   if (!d) return null;
   return d.getHours() * 60 + d.getMinutes();
 }
-
 
 function uniqBy(arr, keyFn) {
   const seen = new Set();
@@ -63,6 +62,7 @@ export default function SupervisorCheckinPage() {
   const [now, setNow] = useState(null);
 
   const [loading, setLoading] = useState(true);
+  const [softRefreshing, setSoftRefreshing] = useState(false);
   const [err, setErr] = useState("");
   const [plan, setPlan] = useState(null);
 
@@ -74,7 +74,12 @@ export default function SupervisorCheckinPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    // Horloge HH:MM:SS (client only, évite les soucis d’hydration)
+    // PWA/tablette: on mémorise que la dernière page utilisée est superviseur
+    try { window.localStorage?.setItem?.("LAST_OPEN_PATH", "/supervisor/checkin"); } catch {}
+  }, []);
+
+  useEffect(() => {
+    // Horloge HH:MM:SS (client only)
     setNow(new Date());
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
@@ -82,7 +87,10 @@ export default function SupervisorCheckinPage() {
 
   async function fetchPlan(opts = {}) {
     const soft = !!opts.soft;
-    setLoading(true);
+
+    if (!soft) setLoading(true);
+    else setSoftRefreshing(true);
+
     setErr("");
     if (!soft) {
       setMsg("");
@@ -91,27 +99,52 @@ export default function SupervisorCheckinPage() {
       setPw("");
     }
 
-    const { data: sess } = await supabase.auth.getSession();
-    const token = sess?.session?.access_token;
-    if (!token) {
-      window.location.href = `/login?next=/supervisor/checkin&stay=1`;
-      setLoading(false);
-      return;
-    }
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token;
 
-    const r = await fetch(`/api/supervisor/plan?date=${encodeURIComponent(today)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+      if (!token) {
+        window.location.href = `/login?next=/supervisor/checkin&stay=1`;
+        return;
+      }
 
-    if (!r.ok) {
-      const t = await r.text().catch(() => "");
-      setErr(`Erreur API (${r.status}) ${t}`);
-      setLoading(false);
-      return;
+      const r = await fetch(`/api/supervisor/plan?date=${encodeURIComponent(today)}&ts=${Date.now()}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json",
+        },
+        cache: "no-store",
+      });
+
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        if (r.status === 401 || r.status === 403) {
+          // Session perdue -> on renvoie proprement au login
+          window.location.href = `/login?next=/supervisor/checkin&stay=1`;
+          return;
+        }
+        setErr(`Erreur API (${r.status}) ${t}`);
+        return;
+      }
+
+      const j = await r.json().catch(() => null);
+      if (!j || j.ok === false) {
+        const e = j?.error ? String(j.error) : "Réponse API invalide.";
+        // Session manquante -> login
+        if (String(e).toLowerCase().includes("auth session")) {
+          window.location.href = `/login?next=/supervisor/checkin&stay=1`;
+          return;
+        }
+        setErr(e);
+        return;
+      }
+
+      setPlan(j);
+    } finally {
+      if (!soft) setLoading(false);
+      setSoftRefreshing(false);
     }
-    const j = await r.json();
-    setPlan(j);
-    setLoading(false);
   }
 
   useEffect(() => {
@@ -119,21 +152,20 @@ export default function SupervisorCheckinPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-
   useEffect(() => {
     // Refresh léger (sans casser la saisie du mot de passe)
     const t = setInterval(() => {
       // Si on tape le mot de passe, on laisse tranquille.
       if (pwFocused) return;
-      // Si un mot de passe est en cours de saisie et qu\'on n\'a pas encore de résultat, on ne refresh pas.
+      // Si un mot de passe est en cours de saisie et qu'on n'a pas encore de résultat, on ne refresh pas.
       if (pw && !result) return;
       // Évite de lancer plusieurs fetch en même temps
-      if (loading) return;
+      if (loading || softRefreshing) return;
       fetchPlan({ soft: true });
-    }, 30000);
+    }, SOFT_REFRESH_MS);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pwFocused, pw, result, loading]);
+  }, [pwFocused, pw, result, loading, softRefreshing]);
 
   const todayAssignments = plan?.assignments?.[today] || {};
 
@@ -147,6 +179,7 @@ export default function SupervisorCheckinPage() {
   }, [plan]);
 
   const nowMin = useMemo(() => minutesNowLocal(now), [now]);
+
   const todays = useMemo(() => {
     const rows = [];
     for (const code of ["MORNING", "MIDDAY", "EVENING", "SUNDAY_EXTRA"]) {
@@ -166,7 +199,7 @@ export default function SupervisorCheckinPage() {
         const planned = plannedMinutesFromShift(s.shift_code);
         const start = planned - CHECKIN_OPEN_BEFORE_MIN;
         const end = planned + CHECKIN_HIDE_AFTER_MIN;
-        if (nowMin < start || nowMin > end) return false;
+        if (nowMin < start) return false; // après la fenêtre: on laisse visible (pointage validé sans retard)
       }
 
       return true;
@@ -184,6 +217,7 @@ export default function SupervisorCheckinPage() {
     try {
       const { data: sess } = await supabase.auth.getSession();
       const token = sess?.session?.access_token;
+
       if (!token) {
         window.location.href = `/login?next=/supervisor/checkin&stay=1`;
         return;
@@ -204,6 +238,8 @@ export default function SupervisorCheckinPage() {
 
       setResult(j);
       setPw(""); // on efface le mot de passe tout de suite
+      // petit refresh soft pour que la page soit toujours à jour (sans casser l'écran)
+      fetchPlan({ soft: true });
     } finally {
       setBusy(false);
     }
@@ -214,6 +250,14 @@ export default function SupervisorCheckinPage() {
     navigator.clipboard?.writeText?.(result.code);
     setMsg("Code copié ✅");
     setTimeout(() => setMsg(""), 1500);
+  }
+
+  function nextSeller() {
+    setSelected(null);
+    setResult(null);
+    setMsg("");
+    setPw("");
+    fetchPlan({ soft: true });
   }
 
   return (
@@ -229,7 +273,9 @@ export default function SupervisorCheckinPage() {
             <div style={{ fontSize: 22, fontWeight: 800 }}>Pointage du jour</div>
             <div style={{ fontSize: 12, opacity: 0.75 }}>
               Date: {frDateFromISO(today)} · Heure: {fmtTime(now)}
+              {softRefreshing ? <span style={{ marginLeft: 10, opacity: 0.7 }}>Actualisation…</span> : null}
             </div>
+
             {Array.isArray(plan?.absences_today) && plan.absences_today.length > 0 ? (
               <div
                 style={{
@@ -252,7 +298,9 @@ export default function SupervisorCheckinPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button className="btn" onClick={() => fetchPlan({ soft: true })} disabled={loading}>Rafraîchir</button>
+            <button className="btn" onClick={() => fetchPlan({ soft: true })} disabled={loading || busy}>
+              Rafraîchir
+            </button>
             <Link className="btn" href="/supervisor">Retour planning</Link>
           </div>
         </div>
@@ -293,7 +341,7 @@ export default function SupervisorCheckinPage() {
                           <b>{s.full_name || "—"}</b>
                           <span style={{ fontSize: 12, opacity: 0.8 }}>{SHIFT_LABELS[s.shift_code] || s.shift_code}</span>
                         </span>
-                        <span style={{ fontSize: 12, opacity: 0.8 }}>Choisir</span>
+                        <span style={{ fontSize: 12, opacity: 0.8 }}>{active ? "Sélectionnée" : "Choisir"}</span>
                       </button>
                     );
                   })}
@@ -338,7 +386,7 @@ export default function SupervisorCheckinPage() {
 
                   {result?.ok ? (
                     <div style={{ marginTop: 14, padding: 14, border: "1px solid #e5e7eb", borderRadius: 14 }}>
-                      <div style={{ fontSize: 12, opacity: 0.75 }}>CODE DU JOUR</div>
+                      <div style={{ fontSize: 12, opacity: 0.75 }}>CODE DU JOUR (pour {selected.full_name || "—"})</div>
                       <div style={{ fontSize: 44, fontWeight: 900, letterSpacing: 6 }}>{result.code}</div>
                       <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
                         Retard détecté: <b>{result.late_minutes} min</b>
@@ -347,7 +395,10 @@ export default function SupervisorCheckinPage() {
                         Date: {frDateFromISO(today)} · Heure: {fmtTime(now)}
                       </div>
                       <div style={{ height: 10 }} />
-                      <button className="btn" onClick={copyCode}>Copier le code</button>
+                      <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                        <button className="btn" onClick={copyCode}>Copier le code</button>
+                        <button className="btn" onClick={nextSeller}>Passer à la suivante</button>
+                      </div>
                       <div style={{ marginTop: 10, fontSize: 13, opacity: 0.8 }}>
                         Ensuite: sur le compte vendeuse → <b>Pointage</b> → saisir ce code.
                       </div>
