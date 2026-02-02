@@ -52,10 +52,8 @@ function uniq(arr) {
 }
 
 function startOfWeekMonday(iso) {
-  // iso: YYYY-MM-DD
   const [y, m, d] = toISODate(iso).split("-").map((n) => parseInt(n, 10));
   const dt = new Date(Date.UTC(y, (m || 1) - 1, d || 1));
-  // JS: 0=Sun..6=Sat ; on veut lundi
   const dow = (dt.getUTCDay() + 6) % 7; // 0=lundi..6=dimanche
   dt.setUTCDate(dt.getUTCDate() - dow);
   return dt.toISOString().slice(0, 10);
@@ -109,8 +107,8 @@ export default async function handler(req, res) {
     const day = toISODate(q.date || q.day || q.d || parisTodayISO());
     const monday = startOfWeekMonday(day);
     const sunday = addDaysISO(monday, 6);
+    const dates = Array.from({ length: 7 }, (_, i) => addDaysISO(monday, i));
 
-    // Planning semaine (pour compat avec /supervisor) + le checkin page utilise juste assignments[day]
     const { data: shifts, error: shErr } = await admin
       .from("shifts")
       .select("date, shift_code, seller_id")
@@ -119,7 +117,6 @@ export default async function handler(req, res) {
 
     if (shErr) return json(res, 500, { ok: false, error: shErr.message });
 
-    // Absences semaine
     const { data: absRows, error: abErr } = await admin
       .from("absences")
       .select("seller_id, date, status, reason")
@@ -129,7 +126,6 @@ export default async function handler(req, res) {
 
     if (abErr) return json(res, 500, { ok: false, error: abErr.message });
 
-    // Checkins semaine (codes générés + pointés)
     const { data: ckRows, error: ckErr } = await admin
       .from("daily_checkins")
       .select("id, day, seller_id, shift_code, confirmed_at, late_minutes, early_minutes")
@@ -144,23 +140,16 @@ export default async function handler(req, res) {
       ...(Array.isArray(ckRows) ? ckRows.map((c) => c.seller_id) : []),
     ]);
 
-    // Noms
     let names = {};
     if (sellerIds.length) {
-      const { data: profs, error: pErr } = await admin
-        .from("profiles")
-        .select("user_id, full_name")
-        .in("user_id", sellerIds);
-
+      const { data: profs, error: pErr } = await admin.from("profiles").select("user_id, full_name").in("user_id", sellerIds);
       if (pErr) return json(res, 500, { ok: false, error: pErr.message });
-
       for (const p of profs || []) {
         if (!p?.user_id) continue;
         names[p.user_id] = (p.full_name || "").toString();
       }
     }
 
-    // assignments[YYYY-MM-DD][SHIFT_CODE] = {seller_id, full_name}
     const assignments = {};
     for (const s of shifts || []) {
       const d = toISODate(s?.date);
@@ -182,9 +171,26 @@ export default async function handler(req, res) {
     }));
     const absences_today = absences_week.filter((a) => toISODate(a?.date) === day);
 
+    // Map pour l'UI superviseur: absences[YYYY-MM-DD] = [..]
+    const absences = {};
+    for (const a of absences_week) {
+      const d = toISODate(a?.date);
+      if (!d) continue;
+      if (!absences[d]) absences[d] = [];
+      absences[d].push(a);
+    }
+
     return json(res, 200, {
       ok: true,
       day,
+
+      // Compat UI /supervisor
+      monday,
+      sunday,
+      dates,
+      absences,
+
+      // Champs historiques (compat)
       week_start: monday,
       week_end: sunday,
       assignments,

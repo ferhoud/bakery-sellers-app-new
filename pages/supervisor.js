@@ -14,7 +14,6 @@ function localISODate(d = new Date()) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-
 function frDateFromISO(iso) {
   const s = (iso || "").toString();
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -81,8 +80,6 @@ function isSundayISO(iso) {
 }
 
 function weekShiftOrderForDate(iso) {
-  // IMPORTANT: dimanche -> mettre 9h-13h30 juste après Matin
-  // et garder Soir en dernier.
   if (isSundayISO(iso)) return ["MORNING", "SUNDAY_EXTRA", "MIDDAY", "EVENING"];
   return ["MORNING", "MIDDAY", "EVENING"];
 }
@@ -160,7 +157,6 @@ export default function SupervisorPage() {
   const [payload, setPayload] = useState(null);
   const [now, setNow] = useState(null);
 
-  // Largeur écran -> sur desktop on passe en GRID (pas de scroll horizontal)
   const [isWide, setIsWide] = useState(false);
   useEffect(() => {
     const onResize = () => setIsWide(window.innerWidth >= 1100);
@@ -169,17 +165,21 @@ export default function SupervisorPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Horloge HH:MM:SS (client only, évite les soucis d’hydration)
+  // Astuce: mémorise la dernière page superviseur (utile tablette/PWA)
+  useEffect(() => {
+    try {
+      window.localStorage?.setItem?.("LAST_OPEN_PATH", "/supervisor");
+    } catch {}
+  }, []);
+
   useEffect(() => {
     setNow(new Date());
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
-
   const monday = useMemo(() => fmtISODate(startOfWeek(new Date(`${focusDate}T12:00:00`))), [focusDate]);
 
-  // Modal déconnexion (mot de passe masqué)
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [logoutPw, setLogoutPw] = useState("");
   const [logoutBusy, setLogoutBusy] = useState(false);
@@ -194,22 +194,42 @@ export default function SupervisorPage() {
     const token = sess?.session?.access_token;
 
     if (!token) {
+      setLoading(false);
       router.replace(`/login?next=/supervisor&stay=1`);
       return;
     }
 
-    const r = await fetch(`/api/supervisor/plan?date=${encodeURIComponent(dateISO)}`, {
-      headers: { Authorization: `Bearer ${token}` },
+    const r = await fetch(`/api/supervisor/plan?date=${encodeURIComponent(dateISO)}&ts=${Date.now()}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
     });
 
     if (!r.ok) {
       const t = await r.text().catch(() => "");
+      if (r.status === 401 || r.status === 403) {
+        setErr(`Session expirée. Veuillez vous reconnecter. (${r.status})`);
+        setLoading(false);
+        router.replace(`/login?next=/supervisor&stay=1`);
+        return;
+      }
       setErr(`Erreur API (${r.status}) ${t}`);
       setLoading(false);
       return;
     }
 
-    const j = await r.json();
+    const j = await r.json().catch(() => null);
+
+    if (!j || j.ok === false) {
+      const msg = j?.error ? String(j.error) : "Réponse API invalide.";
+      setErr(msg);
+      setLoading(false);
+      return;
+    }
+
     setPayload(j);
     setLoading(false);
   }
@@ -239,7 +259,7 @@ export default function SupervisorPage() {
       const token = sess?.session?.access_token;
 
       if (!token) {
-        router.replace(`/login?stay=1`);
+        router.replace(`/login?next=/supervisor&stay=1`);
         return;
       }
 
@@ -247,7 +267,8 @@ export default function SupervisorPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}` },
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ password: String(logoutPw || "") }),
       });
 
@@ -265,7 +286,7 @@ export default function SupervisorPage() {
       }
 
       await supabase.auth.signOut();
-      router.replace("/login?stay=1");
+      router.replace("/login?next=/supervisor&stay=1");
     } finally {
       setLogoutBusy(false);
     }
@@ -319,7 +340,15 @@ export default function SupervisorPage() {
         />
 
         {logoutErr ? (
-          <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #ef4444", borderRadius: 12, background: "rgba(239,68,68,.06)" }}>
+          <div
+            style={{
+              marginTop: 10,
+              padding: "10px 12px",
+              border: "1px solid #ef4444",
+              borderRadius: 12,
+              background: "rgba(239,68,68,.06)",
+            }}
+          >
             {logoutErr}
           </div>
         ) : null}
@@ -336,14 +365,15 @@ export default function SupervisorPage() {
         </div>
       </Modal>
 
-      {/* ✅ pleine largeur */}
       <div style={{ width: "100%", margin: 0, padding: 16 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div>
             <div style={{ fontSize: 22, fontWeight: 800 }}>Écran superviseur</div>
             <div style={{ fontSize: 12, opacity: 0.75 }}>
               Lecture seule · Jour: {focusDate}
-              {payload?.monday ? ` · Semaine: ${payload.monday} → ${payload.sunday}` : ""}
+              {(payload?.monday || payload?.week_start)
+                ? ` · Semaine: ${(payload?.monday || payload?.week_start)} → ${(payload?.sunday || payload?.week_end)}`
+                : ""}
             </div>
           </div>
 
@@ -352,8 +382,7 @@ export default function SupervisorPage() {
               Rafraîchir
             </button>
 
-            {/* ✅ Bouton Pointage */}
-            <Link className="btn" href="/supervisor/checkin">
+            <Link className="btn" href="/supervisor/checkin?next=/supervisor&stay=1">
               Pointage
             </Link>
 
@@ -375,7 +404,9 @@ export default function SupervisorPage() {
         ) : (
           <>
             <div className="card">
-              <div className="hdr">Planning du jour - {frDateFromISO(focusDate)} · {fmtTime(now)}</div>
+              <div className="hdr">
+                Planning du jour - {frDateFromISO(focusDate)} · {fmtTime(now)}
+              </div>
 
               <div style={{ height: 12 }} />
               {Array.isArray(payload?.absences?.[focusDate]) && payload.absences[focusDate].length > 0 ? (
@@ -398,7 +429,6 @@ export default function SupervisorPage() {
                   </div>
                 </div>
               ) : null}
-
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(220px, 1fr))", gap: 12 }}>
                 {SHIFT_DAY.map((code) => {
@@ -428,22 +458,11 @@ export default function SupervisorPage() {
 
               <div style={{ height: 14 }} />
 
-              {/* ✅ Sur desktop: GRID 7 colonnes (pas de scroll) / Sur mobile: scroll horizontal */}
               <div
                 style={
                   isWide
-                    ? {
-                        display: "grid",
-                        gridTemplateColumns: "repeat(7, minmax(150px, 1fr))",
-                        gap: 12,
-                        width: "100%",
-                      }
-                    : {
-                        display: "flex",
-                        gap: 12,
-                        overflowX: "auto",
-                        paddingBottom: 4,
-                      }
+                    ? { display: "grid", gridTemplateColumns: "repeat(7, minmax(150px, 1fr))", gap: 12, width: "100%" }
+                    : { display: "flex", gap: 12, overflowX: "auto", paddingBottom: 4 }
                 }
               >
                 {weekDates.map((d) => {
