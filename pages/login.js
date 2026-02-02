@@ -18,7 +18,7 @@ function safeNextPath(x) {
 
 function pickDefaultRedirect(role) {
   if (role === "admin") return "/admin";
-  if (role === "supervisor") return "/supervisor";
+  if (role === "supervisor") return "/supervisor/checkin";
   return "/app";
 }
 
@@ -27,6 +27,7 @@ export default function LoginPage() {
 
   const nextPath = useMemo(() => safeNextPath(router.query?.next), [router.query]);
   const stay = useMemo(() => safeStr(router.query?.stay) === "1", [router.query]);
+  const kiosk = useMemo(() => safeStr(router.query?.kiosk) === "1", [router.query]);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -36,56 +37,44 @@ export default function LoginPage() {
   async function getRole(accessToken) {
     const r = await fetch("/api/role", {
       headers: { Authorization: `Bearer ${accessToken}` },
+      cache: "no-store",
     });
 
     if (!r.ok) {
       const t = await r.text().catch(() => "");
       throw new Error(`role (${r.status}) ${t}`);
     }
-    const j = await r.json();
+    const j = await r.json().catch(() => ({}));
     return j?.role || "seller";
   }
 
   async function redirectAfterLogin(accessToken) {
-  const role = await getRole(accessToken);
+    const role = await getRole(accessToken);
 
-  // Supervisor: respecter nextPath si c'est une route superviseur (ex: /supervisor/checkin)
-  if (role === "supervisor") {
-    if (nextPath && nextPath.startsWith("/supervisor")) {
-      router.replace(nextPath);
-    } else {
-      // par défaut, on va directement à l'écran pointage (tablette)
-      router.replace("/supervisor/checkin?stay=1");
+    // Mode tablette / kiosque : on refuse d'ouvrir l'admin ou l'espace vendeuse.
+    if (kiosk && role !== "supervisor") {
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+      setErr("Cette tablette est en mode superviseur. Veuillez vous connecter avec le compte superviseur.");
+      return;
     }
-    return;
-  }
 
-  // Admin: respecter nextPath si c'est une route admin
-  if (role === "admin") {
-    if (nextPath && nextPath.startsWith("/admin")) {
-      router.replace(nextPath);
-    } else {
-      router.replace("/admin");
+    if (role === "supervisor") {
+      // Si nextPath est fourni et reste dans /supervisor, on le respecte.
+      if (nextPath && nextPath.startsWith("/supervisor")) {
+        router.replace(nextPath);
+      } else {
+        router.replace("/supervisor/checkin");
+      }
+      return;
     }
-    return;
-  }
 
-  // Vendeur : si nextPath est fourni on le respecte (path interne uniquement)
-  if (nextPath) {
-    router.replace(nextPath);
-    return;
-  }
-
-  router.replace(pickDefaultRedirect(role));
-}
-
-    // Admin -> /admin
     if (role === "admin") {
       router.replace("/admin");
       return;
     }
 
-    // Sinon vendeur : si nextPath est fourni on le respecte (path interne uniquement)
     if (nextPath) {
       router.replace(nextPath);
       return;
@@ -104,7 +93,6 @@ export default function LoginPage() {
         email: email.trim(),
         password,
       });
-
       if (error) throw error;
 
       const token = data?.session?.access_token;
@@ -113,6 +101,7 @@ export default function LoginPage() {
       if (stay) {
         const url = new URL(window.location.href);
         url.searchParams.set("stay", "1");
+        if (kiosk) url.searchParams.set("kiosk", "1");
         window.history.replaceState({}, "", url.toString());
       }
 
@@ -125,12 +114,11 @@ export default function LoginPage() {
   }
 
   useEffect(() => {
-    // Si déjà connecté, on redirige direct (utile après refresh)
+    // Si déjà connecté, on redirige direct (utile après refresh / relance PWA)
     (async () => {
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       if (!token) return;
-
       try {
         await redirectAfterLogin(token);
       } catch {
@@ -138,7 +126,7 @@ export default function LoginPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [kiosk, nextPath]);
 
   return (
     <>
@@ -151,7 +139,11 @@ export default function LoginPage() {
         <div className="card">
           <div className="hdr">Connexion</div>
           <div style={{ marginTop: 8, opacity: 0.75, fontSize: 13 }}>
-            {nextPath ? `Redirection après connexion : ${nextPath}` : "Connectez-vous pour accéder à l’application."}
+            {kiosk
+              ? "Mode superviseur (tablette)."
+              : nextPath
+              ? `Redirection après connexion : ${nextPath}`
+              : "Connectez-vous pour accéder à l’application."}
           </div>
 
           <form onSubmit={doLogin} style={{ marginTop: 14, display: "grid", gap: 10 }}>
@@ -175,7 +167,14 @@ export default function LoginPage() {
             />
 
             {err ? (
-              <div style={{ padding: "10px 12px", border: "1px solid #ef4444", borderRadius: 12, background: "rgba(239,68,68,.06)" }}>
+              <div
+                style={{
+                  padding: "10px 12px",
+                  border: "1px solid #ef4444",
+                  borderRadius: 12,
+                  background: "rgba(239,68,68,.06)",
+                }}
+              >
                 {err}
               </div>
             ) : null}
