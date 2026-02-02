@@ -1,11 +1,10 @@
-﻿/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable react/no-unescaped-entities */
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
 import WeekNav from "@/components/WeekNav";
-import LeaveRequestForm from "@/components/LeaveRequestForm";
 import { notifyAdminsNewAbsence } from "@/lib/pushNotify";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
 
@@ -162,6 +161,46 @@ export default function AppSeller() {
   const userId = session?.user?.id || null;
   const userEmail = session?.user?.email || null;
 
+
+// Garde-fou "token invalide / session expirée"
+const [sessionExpired, setSessionExpired] = useState(false);
+const [sessionExpiredMsg, setSessionExpiredMsg] = useState("");
+
+const markSessionExpired = useCallback(async (msg) => {
+  setSessionExpired(true);
+  setSessionExpiredMsg(msg || "Session expirée. Veuillez vous reconnecter.");
+  try {
+    await supabase.auth.signOut();
+  } catch (_) {}
+}, []);
+
+const isLikelyAuthError = (x) => {
+  const s = String(x || "").toLowerCase();
+  return (
+    s.includes("invalid token") ||
+    s.includes("invalid jwt") ||
+    s.includes("jwt expired") ||
+    s.includes("token expired") ||
+    s.includes("session expired") ||
+    s.includes("expired") ||
+    s.includes("auth")
+  );
+};
+
+const handleAuthResponse = useCallback(
+  async (resp, j) => {
+    if (!resp) return false;
+    const err = j?.error || j?.message || "";
+    if (resp.status === 401 || isLikelyAuthError(err)) {
+      await markSessionExpired("Session expirée. Veuillez vous reconnecter.");
+      return true;
+    }
+    return false;
+  },
+  [markSessionExpired]
+);
+
+
   // Fallback profil direct
   const [profileFallback, setProfileFallback] = useState(null);
   useEffect(() => {
@@ -216,9 +255,6 @@ export default function AppSeller() {
 
   const [replAsk, setReplAsk] = useState(null);
   const [approvalMsg, setApprovalMsg] = useState(null);
-
-  const [approvedLeaves, setApprovedLeaves] = useState([]);
-
   const now = new Date();
   const myMonthFromPast = useMemo(() => fmtISODate(firstDayOfMonth(now)), []); // stable au chargement
   const myMonthToPast = useMemo(() => fmtISODate(lastDayOfMonth(now)), []); // stable au chargement
@@ -764,6 +800,7 @@ useEffect(() => {
       }
 
       const j = await r.json().catch(() => ({}));
+      if (await handleAuthResponse(r, j)) return;
       if (!r.ok || j?.ok === false) {
         setCheckinsErr(String(j?.error || `HTTP ${r.status}`));
         return;
@@ -816,7 +853,8 @@ if (!/^\d{6}$/.test(code6)) {
             body: JSON.stringify({ date: todayIso, boundary, source: "seller", code: code6 }),
           });
           const j = await r.json().catch(() => ({}));
-          return { r, j };
+                    if (await handleAuthResponse(r, j)) return { r, j, authExpired: true };
+          return { r, j, authExpired: false };
         };
 
         let ok = false;
@@ -826,6 +864,7 @@ if (!/^\d{6}$/.test(code6)) {
         for (const path of paths) {
           // ignore 404 and try next
           const first = await tryOnce(path, slot.primary);
+          if (first.authExpired) return;
           if (first.r.status === 404) continue;
 
           usedPath = path;
@@ -843,6 +882,7 @@ if (!/^\d{6}$/.test(code6)) {
           const boundaryIssue = eLower.includes("boundary") || eLower.includes("invalid") || eLower.includes("unknown");
           if (boundaryIssue && slot.alt && slot.alt !== slot.primary) {
             const second = await tryOnce(path, slot.alt);
+            if (second.authExpired) return;
             if (second.r.ok && second.j?.ok !== false) {
               ok = true;
               break;
@@ -1102,6 +1142,7 @@ if (!/^\d{6}$/.test(code6)) {
       );
 
       const j = await r.json().catch(() => ({}));
+      if (await handleAuthResponse(r, j)) return;
       if (!r.ok || !j?.ok) {
         setOpenRepls(null);
         setOpenReplsErr(String(j?.error || `HTTP ${r.status}`));
@@ -1140,6 +1181,7 @@ if (!/^\d{6}$/.test(code6)) {
         });
 
         const j = await r.json().catch(() => ({}));
+        if (await handleAuthResponse(r, j)) return;
         if (!r.ok || !j?.ok) {
           const e = String(j?.error || `HTTP ${r.status}`);
           if (e === "ALREADY_SCHEDULED") setOpenReplsErr("Impossible : vous êtes déjà planifiée ce jour-là.");
@@ -1328,38 +1370,6 @@ useEffect(() => {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [loadMyMonthDelta]);
-
-
-  // Congés approuvés
-  const loadApprovedLeaves = useCallback(async () => {
-    if (!userId) return;
-    const tIso = fmtISODate(new Date());
-    const { data } = await supabase
-      .from("leaves")
-      .select("id, seller_id, start_date, end_date, status")
-      .eq("status", "approved")
-      .gte("end_date", tIso)
-      .order("start_date", { ascending: true });
-
-    if (!data) {
-      setApprovedLeaves([]);
-      return;
-    }
-
-    const ids = Array.from(new Set(data.map((l) => l.seller_id)));
-    let namesMap = {};
-    if (ids.length) {
-      const { data: profs } = await supabase.from("profiles").select("user_id, full_name").in("user_id", ids);
-      (profs || []).forEach((p) => (namesMap[p.user_id] = p.full_name));
-    }
-
-    setApprovedLeaves(data.map((l) => ({ ...l, seller_name: namesMap[l.seller_id] || "—" })));
-  }, [userId]);
-
-  useEffect(() => {
-    loadApprovedLeaves();
-  }, [loadApprovedLeaves]);
-
   // Validation mensuelle (si RPC existent)
   const ensureMonthlyRow = useCallback(async () => {
   // ✅ On ne crée/charge jamais d'attestation mensuelle pour un admin/non-seller
@@ -1579,7 +1589,7 @@ useEffect(() => {
         <button className="btn" onClick={() => (window.location.href = "/login?stay=1&next=/app")}>
           Aller à /login
         </button>
-        <button className="btn" onClick={hardLogout}>
+<button className="btn" onClick={hardLogout}>
           Se déconnecter
         </button>
       </div>
@@ -1596,6 +1606,9 @@ useEffect(() => {
               {editPlanning ? "Mode planning: ON" : "Modifier le planning"}
             </button>
           )}
+          <button className="btn" onClick={() => r.push("/leaves")}>
+            Congés
+          </button>
           <button className="btn" onClick={hardLogout}>
             Se déconnecter
           </button>
@@ -1603,6 +1616,23 @@ useEffect(() => {
       </div>
 
 
+
+{sessionExpired && (
+  <div className="card border-red-300 bg-red-50">
+    <div className="hdr text-red-700">Session expirée</div>
+    <div className="text-sm text-red-700">
+      {sessionExpiredMsg || "Votre session a expiré. Reconnectez-vous pour continuer."}
+    </div>
+    <div className="mt-3 flex items-center gap-2">
+      <button className="btn" onClick={() => window.location.replace("/login?stay=1&next=/app")}>
+        Se reconnecter
+      </button>
+      <button className="btn" onClick={() => setSessionExpired(false)}>
+        Fermer
+      </button>
+    </div>
+  </div>
+)}
 
       {(role !== "admin" && (checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0)) && (
         <div className={`rounded-xl border p-3 ${
@@ -2214,31 +2244,6 @@ return (
       </div>
 
       <div className="card">
-        <div className="hdr mb-2">Congés approuvés - en cours ou à venir</div>
-        {approvedLeaves.length === 0 ? (
-          <div className="text-sm text-gray-600">Aucun congé approuvé à venir.</div>
-        ) : (
-          <ul className="space-y-2">
-            {approvedLeaves.map((l) => {
-              const tIso = fmtISODate(new Date());
-              const tag = betweenIso(tIso, l.start_date, l.end_date) ? "En cours" : "À venir";
-              const tagBg = tag === "En cours" ? "#16a34a" : "#2563eb";
-              return (
-                <li key={l.id} className="flex items-center justify-between border rounded-2xl p-3">
-                  <div className="text-sm">
-                    <span className="font-medium">{l.seller_name}</span> - du {l.start_date} au {l.end_date}
-                  </div>
-                  <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: tagBg }}>
-                    {tag}
-                  </span>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-
-      <div className="card">
         <div className="hdr mb-2">Vos absences ce mois</div>
         {myMonthAbs.length === 0 ? (
           <div className="text-sm text-gray-600">
@@ -2277,11 +2282,6 @@ return (
           </div>
         </div>
         {msgAbs && <div className="text-sm mt-2">{msgAbs}</div>}
-      </div>
-
-      <div className="card">
-        <div className="hdr mb-2">Demander un congé (période)</div>
-        <LeaveRequestForm />
       </div>
     </div>
   );
