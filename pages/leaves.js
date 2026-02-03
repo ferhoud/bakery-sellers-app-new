@@ -30,6 +30,14 @@ function fmtFr(iso) {
   return d.toLocaleDateString("fr-FR");
 }
 
+function fmtDays(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return "0.00";
+  // Keep 2 decimals like the payslip
+  return n.toFixed(2);
+}
+
+
 function statusLabel(s) {
   switch (String(s || "").toLowerCase()) {
     case "pending":
@@ -235,6 +243,10 @@ export default function LeavesPage() {
   const [leaves, setLeaves] = useState([]);
   const [loadErr, setLoadErr] = useState("");
   const [loading, setLoading] = useState(false);
+const [balance, setBalance] = useState(null);
+const [balanceErr, setBalanceErr] = useState("");
+const [balanceLoading, setBalanceLoading] = useState(false);
+
 
 // Garde-fou "token invalide / session expirée"
 const [sessionExpired, setSessionExpired] = useState(false);
@@ -298,11 +310,44 @@ const handleAuthResponse = useCallback(
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, [userId, handleAuthResponse]);
+
+const loadMyBalance = useCallback(async () => {
+  if (!userId) return;
+  setBalanceErr("");
+  setBalanceLoading(true);
+  try {
+    const { data: s } = await supabase.auth.getSession();
+    const token = s?.session?.access_token || "";
+    const resp = await fetch("/api/leaves/balance", {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const j = await resp.json().catch(() => ({}));
+    if (await handleAuthResponse(resp, j)) return;
+
+    if (!resp.ok) {
+      if (resp.status === 404) {
+        setBalance(null);
+        return;
+      }
+      throw new Error(j?.error || "Impossible de charger le solde CP.");
+    }
+
+    setBalance(j?.balance || null);
+  } catch (e) {
+    setBalance(null);
+    setBalanceErr(e?.message || "Impossible de charger le solde CP.");
+  } finally {
+    setBalanceLoading(false);
+  }
+}, [userId, handleAuthResponse]);
+
 
   useEffect(() => {
     loadMyLeaves();
-  }, [loadMyLeaves]);
+    loadMyBalance();
+  }, [loadMyLeaves, loadMyBalance]);
 
   // Form
   const [startDate, setStartDate] = useState(todayIso);
@@ -409,8 +454,59 @@ const handleAuthResponse = useCallback(
   </div>
 )}
 
-      <div className="card">
-        <div className="hdr mb-2">Demander un congé</div>
+
+
+<div className="card">
+  <div className="flex items-center justify-between mb-2">
+    <div className="hdr">Solde congés payés (bulletin de paie)</div>
+    <button className="btn" onClick={loadMyBalance} disabled={balanceLoading}>
+      {balanceLoading ? "Chargement..." : "Rafraîchir"}
+    </button>
+  </div>
+
+  {balanceErr ? <div className="text-sm text-red-600 mb-2">{balanceErr}</div> : null}
+
+  {!balance ? (
+    <div className="text-sm text-gray-700">
+      Solde non renseigné pour l'instant. (L’admin doit saisir les compteurs « CP N-1 / CP N » depuis le bulletin.)
+    </div>
+  ) : (
+    <>
+      <div className="text-sm text-gray-700 mb-3">
+        Mise à jour (fiche de paie) : <span className="font-medium">{fmtFr(balance.as_of)}</span>
+        {" • "}
+        Restant total :{" "}
+        <span className="font-medium">
+          {fmtDays((Number(balance.cp_remaining_n || 0) || 0) + (Number(balance.cp_remaining_n1 || 0) || 0))}
+        </span>{" "}
+        jour(s)
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-3">
+        <div className="border rounded-2xl p-3">
+          <div className="text-sm font-medium mb-2">CP N-1</div>
+          <div className="text-sm flex items-center justify-between"><span>Acquis</span><span className="font-medium">{fmtDays(balance.cp_acquired_n1)}</span></div>
+          <div className="text-sm flex items-center justify-between"><span>Total pris</span><span className="font-medium">{fmtDays(balance.cp_taken_n1)}</span></div>
+          <div className="text-sm flex items-center justify-between"><span>Solde</span><span className="font-medium">{fmtDays(balance.cp_remaining_n1)}</span></div>
+        </div>
+
+        <div className="border rounded-2xl p-3">
+          <div className="text-sm font-medium mb-2">CP N</div>
+          <div className="text-sm flex items-center justify-between"><span>Acquis</span><span className="font-medium">{fmtDays(balance.cp_acquired_n)}</span></div>
+          <div className="text-sm flex items-center justify-between"><span>Total pris</span><span className="font-medium">{fmtDays(balance.cp_taken_n)}</span></div>
+          <div className="text-sm flex items-center justify-between"><span>Solde</span><span className="font-medium">{fmtDays(balance.cp_remaining_n)}</span></div>
+        </div>
+      </div>
+
+      <div className="text-xs text-gray-500 mt-3">
+        Astuce : on affiche ici les valeurs officielles du bulletin (pas un calcul). Elles restent stables même si la règle change (ouvrables/ouvrés, reports, arrondis…).
+      </div>
+    </>
+  )}
+</div>
+
+<div className="card">
+  <div className="hdr mb-2">Demander un congé</div>
 
         <div className="grid md:grid-cols-3 gap-3 items-end">
           <div>
