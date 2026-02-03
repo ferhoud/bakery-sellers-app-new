@@ -1,5 +1,8 @@
 // pages/api/team/events.js
-// Retourne les absences + congés de l'équipe sur une période [from..to].
+// Infos équipe (absences + congés) à venir.
+// Règle : on affiche une info tant qu'elle n'est pas passée.
+// - Absences: date >= aujourd'hui (heure Europe/Paris)
+// - Congés: end_date >= aujourd'hui (et start_date <= to pour éviter des listes infinies)
 // Protégé par JWT (Authorization: Bearer <token>), requêtes serveur via SERVICE_ROLE.
 
 import { createClient } from "@supabase/supabase-js";
@@ -12,6 +15,28 @@ function getBearer(req) {
 
 function isIsoDate(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+}
+
+function parisTodayISO() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Paris",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === "year")?.value;
+  const m = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+  return `${y}-${m}-${d}`;
+}
+
+function addDaysISO(iso, days) {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
 }
 
 export default async function handler(req, res) {
@@ -37,13 +62,17 @@ export default async function handler(req, res) {
     return;
   }
 
-  const from = String(req.query?.from || req.query?.start || "").slice(0, 10);
-  const to = String(req.query?.to || req.query?.end || "").slice(0, 10);
+  const today = parisTodayISO();
 
-  if (!isIsoDate(from) || !isIsoDate(to)) {
-    res.status(400).json({ ok: false, error: "Bad date range" });
-    return;
-  }
+  // On accepte un horizon via query, mais on ne montre jamais avant today.
+  const qFromRaw = String(req.query?.from || req.query?.start || "").slice(0, 10);
+  const qToRaw = String(req.query?.to || req.query?.end || "").slice(0, 10);
+
+  const from = isIsoDate(qFromRaw) ? (qFromRaw < today ? today : qFromRaw) : today;
+
+  // horizon par défaut: 2 ans, pour couvrir les absences/congés planifiés loin
+  const defaultTo = addDaysISO(today, 730);
+  const to = isIsoDate(qToRaw) ? qToRaw : defaultTo;
 
   // Vérifie le JWT
   const sbAuth = createClient(url, anon, { auth: { persistSession: false } });
@@ -55,7 +84,7 @@ export default async function handler(req, res) {
 
   const sb = createClient(url, service, { auth: { persistSession: false } });
 
-  // Absences : dans la fenêtre
+  // Absences à venir: date >= from et <= to
   let absences = [];
   try {
     const { data, error } = await sb
@@ -69,19 +98,21 @@ export default async function handler(req, res) {
     if (!error && Array.isArray(data)) absences = data;
   } catch (_) {}
 
-  // Congés : chevauchement avec la fenêtre
+  // Congés à venir ou en cours:
+  // - end_date >= from (donc pas de congé terminé)
+  // - start_date <= to (évite de charger des congés très lointains si tu veux limiter)
   let leaves = [];
   try {
     const { data, error } = await sb
       .from("leaves")
       .select("seller_id, start_date, end_date, status")
-      .lte("start_date", to)
       .gte("end_date", from)
+      .lte("start_date", to)
       .in("status", ["approved", "pending"])
       .order("start_date", { ascending: true });
 
     if (!error && Array.isArray(data)) leaves = data;
   } catch (_) {}
 
-  res.status(200).json({ ok: true, absences, leaves });
+  res.status(200).json({ ok: true, today, from, to, absences, leaves });
 }

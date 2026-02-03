@@ -318,7 +318,10 @@ const handleAuthResponse = useCallback(
   const todayIso = useMemo(() => fmtISODate(new Date()), []);
   const rangeTo = useMemo(() => fmtISODate(addDays(new Date(), 60)), []);
 
-  const [isPlanner, setIsPlanner] = useState(false);
+  
+  // Infos équipe : on affiche toutes les absences/congés à venir (jusqu'à un horizon large)
+  const teamToIso = useMemo(() => fmtISODate(addDays(new Date(), 730)), []);
+const [isPlanner, setIsPlanner] = useState(false);
   const [plannerChecked, setPlannerChecked] = useState(false);
   const [editPlanning, setEditPlanning] = useState(false);
 
@@ -348,7 +351,7 @@ const handleAuthResponse = useCallback(
   const [openReplsMsg, setOpenReplsMsg] = useState("");
   const [acceptReplBusy, setAcceptReplBusy] = useState({});
 
-  // Infos équipe (absences / congés) — semaine affichée
+  // Infos équipe (absences / congés) — toutes les infos à venir (jusqu'à fin de date)
   const [teamEvents, setTeamEvents] = useState({ absences: [], leaves: [] });
   const [teamEventsLoading, setTeamEventsLoading] = useState(false);
   const [teamEventsErr, setTeamEventsErr] = useState("");
@@ -1346,7 +1349,7 @@ if (!/^\d{6}$/.test(code6)) {
       if (!token) return;
 
       const r = await fetch(
-        `/api/team/events?from=${encodeURIComponent(weekFromIso)}&to=${encodeURIComponent(weekToIso)}`,
+        `/api/team/events?from=${encodeURIComponent(todayIso)}&to=${encodeURIComponent(teamToIso)}`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
 
@@ -1363,7 +1366,7 @@ if (!/^\d{6}$/.test(code6)) {
     } finally {
       setTeamEventsLoading(false);
     }
-  }, [userId, role, weekFromIso, weekToIso, handleAuthResponse]);
+  }, [userId, role, todayIso, teamToIso, handleAuthResponse]);
 
   useEffect(() => {
     if (!userId || role === "admin") return;
@@ -2030,7 +2033,7 @@ useEffect(() => {
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="hdr">Infos équipe</div>
-              <div className="text-xs text-gray-500">Absences et congés sur la semaine affichée</div>
+              <div className="text-xs text-gray-500">Absences et congés à venir (affichés jusqu’à la date de fin)</div>
             </div>
             <button className="btn" onClick={loadTeamEvents} disabled={teamEventsLoading}>
               {teamEventsLoading ? "Chargement..." : "Rafraîchir"}
@@ -2053,31 +2056,62 @@ useEffect(() => {
                 const lvs = Array.isArray(teamEvents?.leaves) ? teamEvents.leaves : [];
 
                 const items = [];
+                const today = todayIso;
 
+                const whoName = (sellerId) => (names?.[sellerId] || "").trim() || (sellerId || "").slice(0, 8);
+                const statusLabel = (st) => (st === "approved" ? "validé" : st === "pending" ? "en attente" : (st || ""));
+
+                // Absences : date >= aujourd'hui (déjà filtré côté API, mais on re-filtre au cas où)
                 abs.forEach((a) => {
-                  const who = (names?.[a.seller_id] || "").trim() || (a.seller_id || "").slice(0, 8);
-                  const st = a.status === "approved" ? "validée" : a.status === "pending" ? "en attente" : (a.status || "");
+                  const d = String(a?.date || "");
+                  if (!d || d < today) return;
+                  const who = whoName(a.seller_id);
+                  const st = statusLabel(a.status);
                   items.push({
-                    key: `abs-${a.seller_id}-${a.date}`,
-                    sort: `${a.date || ""}-0-${who}`,
-                    text: `• ${frDate(a.date)} : ${who} (absence ${st})`,
+                    key: `abs-${a.seller_id}-${d}`,
+                    sortDate: d,
+                    sortType: 0,
+                    sortWho: who,
+                    text: `• ${who} : absence${st ? ` (${st})` : ""} le ${frDate(d)}`,
                   });
                 });
 
+                // Congés : end_date >= aujourd'hui (déjà filtré côté API)
                 lvs.forEach((l) => {
-                  const who = (names?.[l.seller_id] || "").trim() || (l.seller_id || "").slice(0, 8);
-                  const st = l.status === "approved" ? "validée" : l.status === "pending" ? "en attente" : (l.status || "");
+                  const s = String(l?.start_date || "");
+                  const e = String(l?.end_date || "");
+                  if (!s || !e) return;
+                  if (e < today) return;
+
+                  const who = whoName(l.seller_id);
+                  const st = statusLabel(l.status);
+
+                  const ongoing = s <= today && today <= e;
+                  const dSort = ongoing ? today : s;
+
                   items.push({
-                    key: `lv-${l.seller_id}-${l.start_date}-${l.end_date}`,
-                    sort: `${l.start_date || ""}-1-${who}`,
-                    text: `• ${who} (congé ${st}) du ${frDate(l.start_date)} au ${frDate(l.end_date)}`,
+                    key: `lv-${l.seller_id}-${s}-${e}`,
+                    sortDate: dSort,
+                    sortType: 1,
+                    sortWho: who,
+                    text: ongoing
+                      ? `• ${who} : congé${st ? ` (${st})` : ""} en cours jusqu’au ${frDate(e)}`
+                      : `• ${who} : congé${st ? ` (${st})` : ""} du ${frDate(s)} au ${frDate(e)}`,
                   });
                 });
 
-                items.sort((a, b) => (a.sort || "").localeCompare(b.sort || ""));
+                items.sort((a, b) => {
+                  const da = a.sortDate || "";
+                  const db = b.sortDate || "";
+                  if (da !== db) return da.localeCompare(db);
+                  const ta = a.sortType ?? 0;
+                  const tb = b.sortType ?? 0;
+                  if (ta !== tb) return ta - tb;
+                  return String(a.sortWho || "").localeCompare(String(b.sortWho || ""));
+                });
 
                 if (!items.length) {
-                  return <div className="text-gray-600">Aucune absence ou congé enregistré cette semaine.</div>;
+                  return <div className="text-gray-600">Aucune absence ou congé à venir.</div>;
                 }
 
                 return <div className="space-y-1">{items.map((it) => <div key={it.key}>{it.text}</div>)}</div>;
