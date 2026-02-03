@@ -1,11 +1,11 @@
 // pages/api/checkins/confirm.js
 //
 // Confirme un pointage vendeuse via code 6 chiffres.
-// Règle importante : si la vendeuse pointe "trop tard", on refuse (sinon ça crée des retards absurdes).
+// Règle importante : si la vendeuse pointe "trop tard", on confirme MAIS sans compter de retard.
 // - Matin/Midi : heure prévue 06:30, fenêtre autorisée jusqu'à 08:30 (2h)
 // - Soir      : heure prévue 13:30, fenêtre autorisée jusqu'à 15:30 (2h)
 // - Dimanche  : heure prévue 09:00, fenêtre autorisée jusqu'à 11:00 (2h)
-// Si la vendeuse oublie de pointer, on ne compte rien (pas de retard).
+// Bonus "avance" : uniquement pour MORNING (max 30 min).
 //
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
@@ -75,13 +75,11 @@ function plannedMinutesFromShift(shiftCode) {
 }
 
 function windowEndMinutes(planned) {
-  // 2h de tolérance (120 minutes) — ajustable
-  return planned + 120;
+  return planned + 120; // 2h
 }
 
 function windowStartMinutes(planned) {
-  // 30 min avant l'heure prévue (ex 06:00 pour une arrivée prévue 06:30)
-  return planned - 30;
+  return planned - 30; // 30 min avant
 }
 
 function safeParseBody(req) {
@@ -91,6 +89,15 @@ function safeParseBody(req) {
   } catch {
     return {};
   }
+}
+
+function getCheckinSecret() {
+  // Même secret côté génération et confirmation
+  return (process.env.CHECKIN_CODE_SECRET || process.env.CHECKIN_CODE_PEPPER || "").toString();
+}
+
+function sha256Hex(s) {
+  return createHash("sha256").update(s).digest("hex");
 }
 
 export default async function handler(req, res) {
@@ -125,7 +132,7 @@ export default async function handler(req, res) {
       return json(res, 400, { ok: false, error: "CHECKIN_NOT_TODAY" });
     }
 
-    // On récupère le "code du jour" émis (daily_checkins existe quand le superviseur génère un code)
+    // On récupère le code émis
     const { data: row, error: rErr } = await admin
       .from("daily_checkins")
       .select("id, day, seller_id, shift_code, code_hash, confirmed_at, late_minutes, early_minutes")
@@ -148,16 +155,21 @@ export default async function handler(req, res) {
       });
     }
 
-    // Vérification du hash du code (compat: si code_hash absent, on ne valide pas)
     const expected = (row.code_hash || "").toString();
     if (!expected) return json(res, 500, { ok: false, error: "MISSING_CODE_HASH" });
 
-    // Hash: sha256(code + secret). Reproduit côté serveur.
-    const secret = process.env.CHECKIN_CODE_SECRET || "";
+    const secret = getCheckinSecret();
     if (!secret) return json(res, 500, { ok: false, error: "MISSING_CHECKIN_CODE_SECRET" });
 
-    const hex = createHash("sha256").update(`${code}:${secret}`).digest("hex");
-    if (hex !== expected) return json(res, 400, { ok: false, error: "BAD_CODE" });
+    // Hash principal (nouveau): sha256(code:secret)
+    const h1 = sha256Hex(`${code}:${secret}`);
+
+    // Compat ancien format (si jamais): sha256(secret:code)
+    const h2 = sha256Hex(`${secret}:${code}`);
+
+    if (h1 !== expected && h2 !== expected) {
+      return json(res, 400, { ok: false, error: "BAD_CODE" });
+    }
 
     // Fenêtre autorisée
     const planned = plannedMinutesFromShift(row.shift_code);
@@ -173,11 +185,10 @@ export default async function handler(req, res) {
       });
     }
 
-    if (nowMin > end) {
-      // Trop tard => on VALIDE mais SANS compter de retard (late=0).
-      // Objectif: éviter qu'une vendeuse perde son pointage parce qu'elle a oublié/retardé.
-      const now = new Date();
+    const now = new Date();
 
+    if (nowMin > end) {
+      // Trop tard => confirmé mais sans retard/avance
       const { error: upErrLate } = await admin
         .from("daily_checkins")
         .update({
@@ -197,19 +208,17 @@ export default async function handler(req, res) {
         late_minutes: 0,
         early_minutes: 0,
         window_closed: true,
-        planned_hhmm: `${String(Math.floor(planned / 60)).padStart(2, "0")}:${String(planned % 60).padStart(2, "0")}`,
-        window_end_hhmm: `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`,
       });
     }
 
     // Calcul retard/avance
     const delta = nowMin - planned;
     const late = delta > 0 ? Math.min(delta, 120) : 0;
-    const early = delta < 0 ? Math.min(Math.abs(delta), 30) : 0;
 
-    const now = new Date();
+    const earlyRaw = delta < 0 ? Math.min(Math.abs(delta), 30) : 0;
+    const isMorning = String(row.shift_code || "").toUpperCase() === "MORNING";
+    const early = isMorning ? earlyRaw : 0;
 
-    // Confirme
     const { error: upErr } = await admin
       .from("daily_checkins")
       .update({

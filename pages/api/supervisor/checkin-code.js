@@ -24,7 +24,11 @@ function adminClient() {
   return createClient(url, srv, { auth: { persistSession: false } });
 }
 async function isSupervisor(admin, userId) {
-  const { data, error } = await admin.from("supervisors").select("user_id").eq("user_id", userId).maybeSingle();
+  const { data, error } = await admin
+    .from("supervisors")
+    .select("user_id")
+    .eq("user_id", userId)
+    .maybeSingle();
   if (error) return false;
   return !!data?.user_id;
 }
@@ -61,13 +65,12 @@ function parseHHMM(s) {
   return hh * 60 + mm;
 }
 
-function shiftStartMinutes(shiftCode) {
-  // Tes règles actuelles:
-  // MORNING 06:30, MIDDAY 07:00, EVENING 13:30, SUNDAY_EXTRA 09:00
-  if (shiftCode === "EVENING") return 13 * 60 + 30;
-  if (shiftCode === "SUNDAY_EXTRA") return 9 * 60;
-  if (shiftCode === "MIDDAY") return 7 * 60;
-  return 6 * 60 + 30; // MORNING
+function plannedMinutesFromShift(shiftCode) {
+  const sc = String(shiftCode || "").toUpperCase();
+  if (sc === "EVENING") return 13 * 60 + 30; // 13:30
+  if (sc === "SUNDAY_EXTRA") return 9 * 60;  // 09:00
+  // MORNING + MIDDAY -> même arrivée 06:30
+  return 6 * 60 + 30; // 06:30
 }
 
 function genCode6() {
@@ -78,8 +81,15 @@ function sha256Hex(s) {
   return crypto.createHash("sha256").update(s).digest("hex");
 }
 
+function getCheckinSecret() {
+  // On préfère CHECKIN_CODE_SECRET, mais on garde CHECKIN_CODE_PEPPER en fallback
+  return (process.env.CHECKIN_CODE_SECRET || process.env.CHECKIN_CODE_PEPPER || "").toString();
+}
+
 export default async function handler(req, res) {
   try {
+    res.setHeader("Cache-Control", "no-store");
+
     if (req.method !== "POST") return json(res, 405, { ok: false, error: "Method not allowed" });
 
     const jwt = getBearer(req);
@@ -126,37 +136,39 @@ export default async function handler(req, res) {
     if (uErr || !userById?.user?.email) return json(res, 400, { ok: false, error: "SELLER_EMAIL_NOT_FOUND" });
     const sellerEmail = userById.user.email;
 
-    // Check password
+    // Check password (auth vendeur) — ne valide PAS le pointage, juste vérifie le mdp
     const { error: pwErr } = await sbAnon.auth.signInWithPassword({ email: sellerEmail, password });
     if (pwErr) return json(res, 403, { ok: false, error: "BAD_PASSWORD" });
 
     const EARLY_WINDOW = 30;
 
-    // ✅ DEV ONLY: heure simulée si envoyée + pas en production
+    // Heure Paris (DEV: simulation possible)
     let nowMin = parisNowMinutes();
     if (process.env.NODE_ENV !== "production") {
       const sim = parseHHMM(body.now_time);
       if (typeof sim === "number") nowMin = sim;
     }
 
-    const startMin = shiftStartMinutes(shiftCode);
+    const planned = plannedMinutesFromShift(shiftCode);
+    const openAt = planned - EARLY_WINDOW;
 
-    // Blocage trop tôt (anti-triche)
-    if (nowMin < startMin - EARLY_WINDOW) {
+    // Trop tôt (anti-triche)
+    if (nowMin < openAt) {
       return json(res, 409, { ok: false, error: "TOO_EARLY" });
     }
 
-    // Bonus uniquement MORNING
-    const earlyMinutes =
-      shiftCode === "MORNING" && nowMin < startMin ? Math.min(EARLY_WINDOW, startMin - nowMin) : 0;
+    // Preview uniquement (pour affichage du superviseur)
+    const delta = nowMin - planned;
+    const previewLate = delta > 0 ? delta : 0;
+    const previewEarlyRaw = delta < 0 ? Math.min(Math.abs(delta), EARLY_WINDOW) : 0;
+    const previewEarly = String(shiftCode || "").toUpperCase() === "MORNING" ? previewEarlyRaw : 0;
 
-    // Retard
-    const lateMinutes = nowMin > startMin ? nowMin - startMin : 0;
-
-    // Générer code
+    // Générer code + hash cohérent avec /api/checkins/confirm
     const code = genCode6();
-    const pepper = (process.env.CHECKIN_CODE_PEPPER || "").toString();
-    const codeHash = sha256Hex(`${pepper}:${code}`);
+    const secret = getCheckinSecret();
+    if (!secret) return json(res, 500, { ok: false, error: "MISSING_CHECKIN_CODE_SECRET" });
+
+    const codeHash = sha256Hex(`${code}:${secret}`);
 
     const { data: existing } = await admin
       .from("daily_checkins")
@@ -167,18 +179,20 @@ export default async function handler(req, res) {
 
     if (existing?.confirmed_at) return json(res, 409, { ok: false, error: "ALREADY_CONFIRMED" });
 
+    // IMPORTANT: on n'écrit plus early/late ici (sinon ça peut être compté comme "pointage fait")
+    const nowIso = new Date().toISOString();
     const { error: upErr } = await admin.from("daily_checkins").upsert(
       {
         day,
         seller_id: sellerId,
         shift_code: shiftCode,
         code_hash: codeHash,
-        issued_at: new Date().toISOString(),
+        issued_at: nowIso,
         issued_by: caller.id,
         confirmed_at: null,
-        late_minutes: lateMinutes,
-        early_minutes: earlyMinutes,
-        updated_at: new Date().toISOString(),
+        late_minutes: 0,
+        early_minutes: 0,
+        updated_at: nowIso,
       },
       { onConflict: "day,seller_id" }
     );
@@ -190,8 +204,9 @@ export default async function handler(req, res) {
       day,
       seller_id: sellerId,
       shift_code: shiftCode,
-      late_minutes: lateMinutes,
-      early_minutes: earlyMinutes,
+      // preview pour affichage superviseur (pas écrit en base)
+      late_minutes: previewLate,
+      early_minutes: previewEarly,
       code,
     });
   } catch (e) {
