@@ -44,24 +44,27 @@ export default function LoginPage() {
       const t = await r.text().catch(() => "");
       throw new Error(`role (${r.status}) ${t}`);
     }
-    const j = await r.json();
+    const j = await r.json().catch(() => ({}));
     return j?.role || "seller";
+  }
+
+  async function signOutAndStay(message) {
+    try {
+      await supabase.auth.signOut();
+    } catch {}
+    if (message) setErr(message);
   }
 
   async function redirectAfterLogin(accessToken) {
     const role = await getRole(accessToken);
 
-    // Mode tablette/kiosk: on autorise UNIQUEMENT supervisor
-    if (kiosk && role !== "supervisor") {
-      try {
-        await supabase.auth.signOut();
-      } catch {}
-      setErr("Tablette superviseur : connectez-vous avec le compte superviseur.");
-      return;
-    }
-
-    if (role === "supervisor") {
-      // Respecter next uniquement si c'est un chemin superviseur
+    // Mode tablette/kiosk : on n'autorise QUE le superviseur
+    if (kiosk) {
+      if (role !== "supervisor") {
+        await signOutAndStay("Cette tablette est réservée au superviseur. Veuillez vous connecter avec le compte superviseur.");
+        return;
+      }
+      // On respecte nextPath si c'est bien une route superviseur, sinon on force /supervisor/checkin
       if (nextPath && nextPath.startsWith("/supervisor")) {
         router.replace(nextPath);
       } else {
@@ -70,8 +73,18 @@ export default function LoginPage() {
       return;
     }
 
+    // Mode normal : supervisor
+    if (role === "supervisor") {
+      if (nextPath && nextPath.startsWith("/supervisor")) {
+        router.replace(nextPath);
+      } else {
+        router.replace("/supervisor");
+      }
+      return;
+    }
+
+    // Mode normal : admin
     if (role === "admin") {
-      // Admin -> /admin (respecter next si /admin)
       if (nextPath && nextPath.startsWith("/admin")) {
         router.replace(nextPath);
       } else {
@@ -80,7 +93,7 @@ export default function LoginPage() {
       return;
     }
 
-    // Vendeur: respecter next interne si présent
+    // Vendeur : respecter nextPath si fourni
     if (nextPath) {
       router.replace(nextPath);
       return;
@@ -120,7 +133,7 @@ export default function LoginPage() {
   }
 
   useEffect(() => {
-    // Si déjà connecté, on redirige direct (utile après refresh)
+    // Si déjà connecté, on redirige direct (utile après refresh / PWA)
     (async () => {
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
@@ -145,13 +158,16 @@ export default function LoginPage() {
       <div style={{ maxWidth: 520, margin: "0 auto", padding: 16 }}>
         <div className="card">
           <div className="hdr">Connexion</div>
-          <div style={{ marginTop: 8, opacity: 0.75, fontSize: 13 }}>
-            {kiosk
-              ? "Mode tablette superviseur"
-              : nextPath
-              ? `Redirection après connexion : ${nextPath}`
-              : "Connectez-vous pour accéder à l’application."}
-          </div>
+
+          {kiosk ? (
+            <div style={{ marginTop: 8, opacity: 0.85, fontSize: 13 }}>
+              Mode tablette superviseur · Connexion requise
+            </div>
+          ) : (
+            <div style={{ marginTop: 8, opacity: 0.75, fontSize: 13 }}>
+              {nextPath ? `Redirection après connexion : ${nextPath}` : "Connectez-vous pour accéder à l’application."}
+            </div>
+          )}
 
           <form onSubmit={doLogin} style={{ marginTop: 14, display: "grid", gap: 10 }}>
             <input
