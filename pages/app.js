@@ -1820,6 +1820,18 @@ useEffect(() => {
     );
   }
 
+  // Kiosk: éviter le "flash" de la page vendeuse avant la redirection
+  if (role === "supervisor") {
+    return (
+      <div className="p-4 max-w-2xl mx-auto">
+        <div className="card">
+          <div className="hdr">Ouverture de l’écran superviseur…</div>
+          <div className="text-sm text-gray-600 mt-2">Redirection en cours.</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
