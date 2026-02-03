@@ -18,7 +18,7 @@ function safeNextPath(x) {
 
 function pickDefaultRedirect(role) {
   if (role === "admin") return "/admin";
-  if (role === "supervisor") return "/supervisor/checkin";
+  if (role === "supervisor") return "/supervisor";
   return "/app";
 }
 
@@ -44,37 +44,43 @@ export default function LoginPage() {
       const t = await r.text().catch(() => "");
       throw new Error(`role (${r.status}) ${t}`);
     }
-    const j = await r.json().catch(() => ({}));
+    const j = await r.json();
     return j?.role || "seller";
   }
 
   async function redirectAfterLogin(accessToken) {
     const role = await getRole(accessToken);
 
-    // Mode tablette / kiosque : on refuse d'ouvrir l'admin ou l'espace vendeuse.
+    // Mode tablette/kiosk: on autorise UNIQUEMENT supervisor
     if (kiosk && role !== "supervisor") {
       try {
         await supabase.auth.signOut();
       } catch {}
-      setErr("Cette tablette est en mode superviseur. Veuillez vous connecter avec le compte superviseur.");
+      setErr("Tablette superviseur : connectez-vous avec le compte superviseur.");
       return;
     }
 
     if (role === "supervisor") {
-      // Si nextPath est fourni et reste dans /supervisor, on le respecte.
+      // Respecter next uniquement si c'est un chemin superviseur
       if (nextPath && nextPath.startsWith("/supervisor")) {
         router.replace(nextPath);
       } else {
-        router.replace("/supervisor/checkin");
+        router.replace("/supervisor/checkin?stay=1");
       }
       return;
     }
 
     if (role === "admin") {
-      router.replace("/admin");
+      // Admin -> /admin (respecter next si /admin)
+      if (nextPath && nextPath.startsWith("/admin")) {
+        router.replace(nextPath);
+      } else {
+        router.replace("/admin");
+      }
       return;
     }
 
+    // Vendeur: respecter next interne si présent
     if (nextPath) {
       router.replace(nextPath);
       return;
@@ -93,6 +99,7 @@ export default function LoginPage() {
         email: email.trim(),
         password,
       });
+
       if (error) throw error;
 
       const token = data?.session?.access_token;
@@ -101,7 +108,6 @@ export default function LoginPage() {
       if (stay) {
         const url = new URL(window.location.href);
         url.searchParams.set("stay", "1");
-        if (kiosk) url.searchParams.set("kiosk", "1");
         window.history.replaceState({}, "", url.toString());
       }
 
@@ -114,11 +120,12 @@ export default function LoginPage() {
   }
 
   useEffect(() => {
-    // Si déjà connecté, on redirige direct (utile après refresh / relance PWA)
+    // Si déjà connecté, on redirige direct (utile après refresh)
     (async () => {
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       if (!token) return;
+
       try {
         await redirectAfterLogin(token);
       } catch {
@@ -126,7 +133,7 @@ export default function LoginPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kiosk, nextPath]);
+  }, []);
 
   return (
     <>
@@ -140,7 +147,7 @@ export default function LoginPage() {
           <div className="hdr">Connexion</div>
           <div style={{ marginTop: 8, opacity: 0.75, fontSize: 13 }}>
             {kiosk
-              ? "Mode superviseur (tablette)."
+              ? "Mode tablette superviseur"
               : nextPath
               ? `Redirection après connexion : ${nextPath}`
               : "Connectez-vous pour accéder à l’application."}
