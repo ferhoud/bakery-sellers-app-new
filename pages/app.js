@@ -312,6 +312,9 @@ const handleAuthResponse = useCallback(
   const [monday, setMonday] = useState(() => startOfWeek(new Date()));
   const days = useMemo(() => Array.from({ length: 7 }).map((_, i) => addDays(monday, i)), [monday]);
 
+  const weekFromIso = useMemo(() => fmtISODate(monday), [monday]);
+  const weekToIso = useMemo(() => fmtISODate(addDays(monday, 6)), [monday]);
+
   const todayIso = useMemo(() => fmtISODate(new Date()), []);
   const rangeTo = useMemo(() => fmtISODate(addDays(new Date(), 60)), []);
 
@@ -344,6 +347,11 @@ const handleAuthResponse = useCallback(
   const [openReplsErr, setOpenReplsErr] = useState("");
   const [openReplsMsg, setOpenReplsMsg] = useState("");
   const [acceptReplBusy, setAcceptReplBusy] = useState({});
+
+  // Infos équipe (absences / congés) — semaine affichée
+  const [teamEvents, setTeamEvents] = useState({ absences: [], leaves: [] });
+  const [teamEventsLoading, setTeamEventsLoading] = useState(false);
+  const [teamEventsErr, setTeamEventsErr] = useState("");
 
   // Pointage (checkins) — côté vendeuse
   const [checkinsUnsupported, setCheckinsUnsupported] = useState(false);
@@ -945,12 +953,49 @@ useEffect(() => {
         todayExtra: Number(j?.today_extra_minutes ?? j?.early_minutes ?? 0) || 0,
       });
 
+      // Fallback : si l'API ne renvoie pas les totaux du mois, on les calcule via la table daily_checkins
+      const hasMonthTotals =
+        j?.month_delay_minutes != null ||
+        j?.month_extra_minutes != null ||
+        j?.monthDelay != null ||
+        j?.monthExtra != null;
+
+      if (!hasMonthTotals) {
+        try {
+          const { data: rows, error: e2 } = await supabase
+            .from("daily_checkins")
+            .select("late_minutes, early_minutes, confirmed_at, day")
+            .eq("seller_id", userId)
+            .gte("day", myMonthFromPast)
+            .lte("day", todayIso)
+            .not("confirmed_at", "is", null);
+
+          if (!e2 && Array.isArray(rows)) {
+            let mDelay = 0;
+            let mExtra = 0;
+            rows.forEach((r0) => {
+              const d0 = Number(r0?.late_minutes || 0) || 0;
+              const e0 = Number(r0?.early_minutes || 0) || 0;
+              if (d0 > 0) mDelay += d0;
+              if (e0 > 0) mExtra += e0;
+            });
+
+            setCheckinsStats((prev) => ({
+              ...prev,
+              monthDelay: Math.round(mDelay),
+              monthExtra: Math.round(mExtra),
+            }));
+          }
+        } catch (_) {}
+      }
+
+
     } catch (e) {
       setCheckinsErr(e?.message || "Impossible de charger le pointage.");
     } finally {
       setCheckinsLoading(false);
     }
-  }, [userId, role, checkinsUnsupported, myCheckinSlots.length, todayIso]);
+  }, [userId, role, checkinsUnsupported, myCheckinSlots.length, todayIso, myMonthFromPast]);
 
   const confirmCheckin = useCallback(
     async (slot) => {
@@ -1287,6 +1332,54 @@ if (!/^\d{6}$/.test(code6)) {
       setOpenReplsLoading(false);
     }
   }, [userId, todayIso, rangeTo]);
+
+
+  // Infos équipe (absences / congés) — via API serveur (service role)
+  const loadTeamEvents = useCallback(async () => {
+    if (!userId || role === "admin") return;
+    setTeamEventsErr("");
+    setTeamEventsLoading(true);
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token || null;
+      if (!token) return;
+
+      const r = await fetch(
+        `/api/team/events?from=${encodeURIComponent(weekFromIso)}&to=${encodeURIComponent(weekToIso)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      const j = await r.json().catch(() => ({}));
+      if (await handleAuthResponse(r, j)) return;
+      if (!r.ok || j?.ok === false) {
+        setTeamEventsErr(String(j?.error || `HTTP ${r.status}`));
+        return;
+      }
+
+      setTeamEvents({ absences: j?.absences || [], leaves: j?.leaves || [] });
+    } catch (e) {
+      setTeamEventsErr(e?.message || "Impossible de charger les infos équipe.");
+    } finally {
+      setTeamEventsLoading(false);
+    }
+  }, [userId, role, weekFromIso, weekToIso, handleAuthResponse]);
+
+  useEffect(() => {
+    if (!userId || role === "admin") return;
+    loadTeamEvents().catch(() => {});
+  }, [userId, role, loadTeamEvents]);
+
+  // Refresh quand on revient sur l'onglet
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onFocus = () => {
+      if (!userId || role === "admin") return;
+      loadTeamEvents().catch(() => {});
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [userId, role, loadTeamEvents]);
 
   const acceptReplacement = useCallback(
     async (item) => {
@@ -1896,18 +1989,101 @@ useEffect(() => {
   </div>
 )}
 
-      {(role !== "admin" && (checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0)) && (
-        <div className={`rounded-xl border p-3 ${
-          checkinsStats.monthDelay > 0 ? "border-red-200 bg-red-50" : "border-green-200 bg-green-50"
-        }`}>
-          <div className={`text-sm font-semibold ${
-            checkinsStats.monthDelay > 0 ? "text-red-800" : "text-green-800"
-          }`}>
-            {checkinsStats.monthDelay > 0
-              ? `Vous avez ${checkinsStats.monthDelay} min de retard ce mois-ci.`
-              : `Vous avez ${checkinsStats.monthExtra} min d'avance ce mois-ci.`}
-            {checkinsStats.monthDelay > 0 && checkinsStats.monthExtra > 0 ? ` (Avance: ${checkinsStats.monthExtra} min)` : ""}
+            {role !== "admin" &&
+        (() => {
+          const pDelay = Number(checkinsStats?.monthDelay || 0) || 0;
+          const pExtra = Number(checkinsStats?.monthExtra || 0) || 0;
+
+          const rDelay = monthDeltaUnsupported ? 0 : Number(monthDelta?.delayMinutes || 0) || 0;
+          const rExtra = monthDeltaUnsupported ? 0 : Number(monthDelta?.extraMinutes || 0) || 0;
+
+          const totalDelay = Math.round(pDelay + rDelay);
+          const totalExtra = Math.round(pExtra + rExtra);
+
+          const hasDelay = totalDelay > 0;
+          const hasExtra = totalExtra > 0;
+
+          const border = hasDelay ? "border-red-200" : hasExtra ? "border-green-200" : "border-gray-200";
+          const bg = hasDelay ? "bg-red-50" : hasExtra ? "bg-green-50" : "bg-gray-50";
+          const text = hasDelay ? "text-red-800" : hasExtra ? "text-green-800" : "text-gray-800";
+
+          return (
+            <div className={`rounded-xl border p-3 ${border} ${bg}`}>
+              <div className={`text-sm font-semibold ${text}`}>
+                {hasDelay
+                  ? `Vous avez ${fmtMinutesHM(totalDelay)} de retard ce mois-ci.`
+                  : hasExtra
+                    ? `Vous avez ${fmtMinutesHM(totalExtra)} de travail en plus ce mois-ci.`
+                    : `Ce mois-ci : aucun retard, aucun travail en plus.`}
+                {hasDelay && hasExtra ? ` (Travail en plus: ${fmtMinutesHM(totalExtra)})` : ""}
+              </div>
+              <div className="text-xs text-gray-600 mt-1">
+                Pointage: retard {pDelay} min{pExtra > 0 ? ` • avance ${pExtra} min` : ""}
+                {!monthDeltaUnsupported ? ` • Relais: retard ${rDelay} min${rExtra > 0 ? ` / extra ${rExtra} min` : ""}` : ""}
+              </div>
+            </div>
+          );
+        })()}
+
+      {role !== "admin" && (
+        <div className="card">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="hdr">Infos équipe</div>
+              <div className="text-xs text-gray-500">Absences et congés sur la semaine affichée</div>
+            </div>
+            <button className="btn" onClick={loadTeamEvents} disabled={teamEventsLoading}>
+              {teamEventsLoading ? "Chargement..." : "Rafraîchir"}
+            </button>
           </div>
+
+          {teamEventsErr && (
+            <div
+              className="text-sm mt-3 border rounded-xl p-2"
+              style={{ backgroundColor: "#fee2e2", borderColor: "#fca5a5" }}
+            >
+              ⚠️ {teamEventsErr}
+            </div>
+          )}
+
+          {!teamEventsLoading && !teamEventsErr && (
+            <div className="mt-3 text-sm">
+              {(() => {
+                const abs = Array.isArray(teamEvents?.absences) ? teamEvents.absences : [];
+                const lvs = Array.isArray(teamEvents?.leaves) ? teamEvents.leaves : [];
+
+                const items = [];
+
+                abs.forEach((a) => {
+                  const who = (names?.[a.seller_id] || "").trim() || (a.seller_id || "").slice(0, 8);
+                  const st = a.status === "approved" ? "validée" : a.status === "pending" ? "en attente" : (a.status || "");
+                  items.push({
+                    key: `abs-${a.seller_id}-${a.date}`,
+                    sort: `${a.date || ""}-0-${who}`,
+                    text: `• ${frDate(a.date)} : ${who} (absence ${st})`,
+                  });
+                });
+
+                lvs.forEach((l) => {
+                  const who = (names?.[l.seller_id] || "").trim() || (l.seller_id || "").slice(0, 8);
+                  const st = l.status === "approved" ? "validée" : l.status === "pending" ? "en attente" : (l.status || "");
+                  items.push({
+                    key: `lv-${l.seller_id}-${l.start_date}-${l.end_date}`,
+                    sort: `${l.start_date || ""}-1-${who}`,
+                    text: `• ${who} (congé ${st}) du ${frDate(l.start_date)} au ${frDate(l.end_date)}`,
+                  });
+                });
+
+                items.sort((a, b) => (a.sort || "").localeCompare(b.sort || ""));
+
+                if (!items.length) {
+                  return <div className="text-gray-600">Aucune absence ou congé enregistré cette semaine.</div>;
+                }
+
+                return <div className="space-y-1">{items.map((it) => <div key={it.key}>{it.text}</div>)}</div>;
+              })()}
+            </div>
+          )}
         </div>
       )}
 
