@@ -463,6 +463,24 @@ useEffect(() => {
     }
   }, [authChecked, userId, role, r, apiRoleChecked]);
 
+  // PWA: en mode vendeuse, on fixe le "dernier écran" à /app
+  // (évite un ancien LAST_OPEN_PATH=/supervisor qui ferait boucler la connexion sur PC)
+  useEffect(() => {
+    try {
+      if (typeof window === "undefined") return;
+      if (!authChecked || !userId) return;
+
+      const isStandalone =
+        window.matchMedia?.("(display-mode: standalone)")?.matches ||
+        window.navigator?.standalone === true;
+
+      if (isStandalone && role && role !== "supervisor") {
+        window.localStorage?.setItem?.("LAST_OPEN_PATH", "/app");
+      }
+    } catch (_) {}
+  }, [authChecked, userId, role]);
+
+
   // Déconnexion robuste (évite les sessions "collées")
   const hardLogout = useCallback(async () => {
     try {
@@ -501,6 +519,14 @@ useEffect(() => {
       collectKeys(ss).forEach((k) => {
         if (shouldRemove(k)) ss.removeItem(k);
       });
+    } catch (_) {}
+
+    // IMPORTANT: éviter les boucles /login <-> /supervisor dues à un LAST_OPEN_PATH resté en localStorage
+    try {
+      window.localStorage?.removeItem?.("LAST_OPEN_PATH");
+      window.localStorage?.removeItem?.("LAST_OPEN_PATH_SUPERVISOR");
+      window.sessionStorage?.removeItem?.("LAST_OPEN_PATH");
+      window.sessionStorage?.removeItem?.("LAST_OPEN_PATH_SUPERVISOR");
     } catch (_) {}
 
     // On repart proprement

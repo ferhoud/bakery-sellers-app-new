@@ -74,8 +74,22 @@ export default function SupervisorCheckinPage() {
   const [msg, setMsg] = useState("");
 
   useEffect(() => {
-    // PWA/tablette: on mémorise que la dernière page utilisée est superviseur
-    try { window.localStorage?.setItem?.("LAST_OPEN_PATH", "/supervisor/checkin"); } catch {}
+    // PWA/tablette (standalone): on mémorise la page superviseur pour le relaunch kiosk.
+    // En navigateur (PC): on supprime un ancien LAST_OPEN_PATH=/supervisor pour éviter les boucles /login <-> /supervisor.
+    try {
+      const isStandalone =
+        window.matchMedia?.("(display-mode: standalone)")?.matches ||
+        window.navigator?.standalone === true;
+
+      if (isStandalone) {
+        window.localStorage?.setItem?.("LAST_OPEN_PATH", "/supervisor/checkin");
+      } else {
+        const prev = window.localStorage?.getItem?.("LAST_OPEN_PATH");
+        if (prev && String(prev).startsWith("/supervisor")) {
+          window.localStorage?.removeItem?.("LAST_OPEN_PATH");
+        }
+      }
+    } catch {}
   }, []);
 
   useEffect(() => {
