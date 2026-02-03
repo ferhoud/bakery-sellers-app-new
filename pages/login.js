@@ -22,6 +22,23 @@ function pickDefaultRedirect(role) {
   return "/app";
 }
 
+// Empêche les boucles: un vendeur ne doit jamais être renvoyé vers /supervisor ou /admin via ?next=
+function sanitizeNextForRole(role, nextPath) {
+  const p = safeNextPath(nextPath);
+  if (!p) return "";
+
+  // sécurité basique
+  if (p.startsWith("/api")) return "";
+  if (p.startsWith("/login")) return "";
+  if (p.startsWith("/logout")) return "";
+
+  // garde-fous par rôle
+  if (p.startsWith("/supervisor") && role !== "supervisor") return "";
+  if (p.startsWith("/admin") && role !== "admin") return "";
+
+  return p;
+}
+
 export default function LoginPage() {
   const router = useRouter();
 
@@ -45,7 +62,7 @@ export default function LoginPage() {
       throw new Error(`role (${r.status}) ${t}`);
     }
     const j = await r.json().catch(() => ({}));
-    return j?.role || "seller";
+    return (j?.role || "seller").toString().toLowerCase();
   }
 
   async function signOutAndStay(message) {
@@ -64,38 +81,15 @@ export default function LoginPage() {
         await signOutAndStay("Cette tablette est réservée au superviseur. Veuillez vous connecter avec le compte superviseur.");
         return;
       }
-      // On respecte nextPath si c'est bien une route superviseur, sinon on force /supervisor/checkin
-      if (nextPath && nextPath.startsWith("/supervisor")) {
-        router.replace(nextPath);
-      } else {
-        router.replace("/supervisor/checkin?stay=1");
-      }
+      const dest = nextPath && nextPath.startsWith("/supervisor") ? nextPath : "/supervisor/checkin?stay=1";
+      router.replace(dest);
       return;
     }
 
-    // Mode normal : supervisor
-    if (role === "supervisor") {
-      if (nextPath && nextPath.startsWith("/supervisor")) {
-        router.replace(nextPath);
-      } else {
-        router.replace("/supervisor");
-      }
-      return;
-    }
-
-    // Mode normal : admin
-    if (role === "admin") {
-      if (nextPath && nextPath.startsWith("/admin")) {
-        router.replace(nextPath);
-      } else {
-        router.replace("/admin");
-      }
-      return;
-    }
-
-    // Vendeur : respecter nextPath si fourni
-    if (nextPath) {
-      router.replace(nextPath);
+    // Mode normal : on respecte ?next= uniquement si compatible avec le rôle
+    const safeNext = sanitizeNextForRole(role, nextPath);
+    if (safeNext) {
+      router.replace(safeNext);
       return;
     }
 

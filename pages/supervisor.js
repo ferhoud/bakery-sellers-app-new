@@ -7,6 +7,18 @@ import { supabase } from "../lib/supabaseClient";
 import WeekNav from "../components/WeekNav";
 import { startOfWeek, fmtISODate } from "../lib/date";
 
+function isStandalone() {
+  try {
+    return (
+      (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+      window.navigator.standalone === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+
 function pad2(n) {
   return String(n).padStart(2, "0");
 }
@@ -165,10 +177,15 @@ export default function SupervisorPage() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  // Astuce: mémorise la dernière page superviseur (utile tablette/PWA)
+  // Astuce: mémorise la dernière page superviseur uniquement en mode PWA/standalone (tablette)
   useEffect(() => {
     try {
-      window.localStorage?.setItem?.("LAST_OPEN_PATH", "/supervisor");
+      if (isStandalone()) {
+        window.localStorage?.setItem?.("LAST_OPEN_PATH", "/supervisor");
+      } else {
+        // Sur PC, on évite de polluer le navigateur avec un "dernier écran" superviseur
+        window.localStorage?.removeItem?.("LAST_OPEN_PATH");
+      }
     } catch {}
   }, []);
 
@@ -195,7 +212,10 @@ export default function SupervisorPage() {
 
     if (!token) {
       setLoading(false);
-      router.replace(`/login?next=/supervisor&stay=1`);
+      const dest = typeof window !== "undefined" && isStandalone()
+        ? `/login?next=/supervisor&stay=1&kiosk=1`
+        : `/login?next=/supervisor&stay=1`;
+      router.replace(dest);
       return;
     }
 
@@ -213,7 +233,10 @@ export default function SupervisorPage() {
       if (r.status === 401 || r.status === 403) {
         setErr(`Session expirée. Veuillez vous reconnecter. (${r.status})`);
         setLoading(false);
-        router.replace(`/login?next=/supervisor&stay=1`);
+        const dest = typeof window !== "undefined" && isStandalone()
+        ? `/login?next=/supervisor&stay=1&kiosk=1`
+        : `/login?next=/supervisor&stay=1`;
+      router.replace(dest);
         return;
       }
       setErr(`Erreur API (${r.status}) ${t}`);
@@ -259,7 +282,10 @@ export default function SupervisorPage() {
       const token = sess?.session?.access_token;
 
       if (!token) {
-        router.replace(`/login?next=/supervisor&stay=1`);
+        const dest = typeof window !== "undefined" && isStandalone()
+          ? `/login?next=/supervisor&stay=1&kiosk=1`
+          : `/login?next=/supervisor&stay=1`;
+        router.replace(dest);
         return;
       }
 
@@ -286,7 +312,15 @@ export default function SupervisorPage() {
       }
 
       await supabase.auth.signOut();
-      router.replace("/login?next=/supervisor&stay=1");
+      try {
+        window.localStorage?.removeItem?.("LAST_OPEN_PATH");
+        window.localStorage?.removeItem?.("LAST_OPEN_PATH_SUPERVISOR");
+      } catch {}
+
+      const dest = typeof window !== "undefined" && isStandalone()
+        ? "/login?next=/supervisor&stay=1&kiosk=1"
+        : "/login?stay=1&next=/app";
+      router.replace(dest);
     } finally {
       setLogoutBusy(false);
     }
