@@ -229,7 +229,81 @@ const handleAuthResponse = useCallback(
     };
   }, [userId, hookProfile]);
 
-  const role = hookProfile?.role ?? profileFallback?.role ?? null;
+  const roleRaw = hookProfile?.role ?? profileFallback?.role ?? null;
+
+  // Rôle "source de vérité" (utile pour la tablette kiosque superviseur)
+  // On interroge /api/role avec le Bearer token afin d'identifier SUPERVISOR même si profile.role est vide / incorrect.
+  const [apiRole, setApiRole] = useState(null);
+  const [apiRoleChecked, setApiRoleChecked] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+
+    (async () => {
+      if (!authChecked) return;
+
+      // Pas connecté -> rien à vérifier
+      if (!userId) {
+        if (alive) {
+          setApiRole(null);
+          setApiRoleChecked(true);
+        }
+        return;
+      }
+
+      if (alive) {
+        setApiRole(null);
+        setApiRoleChecked(false);
+      }
+
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token || session?.access_token || null;
+
+        if (!token) {
+          if (alive) setApiRoleChecked(true);
+          return;
+        }
+
+        // timeout court pour ne pas bloquer l'UI en cas de réseau capricieux
+        const t = setTimeout(() => {
+          try {
+            ctrl?.abort?.();
+          } catch (_) {}
+        }, 2500);
+
+        const resp = await fetch("/api/role", {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ctrl?.signal,
+        });
+
+        clearTimeout(t);
+
+        const j = await resp.json().catch(() => ({}));
+        const rr = String(j?.role || j?.data?.role || j?.user_role || "").trim().toLowerCase();
+
+        if (!alive) return;
+        setApiRole(rr || null);
+        setApiRoleChecked(true);
+      } catch (_) {
+        if (!alive) return;
+        setApiRole(null);
+        setApiRoleChecked(true);
+      }
+    })();
+
+    return () => {
+      alive = false;
+      try {
+        ctrl?.abort?.();
+      } catch (_) {}
+    };
+  }, [authChecked, userId, session?.access_token]);
+
+  const role = apiRole || roleRaw || null;
+
 
   // ----------------------------
   // IMPORTANT: TOUS LES HOOKS EN HAUT (aucun return avant)
@@ -352,10 +426,24 @@ useEffect(() => {
     // On attend que Supabase nous dise clairement si une session existe ou non
     if (!authChecked) return;
 
+    // On attend la détection serveur (/api/role) pour éviter d'afficher la page vendeuse sur la tablette kiosque
+    if (userId && !apiRoleChecked) return;
+
     // Pas connecté => /login (au lieu de rester bloqué)
     if (!userId) {
       if (typeof window !== "undefined") {
         window.location.replace("/login?stay=1&next=/app");
+      }
+      return;
+    }
+
+
+    // Tablette kiosque: si le compte est superviseur, on force l'écran superviseur
+    if (role === "supervisor") {
+      if (typeof window !== "undefined") {
+        window.location.replace("/supervisor?stay=1");
+      } else {
+        r.replace("/supervisor");
       }
       return;
     }
@@ -373,7 +461,7 @@ useEffect(() => {
       })();
       return;
     }
-  }, [authChecked, userId, role, r]);
+  }, [authChecked, userId, role, r, apiRoleChecked]);
 
   // Déconnexion robuste (évite les sessions "collées")
   const hardLogout = useCallback(async () => {
@@ -1711,7 +1799,7 @@ useEffect(() => {
   // ----------------------------
   // UI (après hooks)
   // ----------------------------
-  const showLoading = !authChecked || !plannerChecked;
+  const showLoading = !authChecked || !plannerChecked || !apiRoleChecked;
   const showNeedAuth = !userId && authChecked;
 
   if (showLoading) {
