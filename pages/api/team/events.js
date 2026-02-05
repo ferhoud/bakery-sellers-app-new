@@ -1,20 +1,32 @@
 // pages/api/team/events.js
-// Infos équipe (absences + congés) à venir.
-// Règle : on affiche une info tant qu'elle n'est pas passée.
-// - Absences: date >= aujourd'hui (heure Europe/Paris)
-// - Congés: end_date >= aujourd'hui (et start_date <= to pour éviter des listes infinies)
-// Protégé par JWT (Authorization: Bearer <token>), requêtes serveur via SERVICE_ROLE.
+// Upcoming team events (absences + leaves) for "Infos équipe".
+// Includes seller names (full_name) + namesById map so UI can show who is concerned.
+// Auth: Authorization: Bearer <access_token> required.
 
 import { createClient } from "@supabase/supabase-js";
 
-function getBearer(req) {
-  const h = req.headers?.authorization || req.headers?.Authorization || "";
-  const m = String(h).match(/^Bearer\s+(.+)$/i);
-  return m ? m[1] : null;
+function json(res, status, body) {
+  res.status(status).json(body);
 }
 
-function isIsoDate(s) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+function getBearer(req) {
+  const h = req.headers.authorization || req.headers.Authorization || "";
+  const m = /^Bearer\s+(.+)$/i.exec(h);
+  return m ? m[1] : "";
+}
+
+function anonClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || !anon) return null;
+  return createClient(url, anon, { auth: { persistSession: false } });
+}
+
+function adminClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const srv = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !srv) return null;
+  return createClient(url, srv, { auth: { persistSession: false } });
 }
 
 function parisTodayISO() {
@@ -30,89 +42,111 @@ function parisTodayISO() {
   return `${y}-${m}-${d}`;
 }
 
-function addDaysISO(iso, days) {
-  const d = new Date(iso + "T00:00:00");
+function addDaysISO(fromISO, days) {
+  const d = new Date(`${fromISO}T12:00:00`);
   d.setDate(d.getDate() + days);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
+  // We only need an ISO date string; using UTC conversion here is fine for a date-only value.
+  return d.toISOString().slice(0, 10);
+}
+
+function clampInt(x, def, min, max) {
+  const n = parseInt(String(x ?? ""), 10);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(Math.max(n, min), max);
 }
 
 export default async function handler(req, res) {
-  res.setHeader("Cache-Control", "no-store");
-
-  if (req.method !== "GET") {
-    res.status(405).json({ ok: false, error: "Method not allowed" });
-    return;
-  }
-
-  const token = getBearer(req);
-  if (!token) {
-    res.status(401).json({ ok: false, error: "Missing Authorization Bearer token" });
-    return;
-  }
-
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const service = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !anon || !service) {
-    res.status(500).json({ ok: false, error: "Missing Supabase env" });
-    return;
-  }
-
-  const today = parisTodayISO();
-
-  // On accepte un horizon via query, mais on ne montre jamais avant today.
-  const qFromRaw = String(req.query?.from || req.query?.start || "").slice(0, 10);
-  const qToRaw = String(req.query?.to || req.query?.end || "").slice(0, 10);
-
-  const from = isIsoDate(qFromRaw) ? (qFromRaw < today ? today : qFromRaw) : today;
-
-  // horizon par défaut: 2 ans, pour couvrir les absences/congés planifiés loin
-  const defaultTo = addDaysISO(today, 730);
-  const to = isIsoDate(qToRaw) ? qToRaw : defaultTo;
-
-  // Vérifie le JWT
-  const sbAuth = createClient(url, anon, { auth: { persistSession: false } });
-  const { data: uData, error: uErr } = await sbAuth.auth.getUser(token);
-  if (uErr || !uData?.user) {
-    res.status(401).json({ ok: false, error: uErr?.message || "Unauthorized" });
-    return;
-  }
-
-  const sb = createClient(url, service, { auth: { persistSession: false } });
-
-  // Absences à venir: date >= from et <= to
-  let absences = [];
   try {
-    const { data, error } = await sb
+    res.setHeader("Cache-Control", "no-store");
+
+    if (req.method !== "GET") return json(res, 405, { ok: false, error: "Method not allowed" });
+
+    const jwt = getBearer(req);
+    if (!jwt) return json(res, 401, { ok: false, error: "Missing Authorization Bearer token" });
+
+    const sbAnon = anonClient();
+    const sbAdmin = adminClient();
+    if (!sbAnon) return json(res, 500, { ok: false, error: "Missing public Supabase env" });
+    if (!sbAdmin) return json(res, 500, { ok: false, error: "Missing SUPABASE_SERVICE_ROLE_KEY" });
+
+    const { data: au, error: auErr } = await sbAnon.auth.getUser(jwt);
+    if (auErr || !au?.user) return json(res, 401, { ok: false, error: auErr?.message || "Unauthorized" });
+
+    const today = parisTodayISO();
+    const horizonDays = clampInt(req.query?.days, 730, 30, 1460); // default: 2 years
+    const toISO = addDaysISO(today, horizonDays);
+
+    // 1) Seller names map (for display)
+    const { data: prof, error: pErr } = await sbAdmin
+      .from("profiles")
+      .select("user_id, full_name, role, active")
+      .eq("role", "seller");
+
+    if (pErr) return json(res, 500, { ok: false, error: pErr.message });
+
+    const namesById = {};
+    for (const row of prof || []) {
+      const id = String(row.user_id || "");
+      if (!id) continue;
+      const name = (row.full_name || "").toString().trim();
+      namesById[id] = name || namesById[id] || "";
+    }
+
+    // 2) Upcoming absences
+    const { data: abs, error: aErr } = await sbAdmin
       .from("absences")
-      .select("seller_id, date, status")
-      .gte("date", from)
-      .lte("date", to)
-      .in("status", ["approved", "pending"])
+      .select("id, seller_id, date, status")
+      .gte("date", today)
+      .lte("date", toISO)
+      .in("status", ["pending", "approved"])
       .order("date", { ascending: true });
 
-    if (!error && Array.isArray(data)) absences = data;
-  } catch (_) {}
+    if (aErr) return json(res, 500, { ok: false, error: aErr.message });
 
-  // Congés à venir ou en cours:
-  // - end_date >= from (donc pas de congé terminé)
-  // - start_date <= to (évite de charger des congés très lointains si tu veux limiter)
-  let leaves = [];
-  try {
-    const { data, error } = await sb
+    const absences = (abs || []).map((a) => {
+      const sellerId = String(a.seller_id || "");
+      return {
+        id: a.id,
+        seller_id: sellerId,
+        date: (a.date || "").toString().slice(0, 10),
+        status: a.status,
+        full_name: namesById[sellerId] || "",
+      };
+    });
+
+    // 3) Upcoming / ongoing leaves (shown until end_date)
+    const { data: lv, error: lErr } = await sbAdmin
       .from("leaves")
-      .select("seller_id, start_date, end_date, status")
-      .gte("end_date", from)
-      .lte("start_date", to)
-      .in("status", ["approved", "pending"])
+      .select("id, seller_id, start_date, end_date, status")
+      .gte("end_date", today)
+      .lte("start_date", toISO)
+      .in("status", ["pending", "approved"])
       .order("start_date", { ascending: true });
 
-    if (!error && Array.isArray(data)) leaves = data;
-  } catch (_) {}
+    if (lErr) return json(res, 500, { ok: false, error: lErr.message });
 
-  res.status(200).json({ ok: true, today, from, to, absences, leaves });
+    const leaves = (lv || []).map((l) => {
+      const sellerId = String(l.seller_id || "");
+      return {
+        id: l.id,
+        seller_id: sellerId,
+        start_date: (l.start_date || "").toString().slice(0, 10),
+        end_date: (l.end_date || "").toString().slice(0, 10),
+        status: l.status,
+        full_name: namesById[sellerId] || "",
+      };
+    });
+
+    return json(res, 200, {
+      ok: true,
+      today,
+      from: today,
+      to: toISO,
+      namesById,
+      absences,
+      leaves,
+    });
+  } catch (e) {
+    return json(res, 500, { ok: false, error: e?.message || "Server error" });
+  }
 }
