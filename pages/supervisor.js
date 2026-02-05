@@ -169,6 +169,11 @@ export default function SupervisorPage() {
   const [payload, setPayload] = useState(null);
   const [now, setNow] = useState(null);
 
+  // Infos équipe (absences + congés à venir)
+  const [teamLoading, setTeamLoading] = useState(false);
+  const [teamErr, setTeamErr] = useState("");
+  const [team, setTeam] = useState(null);
+
   const [isWide, setIsWide] = useState(false);
   useEffect(() => {
     const onResize = () => setIsWide(window.innerWidth >= 1100);
@@ -253,8 +258,64 @@ export default function SupervisorPage() {
       return;
     }
 
+
     setPayload(j);
     setLoading(false);
+  }
+
+  async function fetchTeamEvents() {
+    setTeamLoading(true);
+    setTeamErr("");
+
+    const { data: sess } = await supabase.auth.getSession();
+    const token = sess?.session?.access_token;
+
+    if (!token) {
+      setTeamLoading(false);
+      const dest =
+        typeof window !== "undefined" && isStandalone()
+          ? `/login?next=/supervisor&stay=1&kiosk=1`
+          : `/login?next=/supervisor&stay=1`;
+      router.replace(dest);
+      return;
+    }
+
+    const r = await fetch(`/api/team/events?ts=${Date.now()}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+
+    if (!r.ok) {
+      const t = await r.text().catch(() => "");
+      if (r.status === 401 || r.status === 403) {
+        setTeamErr(`Session expirée. Veuillez vous reconnecter. (${r.status})`);
+        setTeamLoading(false);
+        const dest =
+          typeof window !== "undefined" && isStandalone()
+            ? `/login?next=/supervisor&stay=1&kiosk=1`
+            : `/login?next=/supervisor&stay=1`;
+        router.replace(dest);
+        return;
+      }
+      setTeamErr(`Erreur API Infos équipe (${r.status}) ${t}`);
+      setTeamLoading(false);
+      return;
+    }
+
+    const j = await r.json().catch(() => null);
+    if (!j || j.ok === false) {
+      const msg = j?.error ? String(j.error) : "Réponse API Infos équipe invalide.";
+      setTeamErr(msg);
+      setTeamLoading(false);
+      return;
+    }
+
+    setTeam(j);
+    setTeamLoading(false);
   }
 
   useEffect(() => {
@@ -262,9 +323,100 @@ export default function SupervisorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusDate]);
 
+  useEffect(() => {
+    fetchTeamEvents();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const assignments = payload?.assignments || {};
   const weekDates = payload?.dates || [];
   const dayRow = assignments[focusDate] || {};
+
+  const teamNamesById =
+    team?.namesById || team?.names_by_id || team?.names || team?.nameById || {};
+
+  const teamItems = useMemo(() => {
+    const tISO = todayISO;
+
+    const absRaw =
+      (Array.isArray(team?.absences) && team.absences) ||
+      (Array.isArray(team?.absences_upcoming) && team.absences_upcoming) ||
+      (Array.isArray(team?.absence_events) && team.absence_events) ||
+      [];
+
+    const leavesRaw =
+      (Array.isArray(team?.leaves) && team.leaves) ||
+      (Array.isArray(team?.leaves_upcoming) && team.leaves_upcoming) ||
+      (Array.isArray(team?.leave_events) && team.leave_events) ||
+      [];
+
+    const items = [];
+
+    for (const a of absRaw) {
+      const day = (a?.day || a?.date || "").toString().slice(0, 10);
+      if (!day || day < tISO) continue; // ne montre pas le passé
+      const sellerId = (a?.seller_id || a?.sellerId || "").toString();
+      const name =
+        (a?.full_name || a?.fullName || "").toString().trim() ||
+        (teamNamesById?.[sellerId] || "").toString().trim() ||
+        "";
+      items.push({
+        kind: "absence",
+        sort: `${day} 0`,
+        sellerId,
+        name,
+        label: `${name || "—"} : absence le ${frDateFromISO(day)}`,
+      });
+    }
+
+    for (const l of leavesRaw) {
+      const start = (l?.start_date || l?.start || l?.from || "").toString().slice(0, 10);
+      const end = (l?.end_date || l?.end || l?.to || "").toString().slice(0, 10);
+      if (!end || end < tISO) continue; // affiché jusqu'à la fin incluse
+      const sellerId = (l?.seller_id || l?.sellerId || "").toString();
+      const name =
+        (l?.full_name || l?.fullName || "").toString().trim() ||
+        (teamNamesById?.[sellerId] || "").toString().trim() ||
+        "";
+      if (start && end && start === end) {
+        items.push({
+          kind: "leave",
+          sort: `${start} 1`,
+          sellerId,
+          name,
+          label: `${name || "—"} : congé le ${frDateFromISO(start)}`,
+        });
+      } else {
+        const span =
+          start && end
+            ? `du ${frDateFromISO(start)} au ${frDateFromISO(end)}`
+            : end
+            ? `jusqu’au ${frDateFromISO(end)}`
+            : "—";
+        items.push({
+          kind: "leave",
+          sort: `${(start || end)} 1`,
+          sellerId,
+          name,
+          label: `${name || "—"} : congé ${span}`,
+        });
+      }
+    }
+
+    // dédoublonnage simple
+    const seen = new Set();
+    const uniq = [];
+    for (const it of items) {
+      const k = `${it.kind}|${it.sellerId}|${it.label}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      uniq.push(it);
+    }
+
+    uniq.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : a.label.localeCompare(b.label)));
+    return uniq;
+  }, [team, todayISO, teamNamesById]);
+
 
   function openLogout() {
     setLogoutErr("");
@@ -412,7 +564,7 @@ export default function SupervisorPage() {
           </div>
 
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button className="btn" onClick={() => fetchPlan(focusDate)} disabled={loading}>
+            <button className="btn" onClick={() => { fetchPlan(focusDate); fetchTeamEvents(); }} disabled={loading || teamLoading}>
               Rafraîchir
             </button>
 
@@ -480,6 +632,51 @@ export default function SupervisorPage() {
                   );
                 })}
               </div>
+            </div>
+
+            <div style={{ height: 14 }} />
+
+            <div className="card">
+              <div className="hdr">Infos équipe</div>
+              <div style={{ height: 10 }} />
+
+              {teamLoading ? (
+                <div style={{ opacity: 0.8 }}>Chargement des infos équipe…</div>
+              ) : teamErr ? (
+                <div
+                  style={{
+                    padding: "10px 12px",
+                    border: "1px solid #ef4444",
+                    borderRadius: 12,
+                    background: "rgba(239,68,68,.06)",
+                  }}
+                >
+                  {teamErr}
+                </div>
+              ) : teamItems.length === 0 ? (
+                <div style={{ opacity: 0.7 }}>Aucune absence ou congé à venir.</div>
+              ) : (
+                <div style={{ display: "grid", gap: 8 }}>
+                  {teamItems.slice(0, 30).map((it, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 14,
+                        border: "1px solid #e5e7eb",
+                        background: "#fff",
+                      }}
+                    >
+                      {it.label}
+                    </div>
+                  ))}
+                  {teamItems.length > 30 ? (
+                    <div style={{ fontSize: 12, opacity: 0.6 }}>
+                      +{teamItems.length - 30} autres infos…
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </div>
 
             <div style={{ height: 14 }} />
