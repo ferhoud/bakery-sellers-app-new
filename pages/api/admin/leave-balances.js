@@ -4,10 +4,10 @@
    - POST: upsert balance pour une vendeuse (admin/planner seulement)
 
    Sécurité:
-   - Authorization: Bearer <access_token>
-   - Vérifie l'utilisateur via supabase auth (anon)
+   - Authorization: Bearer <access_token> (token Supabase)
+   - Identification via Supabase Auth (robuste: global headers -> auth.getUser())
    - Autorise si isAdminEmail(email) OU présence dans planner_access
-   - Écrit/relit via Service Role (SUPABASE_SERVICE_ROLE_KEY)
+   - Lit/écrit via Service Role (SUPABASE_SERVICE_ROLE_KEY)
 */
 import { createClient } from "@supabase/supabase-js";
 import { isAdminEmail } from "@/lib/admin";
@@ -29,11 +29,17 @@ function safeNum(x) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function anonClient() {
+function createUserClientWithBearer(jwt) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !anon) return null;
-  return createClient(url, anon, { auth: { persistSession: false } });
+
+  // ✅ Très robuste (évite le fameux "Auth session missing!" si la version supabase-js
+  // ne supporte pas auth.getUser(jwt) ou ignore l’argument)
+  return createClient(url, anon, {
+    auth: { persistSession: false },
+    global: { headers: { Authorization: `Bearer ${jwt}` } },
+  });
 }
 
 function adminClient() {
@@ -57,20 +63,51 @@ async function isPlanner(sbAdmin, userId) {
   }
 }
 
+async function listSellers(sbAdmin) {
+  // 1) RPC list_sellers (si existe)
+  try {
+    const { data, error } = await sbAdmin.rpc("list_sellers");
+    if (!error && Array.isArray(data) && data.length) {
+      return data
+        .map((r) => ({
+          user_id: r.user_id || r.id || r.seller_id,
+          full_name: r.full_name || r.name || r.display_name || "",
+          active: r.active !== false,
+        }))
+        .filter((x) => !!x.user_id);
+    }
+  } catch {}
+
+  // 2) Fallback: profiles.role='seller'
+  try {
+    const { data, error } = await sbAdmin
+      .from("profiles")
+      .select("user_id, full_name, role, active")
+      .eq("role", "seller")
+      .order("full_name", { ascending: true });
+    if (!error && Array.isArray(data)) return data;
+  } catch {}
+
+  return [];
+}
+
 export default async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
   const jwt = getBearer(req);
   if (!jwt) return json(res, 401, { ok: false, error: "Missing Authorization Bearer token" });
 
-  const sbAnon = anonClient();
+  const sbUser = createUserClientWithBearer(jwt);
   const sbAdmin = adminClient();
-  if (!sbAnon) return json(res, 500, { ok: false, error: "Missing NEXT_PUBLIC_SUPABASE_URL/ANON_KEY" });
+  if (!sbUser) return json(res, 500, { ok: false, error: "Missing NEXT_PUBLIC_SUPABASE_URL/ANON_KEY" });
   if (!sbAdmin) return json(res, 500, { ok: false, error: "Missing SUPABASE_SERVICE_ROLE_KEY" });
 
   // 1) Identify user from token
-  const { data: au, error: auErr } = await sbAnon.auth.getUser(jwt);
-  if (auErr || !au?.user) return json(res, 401, { ok: false, error: auErr?.message || "Unauthorized" });
+  const { data: au, error: auErr } = await sbUser.auth.getUser();
+  if (auErr || !au?.user) {
+    const msg = auErr?.message || "Unauthorized";
+    return json(res, 401, { ok: false, error: msg });
+  }
 
   const user = au.user;
   const email = String(user.email || "").trim().toLowerCase();
@@ -80,18 +117,16 @@ export default async function handler(req, res) {
   // GET
   if (req.method === "GET") {
     try {
-      const { data: sellers, error: sErr } = await sbAdmin
-        .from("profiles")
-        .select("user_id, full_name, role, active")
-        .eq("role", "seller")
-        .order("full_name", { ascending: true });
+      const sellers = await listSellers(sbAdmin);
+      if (!sellers.length) return json(res, 200, { ok: true, rows: [] });
 
-      if (sErr) return json(res, 500, { ok: false, error: sErr.message });
+      const ids = sellers.map((s) => s.user_id).filter(Boolean);
 
-      const ids = (sellers || []).map((s) => s.user_id).filter(Boolean);
       const { data: balances, error: bErr } = await sbAdmin
         .from("leave_balances")
-        .select("seller_id, as_of, cp_acquired_n, cp_taken_n, cp_remaining_n, cp_acquired_n1, cp_taken_n1, cp_remaining_n1")
+        .select(
+          "seller_id, as_of, cp_acquired_n, cp_taken_n, cp_remaining_n, cp_acquired_n1, cp_taken_n1, cp_remaining_n1"
+        )
         .in("seller_id", ids);
 
       if (bErr) return json(res, 500, { ok: false, error: bErr.message });
@@ -99,25 +134,27 @@ export default async function handler(req, res) {
       const byId = new Map();
       for (const b of balances || []) byId.set(b.seller_id, b);
 
-      const rows = (sellers || []).map((s) => {
-        const b = byId.get(s.user_id) || null;
-        return {
-          seller_id: s.user_id,
-          full_name: s.full_name || "-",
-          active: s.active !== false,
-          balance: b
-            ? {
-                as_of: b.as_of,
-                cp_acquired_n: Number(b.cp_acquired_n || 0),
-                cp_taken_n: Number(b.cp_taken_n || 0),
-                cp_remaining_n: Number(b.cp_remaining_n || 0),
-                cp_acquired_n1: Number(b.cp_acquired_n1 || 0),
-                cp_taken_n1: Number(b.cp_taken_n1 || 0),
-                cp_remaining_n1: Number(b.cp_remaining_n1 || 0),
-              }
-            : null,
-        };
-      });
+      const rows = sellers
+        .map((s) => {
+          const b = byId.get(s.user_id) || null;
+          return {
+            seller_id: s.user_id,
+            full_name: s.full_name || "-",
+            active: s.active !== false,
+            balance: b
+              ? {
+                  as_of: b.as_of,
+                  cp_acquired_n: Number(b.cp_acquired_n || 0),
+                  cp_taken_n: Number(b.cp_taken_n || 0),
+                  cp_remaining_n: Number(b.cp_remaining_n || 0),
+                  cp_acquired_n1: Number(b.cp_acquired_n1 || 0),
+                  cp_taken_n1: Number(b.cp_taken_n1 || 0),
+                  cp_remaining_n1: Number(b.cp_remaining_n1 || 0),
+                }
+              : null,
+          };
+        })
+        .sort((a, b) => (a.full_name || "").localeCompare(b.full_name || "", "fr", { sensitivity: "base" }));
 
       return json(res, 200, { ok: true, rows });
     } catch (e) {
@@ -151,7 +188,10 @@ export default async function handler(req, res) {
         updated_by: user.id,
       };
 
-      const { error: upErr } = await sbAdmin.from("leave_balances").upsert(payload, { onConflict: "seller_id" });
+      const { error: upErr } = await sbAdmin
+        .from("leave_balances")
+        .upsert(payload, { onConflict: "seller_id" });
+
       if (upErr) return json(res, 500, { ok: false, error: upErr.message });
 
       return json(res, 200, { ok: true });

@@ -1,8 +1,8 @@
 // pages/admin/leaves.js
 /* Admin > Congés (soldes bulletin)
-   - Affiche une carte par vendeuse (solde N / N-1)
-   - Permet à l'admin de corriger les compteurs (comme sur la fiche de paie)
-   - Bonus: affiche les congés "approved" à venir pour info
+   - 1 carte par vendeuse (compteurs N / N-1 du bulletin)
+   - Admin peut corriger directement dans l’app
+   - Affiche aussi les congés "approved" à venir (info)
 
    API utilisée:
    - GET/POST /api/admin/leave-balances  (service role côté serveur, sécurisé via Bearer token)
@@ -31,7 +31,6 @@ function parisTodayISO() {
     const d = parts.find((p) => p.type === "day")?.value;
     return `${y}-${m}-${d}`;
   } catch {
-    // fallback (locale)
     try {
       return new Date().toISOString().slice(0, 10);
     } catch {
@@ -56,26 +55,67 @@ function fmtFR(iso) {
 }
 
 function workingDaysSundayExcluded(startIso, endIso) {
-  // jours "ouvrables" simplifiés : lundi..samedi, dimanche exclu
-  // inclusif: start..end
+  // "jours ouvrables" simplifiés : lundi..samedi, dimanche exclu (inclusif)
   try {
     const start = new Date(startIso + "T00:00:00");
     const end = new Date(endIso + "T00:00:00");
-    if (!(start instanceof Date) || !(end instanceof Date)) return 0;
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
     if (end < start) return 0;
 
     let c = 0;
     const d = new Date(start.getTime());
     while (d <= end) {
-      const day = d.getDay(); // 0=dim
-      if (day !== 0) c += 1;
+      if (d.getDay() !== 0) c += 1; // 0=dim
       d.setDate(d.getDate() + 1);
     }
     return c;
   } catch {
     return 0;
   }
+}
+
+async function getAccessTokenFast(session) {
+  const t = session?.access_token;
+  if (t) return t;
+
+  // fallback
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token || "";
+  } catch {
+    return "";
+  }
+}
+
+async function hardLogout(router) {
+  try {
+    await supabase.auth.signOut();
+  } catch {}
+
+  try {
+    await fetch("/api/purge-cookies", { method: "POST" });
+  } catch {}
+
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      if (k === "LAST_OPEN_PATH" || k === "LAST_OPEN_PATH_SUPERVISOR") keysToRemove.push(k);
+      if (k.startsWith("sb-") && k.endsWith("-auth-token")) keysToRemove.push(k);
+    }
+    keysToRemove.forEach((k) => {
+      try {
+        localStorage.removeItem(k);
+      } catch {}
+    });
+  } catch {}
+
+  try {
+    sessionStorage.clear();
+  } catch {}
+
+  router.replace(`/login?stay=1&ts=${Date.now()}`);
 }
 
 export default function AdminLeavesPage() {
@@ -91,95 +131,114 @@ export default function AdminLeavesPage() {
   useEffect(() => {
     if (loading) return;
     if (!session) {
-      r.replace("/login");
+      r.replace("/login?stay=1");
       return;
     }
     if (!isAdmin) r.replace("/app");
   }, [session, loading, isAdmin, r]);
 
   const todayIso = useMemo(() => parisTodayISO(), []);
-  const [rows, setRows] = useState([]); // [{seller_id, full_name, active, balance}]
-  const [upcomingApproved, setUpcomingApproved] = useState({}); // seller_id -> [{start_date,end_date,days}]
+  const [rows, setRows] = useState([]);
+  const [upcomingApproved, setUpcomingApproved] = useState({});
   const [busy, setBusy] = useState(false);
   const [saveBusyId, setSaveBusyId] = useState("");
   const [msg, setMsg] = useState("");
+  const [edit, setEdit] = useState({});
 
-  // Édits locaux
-  const [edit, setEdit] = useState({}); // seller_id -> fields
+  const loadAll = useCallback(
+    async (retry = true) => {
+      setBusy(true);
+      setMsg("");
+      try {
+        const token = await getAccessTokenFast(session);
+        if (!token) {
+          setRows([]);
+          setUpcomingApproved({});
+          setMsg("Session manquante. Recharge la page ou reconnecte-toi.");
+          return;
+        }
 
-  const loadAll = useCallback(async () => {
-    setBusy(true);
-    setMsg("");
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if (!token) {
+        const resp = await fetch("/api/admin/leave-balances", {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+
+        const j = await resp.json().catch(() => ({}));
+
+        // Si la session est expirée, on tente un refresh une fois
+        if (resp.status === 401 && retry) {
+          try {
+            const { data: refreshed } = await supabase.auth.refreshSession();
+            const newToken = refreshed?.session?.access_token;
+            if (newToken) return await loadAll(false);
+          } catch {}
+        }
+
+        if (!resp.ok || !j?.ok) {
+          const errMsg = j?.error || `Erreur API (${resp.status})`;
+          // Si vraiment non autorisé, on force logout
+          if (resp.status === 401) {
+            setMsg(`❌ ${errMsg} (reconnexion requise)`);
+            return;
+          }
+          throw new Error(errMsg);
+        }
+
+        const list = Array.isArray(j?.rows) ? j.rows : [];
+        setRows(list);
+
+        const nextEdit = {};
+        for (const it of list) {
+          const b = it?.balance || null;
+          nextEdit[it.seller_id] = {
+            as_of: (b?.as_of || todayIso).slice(0, 10),
+            cp_acquired_n: b?.cp_acquired_n ?? 0,
+            cp_taken_n: b?.cp_taken_n ?? 0,
+            cp_remaining_n: b?.cp_remaining_n ?? 0,
+            cp_acquired_n1: b?.cp_acquired_n1 ?? 0,
+            cp_taken_n1: b?.cp_taken_n1 ?? 0,
+            cp_remaining_n1: b?.cp_remaining_n1 ?? 0,
+          };
+        }
+        setEdit(nextEdit);
+
+        // Bonus: congés approuvés à venir (on tente via client, et on ignore si RLS)
+        try {
+          const { data: leaves, error } = await supabase
+            .from("leaves")
+            .select("seller_id,start_date,end_date,status")
+            .eq("status", "approved")
+            .gte("end_date", todayIso)
+            .order("start_date", { ascending: true });
+
+          if (!error) {
+            const map = {};
+            for (const l of leaves || []) {
+              if (!map[l.seller_id]) map[l.seller_id] = [];
+              map[l.seller_id].push({
+                start_date: l.start_date,
+                end_date: l.end_date,
+                days: workingDaysSundayExcluded(l.start_date, l.end_date),
+              });
+            }
+            setUpcomingApproved(map);
+          } else {
+            setUpcomingApproved({});
+          }
+        } catch {
+          setUpcomingApproved({});
+        }
+      } catch (e) {
+        console.error(e);
+        setMsg(`❌ ${e?.message || "Erreur de chargement"}`);
         setRows([]);
         setUpcomingApproved({});
-        return;
+      } finally {
+        setBusy(false);
       }
-
-      const resp = await fetch("/api/admin/leave-balances", {
-        headers: { Authorization: `Bearer ${token}` },
-        cache: "no-store",
-      });
-
-      const j = await resp.json().catch(() => ({}));
-      if (!resp.ok || !j?.ok) {
-        throw new Error(j?.error || `Erreur API (${resp.status})`);
-      }
-
-      const list = Array.isArray(j?.rows) ? j.rows : [];
-      setRows(list);
-
-      // Initialise les champs d'édition à partir des balances existantes
-      const nextEdit = {};
-      for (const it of list) {
-        const b = it?.balance || null;
-        nextEdit[it.seller_id] = {
-          as_of: (b?.as_of || todayIso).slice(0, 10),
-          cp_acquired_n: b?.cp_acquired_n ?? 0,
-          cp_taken_n: b?.cp_taken_n ?? 0,
-          cp_remaining_n: b?.cp_remaining_n ?? 0,
-          cp_acquired_n1: b?.cp_acquired_n1 ?? 0,
-          cp_taken_n1: b?.cp_taken_n1 ?? 0,
-          cp_remaining_n1: b?.cp_remaining_n1 ?? 0,
-        };
-      }
-      setEdit(nextEdit);
-
-      // Bonus: congés approuvés à venir (pour info) via client (admin a déjà les droits dans ton app)
-      const { data: leaves, error } = await supabase
-        .from("leaves")
-        .select("seller_id,start_date,end_date,status")
-        .eq("status", "approved")
-        .gte("end_date", todayIso)
-        .order("start_date", { ascending: true });
-
-      if (!error) {
-        const map = {};
-        for (const l of leaves || []) {
-          if (!map[l.seller_id]) map[l.seller_id] = [];
-          map[l.seller_id].push({
-            start_date: l.start_date,
-            end_date: l.end_date,
-            days: workingDaysSundayExcluded(l.start_date, l.end_date),
-          });
-        }
-        setUpcomingApproved(map);
-      } else {
-        // Ne casse pas la page si RLS différente sur un env
-        setUpcomingApproved({});
-      }
-    } catch (e) {
-      console.error(e);
-      setMsg(e?.message || "Erreur de chargement");
-      setRows([]);
-      setUpcomingApproved({});
-    } finally {
-      setBusy(false);
-    }
-  }, [todayIso]);
+    },
+    [session, todayIso]
+  );
 
   useEffect(() => {
     if (!session || !isAdmin) return;
@@ -189,10 +248,7 @@ export default function AdminLeavesPage() {
   const setField = useCallback((sellerId, key, value) => {
     setEdit((prev) => ({
       ...prev,
-      [sellerId]: {
-        ...(prev[sellerId] || {}),
-        [key]: value,
-      },
+      [sellerId]: { ...(prev[sellerId] || {}), [key]: value },
     }));
   }, []);
 
@@ -215,58 +271,62 @@ export default function AdminLeavesPage() {
     });
   }, []);
 
-  const saveOne = useCallback(async (sellerId) => {
-    setSaveBusyId(sellerId);
-    setMsg("");
-    try {
-      const { data } = await supabase.auth.getSession();
-      const token = data?.session?.access_token;
-      if (!token) throw new Error("Session expirée");
+  const saveOne = useCallback(
+    async (sellerId) => {
+      setSaveBusyId(sellerId);
+      setMsg("");
+      try {
+        const token = await getAccessTokenFast(session);
+        if (!token) throw new Error("Session manquante (reconnecte-toi)");
 
-      const cur = edit[sellerId] || {};
-      const payload = {
-        seller_id: sellerId,
-        as_of: String(cur.as_of || todayIso).slice(0, 10),
+        const cur = edit[sellerId] || {};
+        const payload = {
+          seller_id: sellerId,
+          as_of: String(cur.as_of || todayIso).slice(0, 10),
 
-        cp_acquired_n: safeNum(cur.cp_acquired_n),
-        cp_taken_n: safeNum(cur.cp_taken_n),
-        cp_remaining_n: safeNum(cur.cp_remaining_n),
+          cp_acquired_n: safeNum(cur.cp_acquired_n),
+          cp_taken_n: safeNum(cur.cp_taken_n),
+          cp_remaining_n: safeNum(cur.cp_remaining_n),
 
-        cp_acquired_n1: safeNum(cur.cp_acquired_n1),
-        cp_taken_n1: safeNum(cur.cp_taken_n1),
-        cp_remaining_n1: safeNum(cur.cp_remaining_n1),
-      };
+          cp_acquired_n1: safeNum(cur.cp_acquired_n1),
+          cp_taken_n1: safeNum(cur.cp_taken_n1),
+          cp_remaining_n1: safeNum(cur.cp_remaining_n1),
+        };
+        if (!payload.as_of) throw new Error("Date bulletin (as_of) manquante");
 
-      if (!payload.as_of) throw new Error("Date (as_of) manquante");
+        const resp = await fetch("/api/admin/leave-balances", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload),
+        });
 
-      const resp = await fetch("/api/admin/leave-balances", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify(payload),
-      });
-      const j = await resp.json().catch(() => ({}));
-      if (!resp.ok || !j?.ok) throw new Error(j?.error || `Erreur API (${resp.status})`);
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || !j?.ok) {
+          const errMsg = j?.error || `Erreur API (${resp.status})`;
+          if (resp.status === 401) throw new Error(`${errMsg} (reconnexion requise)`);
+          throw new Error(errMsg);
+        }
 
-      setMsg("✅ Enregistré.");
-      // Refresh léger: remonte ce qu'on a vraiment en base
-      await loadAll();
-    } catch (e) {
-      console.error(e);
-      setMsg(`❌ ${e?.message || "Erreur d’enregistrement"}`);
-    } finally {
-      setSaveBusyId("");
-    }
-  }, [edit, todayIso, loadAll]);
+        setMsg("✅ Enregistré.");
+        await loadAll(false);
+      } catch (e) {
+        console.error(e);
+        setMsg(`❌ ${e?.message || "Erreur d’enregistrement"}`);
+      } finally {
+        setSaveBusyId("");
+      }
+    },
+    [session, edit, todayIso, loadAll]
+  );
 
   const [signingOut, setSigningOut] = useState(false);
   const signOut = useCallback(async () => {
     if (signingOut) return;
     setSigningOut(true);
     try {
-      await supabase.auth.signOut();
+      await hardLogout(r);
     } finally {
       setSigningOut(false);
-      r.replace("/login");
     }
   }, [r, signingOut]);
 
@@ -288,7 +348,15 @@ export default function AdminLeavesPage() {
           zIndex: 50,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 10,
+            flexWrap: "wrap",
+          }}
+        >
           <div style={{ fontWeight: 800, fontSize: 13, whiteSpace: "nowrap" }}>{BUILD_TAG}</div>
 
           <div className="flex items-center gap-2 flex-wrap">
@@ -296,7 +364,7 @@ export default function AdminLeavesPage() {
               <a className="btn">⬅️ Retour</a>
             </Link>
 
-            <button type="button" className="btn" onClick={loadAll} disabled={busy}>
+            <button type="button" className="btn" onClick={() => loadAll()} disabled={busy}>
               {busy ? "Rafraîchissement…" : "🔄 Rafraîchir"}
             </button>
 
@@ -317,17 +385,28 @@ export default function AdminLeavesPage() {
         <div className="card">
           <div className="hdr mb-2">🏖️ Congés (soldes bulletin)</div>
           <div className="text-sm text-gray-700">
-            Ici tu corriges les compteurs <b>comme sur la fiche de paie</b>. L’appli déduit ensuite automatiquement les congés
-            <b> approuvés</b> (prévisionnel côté vendeuse).
+            Ici tu corriges les compteurs <b>exactement comme sur la fiche de paie</b>. L’appli déduit ensuite
+            automatiquement les congés <b>approuvés</b> (prévisionnel côté vendeuse).
           </div>
           {msg ? (
-            <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 12, border: "1px solid #e5e7eb" }}>{msg}</div>
+            <div
+              style={{
+                marginTop: 10,
+                padding: "10px 12px",
+                borderRadius: 12,
+                border: "1px solid #e5e7eb",
+              }}
+            >
+              {msg}
+            </div>
           ) : null}
         </div>
 
         {rows.length === 0 ? (
           <div className="card">
-            <div className="text-sm text-gray-600">{busy ? "Chargement…" : "Aucune vendeuse trouvée."}</div>
+            <div className="text-sm text-gray-600">
+              {busy ? "Chargement…" : "Aucune vendeuse trouvée (vérifie profiles.role='seller' ou RPC list_sellers)."}
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -443,7 +522,10 @@ export default function AdminLeavesPage() {
                       </ul>
                     </div>
                   ) : (
-                    <div style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 10 }} className="text-sm text-gray-600">
+                    <div
+                      style={{ marginTop: 12, borderTop: "1px solid #e5e7eb", paddingTop: 10 }}
+                      className="text-sm text-gray-600"
+                    >
                       Aucun congé approuvé à venir.
                     </div>
                   )}

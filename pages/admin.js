@@ -299,12 +299,43 @@ export default function AdminPage() {
           await navigator.clearAppBadge();
         } catch {}
       }
-      await supabase.auth.signOut();
+
+      // 1) Supabase signOut
+      try {
+        await supabase.auth.signOut();
+      } catch {}
+
+      // 2) Purge cookies côté serveur (si l’endpoint existe)
+      try {
+        await fetch("/api/purge-cookies", { method: "POST" });
+      } catch {}
+
+      // 3) Nettoyage localStorage/sessionStorage (anti “clignotement” / redirection auto)
+      try {
+        const keysToRemove = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (!k) continue;
+          if (k === "LAST_OPEN_PATH" || k === "LAST_OPEN_PATH_SUPERVISOR") keysToRemove.push(k);
+          if (k.startsWith("sb-") && k.endsWith("-auth-token")) keysToRemove.push(k); // supabase auth token
+        }
+        keysToRemove.forEach((k) => {
+          try {
+            localStorage.removeItem(k);
+          } catch {}
+        });
+      } catch {}
+
+      try {
+        sessionStorage.clear();
+      } catch {}
     } finally {
       setSigningOut(false);
-      r.replace("/login");
+      // Ajoute ts pour éviter cache/service worker
+      r.replace(`/login?stay=1&ts=${Date.now()}`);
     }
   }, [r, signingOut]);
+
 
   /* Vendeuses (RPC list_sellers → fallback profiles SANS boucler) */
   const loadSellers = useCallback(async () => {
@@ -1675,13 +1706,6 @@ const deleteHandover = useCallback(
 
                         <a className="btn" href="/admin/supervisors">🖥️ Superviseur</a>
 
-
-                        <Link href="/admin/leaves" legacyBehavior>
-                          <a className="btn" title="Congés (soldes bulletin + corrections)">
-                            🏖️ Congés
-                          </a>
-                        </Link>
-
                         {/* ✅ Bouton UNIQUE en haut + badge rouge type notification */}
                         <Link href="/admin/monthly-hours" legacyBehavior>
                           <a className="btn" title="Validation des heures mensuelles" style={{ position: "relative", overflow: "visible" }}>
@@ -1715,6 +1739,10 @@ const deleteHandover = useCallback(
                               </span>
                             ) : null}
                           </a>
+                        </Link>
+
+                        <Link href="/admin/leaves" legacyBehavior>
+                          <a className="btn">🏖️ Congés</a>
                         </Link>
           </div>
 
