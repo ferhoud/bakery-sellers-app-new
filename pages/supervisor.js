@@ -636,7 +636,7 @@ export default function SupervisorPage() {
 
             <div style={{ height: 14 }} />
 
-            <div className="card">
+            <div className={`card ${!teamLoading && !teamErr && teamItems.length > 0 ? "team-info-alert" : ""}`}>
               <div className="hdr">Infos équipe</div>
               <div style={{ height: 10 }} />
 
@@ -747,6 +747,27 @@ export default function SupervisorPage() {
           </>
         )}
       </div>
+
+      <style jsx global>{`
+        @keyframes teamInfoBlink {
+          0%, 100% {
+            box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+            border-color: rgba(239, 68, 68, 0.45);
+          }
+          50% {
+            box-shadow: 0 0 0 5px rgba(239, 68, 68, 0.18);
+            border-color: rgba(239, 68, 68, 0.95);
+          }
+        }
+        .team-info-alert {
+          border: 2px solid rgba(239, 68, 68, 0.6) !important;
+          background: rgba(239, 68, 68, 0.06) !important;
+          animation: teamInfoBlink 1.1s infinite;
+        }
+        .team-info-alert .hdr {
+          color: rgb(185, 28, 28);
+        }
+      `}</style>
     </>
   );
 }
