@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import Head from "next/head";
 import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
+import { isAdminEmail } from "../lib/admin"; // <- important (si ton projet utilise "@/lib/admin", adapte le chemin)
 
 function safeStr(x) {
   return (x ?? "").toString();
@@ -51,7 +52,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  async function getRole(accessToken) {
+  async function getRoleFromApi(accessToken) {
     const r = await fetch("/api/role", {
       headers: { Authorization: `Bearer ${accessToken}` },
       cache: "no-store",
@@ -65,6 +66,19 @@ export default function LoginPage() {
     return (j?.role || "seller").toString().toLowerCase();
   }
 
+  // Rôle: admin d’abord (local, fiable), sinon API role
+  async function resolveRole({ accessToken, userEmail }) {
+    const em = (userEmail || "").toString().trim().toLowerCase();
+    if (em && isAdminEmail(em)) return "admin";
+
+    try {
+      return await getRoleFromApi(accessToken);
+    } catch (e) {
+      // fallback si API indispo: au pire "seller"
+      return "seller";
+    }
+  }
+
   async function signOutAndStay(message) {
     try {
       await supabase.auth.signOut();
@@ -72,16 +86,19 @@ export default function LoginPage() {
     if (message) setErr(message);
   }
 
-  async function redirectAfterLogin(accessToken) {
-    const role = await getRole(accessToken);
+  async function redirectAfterLogin({ accessToken, userEmail }) {
+    const role = await resolveRole({ accessToken, userEmail });
 
     // Mode tablette/kiosk : on n'autorise QUE le superviseur
     if (kiosk) {
       if (role !== "supervisor") {
-        await signOutAndStay("Cette tablette est réservée au superviseur. Veuillez vous connecter avec le compte superviseur.");
+        await signOutAndStay(
+          "Cette tablette est réservée au superviseur. Veuillez vous connecter avec le compte superviseur."
+        );
         return;
       }
-      const dest = nextPath && nextPath.startsWith("/supervisor") ? nextPath : "/supervisor/checkin?stay=1";
+      const dest =
+        nextPath && nextPath.startsWith("/supervisor") ? nextPath : "/supervisor/checkin?stay=1";
       router.replace(dest);
       return;
     }
@@ -102,14 +119,18 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
+      const em = email.trim();
+
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+        email: em,
         password,
       });
 
       if (error) throw error;
 
       const token = data?.session?.access_token;
+      const userEmail = data?.session?.user?.email || em;
+
       if (!token) throw new Error("Session manquante");
 
       if (stay) {
@@ -118,7 +139,7 @@ export default function LoginPage() {
         window.history.replaceState({}, "", url.toString());
       }
 
-      await redirectAfterLogin(token);
+      await redirectAfterLogin({ accessToken: token, userEmail });
     } catch (e2) {
       setErr(e2?.message || "Erreur de connexion");
     } finally {
@@ -131,10 +152,11 @@ export default function LoginPage() {
     (async () => {
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
+      const userEmail = data?.session?.user?.email || "";
       if (!token) return;
 
       try {
-        await redirectAfterLogin(token);
+        await redirectAfterLogin({ accessToken: token, userEmail });
       } catch {
         // ignore
       }
