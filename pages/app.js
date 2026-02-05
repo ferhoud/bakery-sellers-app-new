@@ -1924,6 +1924,12 @@ useEffect(() => {
   const showLoading = !authChecked || !plannerChecked || !apiRoleChecked;
   const showNeedAuth = !userId && authChecked;
 
+  const teamAbsList = Array.isArray(teamEvents?.absences) ? teamEvents.absences : [];
+  const teamLeavesList = Array.isArray(teamEvents?.leaves) ? teamEvents.leaves : [];
+  const teamEventsCount = teamAbsList.length + teamLeavesList.length;
+  const teamBlink = teamEventsCount > 0 && !teamEventsLoading && !teamEventsErr;
+
+
   if (showLoading) {
     return <div className="p-4">Chargement...</div>;
   }
@@ -2029,10 +2035,13 @@ useEffect(() => {
         })()}
 
       {role !== "admin" && (
-        <div className="card">
+        <div
+          className={`card ${teamBlink ? "animate-pulse" : ""}`}
+          style={teamBlink ? { border: "2px solid #ef4444", backgroundColor: "#fff1f2" } : undefined}
+        >
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="hdr">Infos équipe</div>
+              <div className="hdr">Infos équipe{teamEventsCount > 0 ? ` (${teamEventsCount})` : ""}</div>
               <div className="text-xs text-gray-500">Absences et congés à venir (affichés jusqu’à la date de fin)</div>
             </div>
             <button className="btn" onClick={loadTeamEvents} disabled={teamEventsLoading}>
