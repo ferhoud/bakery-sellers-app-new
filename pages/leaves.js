@@ -15,28 +15,72 @@ function parseIso(iso) {
   }
 }
 
-function daysInclusive(startIso, endIso) {
-  const a = parseIso(startIso);
-  const b = parseIso(endIso);
-  if (!a || !b) return 0;
-  const ms = b.getTime() - a.getTime();
-  const d = Math.floor(ms / (24 * 60 * 60 * 1000));
-  return d >= 0 ? d + 1 : 0;
-}
-
 function fmtFr(iso) {
   const d = parseIso(iso);
   if (!d) return String(iso || "—");
   return d.toLocaleDateString("fr-FR");
 }
 
-function fmtDays(x) {
-  const n = Number(x);
-  if (!Number.isFinite(n)) return "0.00";
-  // Keep 2 decimals like the payslip
-  return n.toFixed(2);
+function addDaysIso(iso, n) {
+  const d = parseIso(iso);
+  if (!d) return iso;
+  d.setDate(d.getDate() + n);
+  return fmtISODate(d);
 }
 
+// Jours ouvrables: Lundi → Samedi (dimanche exclu). (Sans gestion des jours fériés pour l'instant)
+function daysOuvrablesInclusive(startIso, endIso) {
+  const a = parseIso(startIso);
+  const b = parseIso(endIso);
+  if (!a || !b) return 0;
+  if (b.getTime() < a.getTime()) return 0;
+
+  let count = 0;
+  const cur = new Date(a.getTime());
+  while (cur.getTime() <= b.getTime()) {
+    if (cur.getDay() !== 0) count += 1; // 0 = dimanche
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+// Overlap en jours ouvrables sur une fenêtre [windowStart..windowEnd] inclusive
+function overlapOuvrables(leaveStartIso, leaveEndIso, windowStart, windowEnd) {
+  const a = parseIso(leaveStartIso);
+  const b = parseIso(leaveEndIso);
+  if (!a || !b) return 0;
+
+  const s = new Date(Math.max(a.getTime(), windowStart.getTime()));
+  const e = new Date(Math.min(b.getTime(), windowEnd.getTime()));
+  if (e.getTime() < s.getTime()) return 0;
+
+  let count = 0;
+  const cur = new Date(s.getTime());
+  while (cur.getTime() <= e.getTime()) {
+    if (cur.getDay() !== 0) count += 1;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+function computeYearMonthBreakdownOuvrables(approvedLeaves, year) {
+  const months = Array.from({ length: 12 }).map((_, m) => {
+    const start = new Date(year, m, 1);
+    const end = new Date(year, m + 1, 0);
+    let days = 0;
+    for (const l of approvedLeaves) {
+      days += overlapOuvrables(l.start_date, l.end_date, start, end);
+    }
+    return {
+      monthIndex: m,
+      label: start.toLocaleDateString("fr-FR", { month: "long" }),
+      days,
+    };
+  });
+
+  const total = months.reduce((s, x) => s + (x.days || 0), 0);
+  return { months, total };
+}
 
 function statusLabel(s) {
   switch (String(s || "").toLowerCase()) {
@@ -66,36 +110,6 @@ function statusBg(s) {
     default:
       return "#2563eb";
   }
-}
-
-function overlapDays(leaveStartIso, leaveEndIso, windowStart, windowEnd) {
-  const a = parseIso(leaveStartIso);
-  const b = parseIso(leaveEndIso);
-  if (!a || !b) return 0;
-  const s = new Date(Math.max(a.getTime(), windowStart.getTime()));
-  const e = new Date(Math.min(b.getTime(), windowEnd.getTime()));
-  if (e.getTime() < s.getTime()) return 0;
-  const ms = e.getTime() - s.getTime();
-  return Math.floor(ms / (24 * 60 * 60 * 1000)) + 1;
-}
-
-function computeYearMonthBreakdown(approvedLeaves, year) {
-  const months = Array.from({ length: 12 }).map((_, m) => {
-    const start = new Date(year, m, 1);
-    const end = new Date(year, m + 1, 0);
-    let days = 0;
-    for (const l of approvedLeaves) {
-      days += overlapDays(l.start_date, l.end_date, start, end);
-    }
-    return {
-      monthIndex: m,
-      label: start.toLocaleDateString("fr-FR", { month: "long" }),
-      days,
-    };
-  });
-
-  const total = months.reduce((s, x) => s + (x.days || 0), 0);
-  return { months, total };
 }
 
 export default function LeavesPage() {
@@ -226,7 +240,8 @@ export default function LeavesPage() {
         k.includes("supabase") ||
         k.includes("auth-token") ||
         k.includes("token") ||
-        k.includes("refresh");
+        k.includes("refresh") ||
+        k.includes("LAST_OPEN_PATH"); // évite les boucles
 
       collectKeys(ls).forEach((k) => {
         if (shouldRemove(k)) ls.removeItem(k);
@@ -239,53 +254,53 @@ export default function LeavesPage() {
     window.location.replace("/login?stay=1&next=/leaves");
   }, []);
 
-  // Data
+  // Data: demandes congés
   const [leaves, setLeaves] = useState([]);
   const [loadErr, setLoadErr] = useState("");
   const [loading, setLoading] = useState(false);
-const [balance, setBalance] = useState(null);
-const [balanceErr, setBalanceErr] = useState("");
-const [balanceLoading, setBalanceLoading] = useState(false);
 
+  // Solde bulletin (table leave_balances)
+  const [balance, setBalance] = useState(null);
+  const [balanceErr, setBalanceErr] = useState("");
+  const [balanceLoading, setBalanceLoading] = useState(false);
 
-// Garde-fou "token invalide / session expirée"
-const [sessionExpired, setSessionExpired] = useState(false);
-const [sessionExpiredMsg, setSessionExpiredMsg] = useState("");
+  // Garde-fou "token invalide / session expirée"
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const [sessionExpiredMsg, setSessionExpiredMsg] = useState("");
 
-const markSessionExpired = useCallback(async (msg) => {
-  setSessionExpired(true);
-  setSessionExpiredMsg(msg || "Session expirée. Veuillez vous reconnecter.");
-  try {
-    await supabase.auth.signOut();
-  } catch (_) {}
-}, []);
+  const markSessionExpired = useCallback(async (msg) => {
+    setSessionExpired(true);
+    setSessionExpiredMsg(msg || "Session expirée. Veuillez vous reconnecter.");
+    try {
+      await supabase.auth.signOut();
+    } catch (_) {}
+  }, []);
 
-const isLikelyAuthError = (x) => {
-  const s = String(x || "").toLowerCase();
-  return (
-    s.includes("invalid token") ||
-    s.includes("invalid jwt") ||
-    s.includes("jwt expired") ||
-    s.includes("token expired") ||
-    s.includes("session expired") ||
-    s.includes("expired") ||
-    s.includes("auth")
+  const isLikelyAuthError = (x) => {
+    const s = String(x || "").toLowerCase();
+    return (
+      s.includes("invalid token") ||
+      s.includes("invalid jwt") ||
+      s.includes("jwt expired") ||
+      s.includes("token expired") ||
+      s.includes("session expired") ||
+      s.includes("expired") ||
+      s.includes("auth")
+    );
+  };
+
+  const handleAuthResponse = useCallback(
+    async (resp, j) => {
+      if (!resp) return false;
+      const err = j?.error || j?.message || "";
+      if (resp.status === 401 || isLikelyAuthError(err)) {
+        await markSessionExpired("Session expirée. Veuillez vous reconnecter.");
+        return true;
+      }
+      return false;
+    },
+    [markSessionExpired]
   );
-};
-
-const handleAuthResponse = useCallback(
-  async (resp, j) => {
-    if (!resp) return false;
-    const err = j?.error || j?.message || "";
-    if (resp.status === 401 || isLikelyAuthError(err)) {
-      await markSessionExpired("Session expirée. Veuillez vous reconnecter.");
-      return true;
-    }
-    return false;
-  },
-  [markSessionExpired]
-);
-
 
   const loadMyLeaves = useCallback(async () => {
     if (!userId) return;
@@ -312,37 +327,28 @@ const handleAuthResponse = useCallback(
     }
   }, [userId, handleAuthResponse]);
 
-const loadMyBalance = useCallback(async () => {
-  if (!userId) return;
-  setBalanceErr("");
-  setBalanceLoading(true);
-  try {
-    const { data: s } = await supabase.auth.getSession();
-    const token = s?.session?.access_token || "";
-    const resp = await fetch("/api/leaves/balance", {
-      method: "GET",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const j = await resp.json().catch(() => ({}));
-    if (await handleAuthResponse(resp, j)) return;
+  const loadMyBalance = useCallback(async () => {
+    if (!userId) return;
+    setBalanceErr("");
+    setBalanceLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("leave_balances")
+        .select(
+          "as_of, cp_acquired_n, cp_taken_n, cp_remaining_n, cp_acquired_n1, cp_taken_n1, cp_remaining_n1"
+        )
+        .eq("seller_id", userId)
+        .maybeSingle();
 
-    if (!resp.ok) {
-      if (resp.status === 404) {
-        setBalance(null);
-        return;
-      }
-      throw new Error(j?.error || "Impossible de charger le solde CP.");
+      if (error) throw error;
+      setBalance(data || null);
+    } catch (e) {
+      setBalance(null);
+      setBalanceErr(e?.message || "Impossible de charger le solde (bulletin).");
+    } finally {
+      setBalanceLoading(false);
     }
-
-    setBalance(j?.balance || null);
-  } catch (e) {
-    setBalance(null);
-    setBalanceErr(e?.message || "Impossible de charger le solde CP.");
-  } finally {
-    setBalanceLoading(false);
-  }
-}, [userId, handleAuthResponse]);
-
+  }, [userId]);
 
   useEffect(() => {
     loadMyLeaves();
@@ -400,16 +406,59 @@ const loadMyBalance = useCallback(async () => {
       setMsg("✅ Demande envoyée. Elle apparaîtra ici avec le statut « En attente ».");
       setReason("");
       await loadMyLeaves();
+      // Le solde bulletin ne bouge pas tout seul, mais la prévision oui (car basée sur la liste)
     } catch (e2) {
       setMsg(`❌ ${e2?.message || "Impossible d'envoyer la demande."}`);
     } finally {
       setBusy(false);
     }
-  }, [userId, startDate, endDate, reason, todayIso, loadMyLeaves]);
+  }, [userId, startDate, endDate, reason, todayIso, loadMyLeaves, handleAuthResponse]);
 
-  const approved = useMemo(() => leaves.filter((l) => String(l.status).toLowerCase() === "approved"), [leaves]);
+  const approved = useMemo(
+    () => leaves.filter((l) => String(l.status).toLowerCase() === "approved"),
+    [leaves]
+  );
+
+  // Solde officiel bulletin
+  const official = useMemo(() => {
+    if (!balance) return null;
+    const n = Number(balance.cp_remaining_n || 0) || 0;
+    const n1 = Number(balance.cp_remaining_n1 || 0) || 0;
+    return {
+      as_of: balance.as_of || null,
+      remaining_n: n,
+      remaining_n1: n1,
+      total_remaining: n + n1,
+      acquired_n: Number(balance.cp_acquired_n || 0) || 0,
+      taken_n: Number(balance.cp_taken_n || 0) || 0,
+      acquired_n1: Number(balance.cp_acquired_n1 || 0) || 0,
+      taken_n1: Number(balance.cp_taken_n1 || 0) || 0,
+    };
+  }, [balance]);
+
+  // Prévision automatique : on déduit uniquement les congés approuvés APRÈS la date "as_of" du bulletin.
+  const forecast = useMemo(() => {
+    const asOf = official?.as_of || todayIso;
+    const startIso = addDaysIso(asOf, 1);
+    const start = parseIso(startIso);
+    if (!start) return { startIso, approvedFutureDays: 0, estimatedRemaining: null };
+    const farEnd = new Date(2099, 11, 31);
+
+    let total = 0;
+    for (const l of approved) {
+      // On ne compte que la partie après startIso
+      total += overlapOuvrables(l.start_date, l.end_date, start, farEnd);
+    }
+
+    const est = official ? official.total_remaining - total : null;
+    return { startIso, approvedFutureDays: total, estimatedRemaining: est };
+  }, [approved, official, todayIso]);
+
   const nowYear = new Date().getFullYear();
-  const breakdown = useMemo(() => computeYearMonthBreakdown(approved, nowYear), [approved, nowYear]);
+  const breakdown = useMemo(
+    () => computeYearMonthBreakdownOuvrables(approved, nowYear),
+    [approved, nowYear]
+  );
 
   return (
     <div className="p-4 max-w-4xl mx-auto space-y-6">
@@ -433,80 +482,95 @@ const loadMyBalance = useCallback(async () => {
         </div>
       </div>
 
+      {sessionExpired && (
+        <div className="card border-red-300 bg-red-50">
+          <div className="hdr text-red-700">Session expirée</div>
+          <div className="text-sm text-red-700">
+            {sessionExpiredMsg || "Votre session a expiré. Reconnectez-vous pour continuer."}
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <button className="btn" onClick={() => window.location.replace("/login?stay=1&next=/leaves")}>
+              Se reconnecter
+            </button>
+            <button className="btn" onClick={() => setSessionExpired(false)}>
+              Fermer
+            </button>
+          </div>
+        </div>
+      )}
 
-{sessionExpired && (
-  <div className="card border-red-300 bg-red-50">
-    <div className="hdr text-red-700">Session expirée</div>
-    <div className="text-sm text-red-700">
-      {sessionExpiredMsg || "Votre session a expiré. Reconnectez-vous pour continuer."}
-    </div>
-    <div className="mt-3 flex items-center gap-2">
-      <button
-        className="btn"
-        onClick={() => window.location.replace("/login?stay=1&next=/leaves")}
-      >
-        Se reconnecter
-      </button>
-      <button className="btn" onClick={() => setSessionExpired(false)}>
-        Fermer
-      </button>
-    </div>
-  </div>
-)}
-
-
-
-<div className="card">
-  <div className="flex items-center justify-between mb-2">
-    <div className="hdr">Solde congés payés (bulletin de paie)</div>
-    <button className="btn" onClick={loadMyBalance} disabled={balanceLoading}>
-      {balanceLoading ? "Chargement..." : "Rafraîchir"}
-    </button>
-  </div>
-
-  {balanceErr ? <div className="text-sm text-red-600 mb-2">{balanceErr}</div> : null}
-
-  {!balance ? (
-    <div className="text-sm text-gray-700">
-      Solde non renseigné pour l'instant. (L’admin doit saisir les compteurs « CP N-1 / CP N » depuis le bulletin.)
-    </div>
-  ) : (
-    <>
-      <div className="text-sm text-gray-700 mb-3">
-        Mise à jour (fiche de paie) : <span className="font-medium">{fmtFr(balance.as_of)}</span>
-        {" • "}
-        Restant total :{" "}
-        <span className="font-medium">
-          {fmtDays((Number(balance.cp_remaining_n || 0) || 0) + (Number(balance.cp_remaining_n1 || 0) || 0))}
-        </span>{" "}
-        jour(s)
-      </div>
-
-      <div className="grid md:grid-cols-2 gap-3">
-        <div className="border rounded-2xl p-3">
-          <div className="text-sm font-medium mb-2">CP N-1</div>
-          <div className="text-sm flex items-center justify-between"><span>Acquis</span><span className="font-medium">{fmtDays(balance.cp_acquired_n1)}</span></div>
-          <div className="text-sm flex items-center justify-between"><span>Total pris</span><span className="font-medium">{fmtDays(balance.cp_taken_n1)}</span></div>
-          <div className="text-sm flex items-center justify-between"><span>Solde</span><span className="font-medium">{fmtDays(balance.cp_remaining_n1)}</span></div>
+      {/* Bloc solde CP */}
+      <div className="card">
+        <div className="flex items-center justify-between">
+          <div className="hdr">Solde congés payés</div>
+          <button className="btn" onClick={() => loadMyBalance()} disabled={balanceLoading}>
+            {balanceLoading ? "Chargement..." : "Rafraîchir"}
+          </button>
         </div>
 
-        <div className="border rounded-2xl p-3">
-          <div className="text-sm font-medium mb-2">CP N</div>
-          <div className="text-sm flex items-center justify-between"><span>Acquis</span><span className="font-medium">{fmtDays(balance.cp_acquired_n)}</span></div>
-          <div className="text-sm flex items-center justify-between"><span>Total pris</span><span className="font-medium">{fmtDays(balance.cp_taken_n)}</span></div>
-          <div className="text-sm flex items-center justify-between"><span>Solde</span><span className="font-medium">{fmtDays(balance.cp_remaining_n)}</span></div>
+        <div className="text-xs text-gray-500 mt-1">
+          Compteur basé sur le bulletin (officiel) + prévision automatique selon les congés approuvés dans l'application.
+          (Calcul en jours ouvrables: lundi → samedi, dimanche exclu.)
         </div>
+
+        {balanceErr ? <div className="text-sm text-red-600 mt-2">{balanceErr}</div> : null}
+
+        {!official ? (
+          <div className="text-sm text-gray-700 mt-3">
+            Solde bulletin non renseigné. (L'admin le met à jour quand nécessaire.)
+          </div>
+        ) : (
+          <div className="mt-3 grid md:grid-cols-2 gap-3">
+            <div className="border rounded-2xl p-3">
+              <div className="text-sm font-medium">Officiel (bulletin)</div>
+              <div className="text-xs text-gray-600 mt-1">
+                Mis à jour au {official.as_of ? fmtFr(official.as_of) : "—"}
+              </div>
+
+              <div className="mt-3 text-sm grid grid-cols-3 gap-2">
+                <div className="text-gray-600">CP N-1</div>
+                <div className="text-right text-gray-600">Solde</div>
+                <div className="text-right font-medium">{official.remaining_n1.toFixed(2)}</div>
+
+                <div className="text-gray-600">CP N</div>
+                <div className="text-right text-gray-600">Solde</div>
+                <div className="text-right font-medium">{official.remaining_n.toFixed(2)}</div>
+
+                <div className="text-gray-600">Total</div>
+                <div className="text-right text-gray-600">Restant</div>
+                <div className="text-right font-semibold">{official.total_remaining.toFixed(2)}</div>
+              </div>
+            </div>
+
+            <div className="border rounded-2xl p-3">
+              <div className="text-sm font-medium">Prévision (appli)</div>
+              <div className="text-xs text-gray-600 mt-1">
+                Déduit automatiquement les congés approuvés après le {fmtFr(forecast.startIso)}.
+              </div>
+
+              <div className="mt-3 text-sm grid grid-cols-3 gap-2">
+                <div className="text-gray-600">Approuvés à venir</div>
+                <div className="text-right text-gray-600">Jours</div>
+                <div className="text-right font-medium">{forecast.approvedFutureDays}</div>
+
+                <div className="text-gray-600">Reste estimé</div>
+                <div className="text-right text-gray-600">Jours</div>
+                <div className="text-right font-semibold">
+                  {forecast.estimatedRemaining === null ? "—" : forecast.estimatedRemaining.toFixed(2)}
+                </div>
+              </div>
+
+              <div className="text-xs text-gray-500 mt-2">
+                Si le reste estimé ne colle pas avec la paie: l'admin met à jour le bulletin, et la prévision se recalera toute
+                seule.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="text-xs text-gray-500 mt-3">
-        Astuce : on affiche ici les valeurs officielles du bulletin (pas un calcul). Elles restent stables même si la règle change (ouvrables/ouvrés, reports, arrondis…).
-      </div>
-    </>
-  )}
-</div>
-
-<div className="card">
-  <div className="hdr mb-2">Demander un congé</div>
+      <div className="card">
+        <div className="hdr mb-2">Demander un congé</div>
 
         <div className="grid md:grid-cols-3 gap-3 items-end">
           <div>
@@ -537,7 +601,7 @@ const loadMyBalance = useCallback(async () => {
       <div className="card">
         <div className="flex items-center justify-between mb-2">
           <div className="hdr">Mes congés</div>
-          <button className="btn" onClick={loadMyLeaves} disabled={loading}>
+          <button className="btn" onClick={() => { loadMyLeaves(); loadMyBalance(); }} disabled={loading}>
             {loading ? "Chargement..." : "Rafraîchir"}
           </button>
         </div>
@@ -549,7 +613,7 @@ const loadMyBalance = useCallback(async () => {
         ) : (
           <ul className="space-y-2">
             {leaves.map((l) => {
-              const days = daysInclusive(l.start_date, l.end_date);
+              const days = daysOuvrablesInclusive(l.start_date, l.end_date);
               return (
                 <li key={l.id} className="flex items-center justify-between border rounded-2xl p-3">
                   <div className="text-sm">
@@ -572,7 +636,7 @@ const loadMyBalance = useCallback(async () => {
       <div className="card">
         <div className="hdr mb-2">Résumé (congés approuvés)</div>
         <div className="text-sm text-gray-700 mb-3">
-          Année {nowYear} : <span className="font-medium">{breakdown.total}</span> jour{breakdown.total > 1 ? "s" : ""} approuvé{breakdown.total > 1 ? "s" : ""}.
+          Année {nowYear} : <span className="font-medium">{breakdown.total}</span> jour{breakdown.total > 1 ? "s" : ""} ouvrable{breakdown.total > 1 ? "s" : ""} approuvé{breakdown.total > 1 ? "s" : ""}.
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -585,8 +649,7 @@ const loadMyBalance = useCallback(async () => {
         </div>
 
         <div className="text-xs text-gray-500 mt-3">
-          (Pour l'instant : calcul en jours calendaires, basé sur les congés approuvés. On fera ensuite les règles « acquis » et les
-          calculs plus avancés.)
+          Calcul en jours ouvrables (lundi → samedi, dimanche exclu), basé sur les congés approuvés.
         </div>
       </div>
     </div>
