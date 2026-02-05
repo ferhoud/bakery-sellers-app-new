@@ -1675,6 +1675,13 @@ const deleteHandover = useCallback(
 
                         <a className="btn" href="/admin/supervisors">🖥️ Superviseur</a>
 
+
+                        <Link href="/admin/leaves" legacyBehavior>
+                          <a className="btn" title="Congés (soldes bulletin + corrections)">
+                            🏖️ Congés
+                          </a>
+                        </Link>
+
                         {/* ✅ Bouton UNIQUE en haut + badge rouge type notification */}
                         <Link href="/admin/monthly-hours" legacyBehavior>
                           <a className="btn" title="Validation des heures mensuelles" style={{ position: "relative", overflow: "visible" }}>
