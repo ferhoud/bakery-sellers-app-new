@@ -28,6 +28,10 @@ function sanitizeNextForRole(role, nextPath) {
   if (p.startsWith("/api")) return "";
   if (p.startsWith("/login")) return "";
   if (p.startsWith("/logout")) return "";
+  // /app est réservé aux vendeuses: l'admin y est expulsé par sécurité
+  if (role === "admin" && p.startsWith("/app")) return "";
+  // /app n'est pas l'écran superviseur non plus
+  if (role === "supervisor" && p.startsWith("/app")) return "";
   if (p.startsWith("/supervisor") && role !== "supervisor") return "";
   if (p.startsWith("/admin") && role !== "admin") return "";
   return p;
