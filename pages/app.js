@@ -386,6 +386,21 @@ useEffect(() => {
   const [monthDeltaErr, setMonthDeltaErr] = useState("");
   const [monthDeltaUnsupported, setMonthDeltaUnsupported] = useState(false);
 
+  // Bloc "Validation des heures" : réduit du 05 au 27 pour alléger la page,
+  // ouvert par défaut du 28 au 04 (mais toujours ouvrable manuellement).
+  const defaultMonthlyOpen = useMemo(() => {
+    try {
+      const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Paris", day: "2-digit" }).formatToParts(new Date());
+      const d = parseInt(parts.find((p) => p.type === "day")?.value || "0", 10);
+      return d >= 28 || d <= 4;
+    } catch {
+      const d = new Date().getDate();
+      return d >= 28 || d <= 4;
+    }
+  }, []);
+  const [monthlyPanelOpen, setMonthlyPanelOpen] = useState(defaultMonthlyOpen);
+
+
 
   // Validation mensuelle (si RPC existent)
   const monthStartPrev = useMemo(() => {
@@ -1712,8 +1727,9 @@ useEffect(() => {
   }, [userId, role, monthStartPrev, monthEndPrev]);
 
   useEffect(() => {
+    if (!monthlyPanelOpen) return;
     loadPrevMonthDelta();
-  }, [loadPrevMonthDelta]);
+  }, [loadPrevMonthDelta, monthlyPanelOpen]);
 
 
   // Validation mensuelle (si RPC existent)
@@ -1747,8 +1763,9 @@ useEffect(() => {
   }, [userId, monthStartPrev, monthlyUnsupported, role]);
 
   useEffect(() => {
+    if (!monthlyPanelOpen) return;
     ensureMonthlyRow();
-  }, [ensureMonthlyRow]);
+  }, [ensureMonthlyRow, monthlyPanelOpen]);
 
 
   // Recharge simple (utile pour rafraîchir quand l'admin valide/refuse)
@@ -1775,6 +1792,7 @@ useEffect(() => {
 
   // Auto-refresh pendant l'attente de décision admin (évite Ctrl+F5)
   useEffect(() => {
+    if (!monthlyPanelOpen) return;
     if (!userId || role === "admin" || monthlyUnsupported) return;
     if (!monthlyRow) return;
 
@@ -1789,7 +1807,7 @@ useEffect(() => {
     }, 15000);
 
     return () => clearInterval(t);
-  }, [userId, role, monthlyUnsupported, monthlyRow, fetchMonthlyRow]);
+  }, [monthlyPanelOpen, userId, role, monthlyUnsupported, monthlyRow, fetchMonthlyRow]);
 
   // Soumission mensuelle (vendeuse) : on utilise la RPC si elle fonctionne,
   // mais on a un fallback direct en UPDATE pour éviter le cas "admin_status=rejected"
@@ -2356,10 +2374,32 @@ return (
         )}
 
 
-      {role !== "admin" && !monthlyUnsupported && (monthlyLoading || monthlyRow) && (
+      {role !== "admin" && !monthlyUnsupported && (
 
         <div className="card">
-          <div className="hdr mb-2">Validation des heures - {capFirst(monthLabel)}</div>
+          <div className="hdr mb-2" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+            <div>Validation des heures - {capFirst(monthLabel)}</div>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setMonthlyPanelOpen((v) => !v)}
+              style={{ padding: "6px 10px", fontSize: 12, borderRadius: 12 }}
+            >
+              {monthlyPanelOpen ? "Réduire" : "Afficher"}
+            </button>
+          </div>
+
+          {!monthlyPanelOpen ? (
+            <div className="text-sm text-gray-600">
+              <div style={{ fontWeight: 600, marginBottom: 4 }}>Bloc réduit</div>
+              <div className="text-xs text-gray-500">
+                {defaultMonthlyOpen
+                  ? "Cliquez sur “Afficher” pour voir le détail."
+                  : "Pour alléger la page, ce bloc s’ouvre automatiquement du 28 au 4. Vous pouvez aussi cliquer sur “Afficher” à tout moment."}
+              </div>
+            </div>
+          ) : (
+            <>
 
           {monthlyFlash && (
             <div
@@ -2549,6 +2589,9 @@ return (
               )}
             </>
           )}
+            </>
+          )}
+
         </div>
       )}
 
