@@ -3,6 +3,7 @@
 // - Change le planning (table shifts) pour ce slot
 // - Enregistre replacement_interest en status=accepted
 // - Service role pour eviter RLS
+// - Garantit que volunteer_id pointe bien vers sellers(id)
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -14,6 +15,65 @@ function getBearer(req) {
   const h = req.headers.authorization || req.headers.Authorization || "";
   const m = /^Bearer\s+(.+)$/i.exec(String(h));
   return m ? m[1] : null;
+}
+
+function fallbackName(user, profileName) {
+  if (profileName && String(profileName).trim()) return String(profileName).trim();
+  const metaName = user?.user_metadata?.full_name || user?.user_metadata?.name || "";
+  if (metaName && String(metaName).trim()) return String(metaName).trim();
+  const email = String(user?.email || "").trim();
+  if (email.includes("@")) return email.split("@")[0];
+  return "Vendeuse";
+}
+
+async function ensureSellerRow(admin, user) {
+  const userId = user?.id || null;
+  if (!userId) throw new Error("MISSING_USER_ID");
+
+  const { data: existing, error: existingErr } = await admin
+    .from("sellers")
+    .select("id, full_name, is_active")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (existingErr) {
+    throw new Error(existingErr.message || "SELLER_LOOKUP_FAILED");
+  }
+
+  if (existing?.id) {
+    return {
+      sellerId: existing.id,
+      sellerName: existing.full_name || fallbackName(user, null),
+    };
+  }
+
+  const { data: profile, error: profileErr } = await admin
+    .from("profiles")
+    .select("user_id, full_name, active")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (profileErr) {
+    throw new Error(profileErr.message || "PROFILE_LOOKUP_FAILED");
+  }
+
+  const sellerName = fallbackName(user, profile?.full_name || null);
+  const isActive = profile?.active !== false;
+
+  const { error: insErr } = await admin
+    .from("sellers")
+    .insert({ id: userId, full_name: sellerName, is_active: isActive });
+
+  if (insErr) {
+    const code = String(insErr.code || "");
+    const msg = String(insErr.message || "").toLowerCase();
+    const dup = code === "23505" || msg.includes("duplicate");
+    if (!dup) {
+      throw new Error(insErr.message || "SELLER_AUTO_CREATE_FAILED");
+    }
+  }
+
+  return { sellerId: userId, sellerName };
 }
 
 export default async function handler(req, res) {
@@ -39,6 +99,18 @@ export default async function handler(req, res) {
 
   const admin = createClient(url, service, { auth: { persistSession: false } });
 
+  let volunteer;
+  try {
+    volunteer = await ensureSellerRow(admin, user);
+  } catch (e) {
+    return json(res, 500, {
+      ok: false,
+      error: e?.message || "VOLUNTEER_SELLER_RESOLVE_FAILED",
+    });
+  }
+
+  const volunteerSellerId = volunteer.sellerId;
+
   // 1) Charger l'absence
   const { data: abs, error: absErr } = await admin
     .from("absences")
@@ -48,7 +120,7 @@ export default async function handler(req, res) {
 
   if (absErr || !abs) return json(res, 404, { ok: false, error: "ABSENCE_NOT_FOUND" });
   if (abs.status !== "approved") return json(res, 400, { ok: false, error: "NOT_APPROVED" });
-  if (abs.seller_id === user.id) return json(res, 400, { ok: false, error: "CANNOT_REPLACE_SELF" });
+  if (abs.seller_id === volunteerSellerId) return json(res, 400, { ok: false, error: "CANNOT_REPLACE_SELF" });
 
   // 2) Trouver le shift de l'absente ce jour-la
   const { data: shiftRow, error: sErr } = await admin
@@ -78,7 +150,7 @@ export default async function handler(req, res) {
     .from("shifts")
     .select("shift_code")
     .eq("date", abs.date)
-    .eq("seller_id", user.id)
+    .eq("seller_id", volunteerSellerId)
     .maybeSingle();
 
   if (mineErr) return json(res, 500, { ok: false, error: mineErr.message || "SHIFT_CHECK_FAILED" });
@@ -86,7 +158,7 @@ export default async function handler(req, res) {
   // 5) Mettre a jour le planning (atomic: seulement si le slot est encore assigne a l'absente)
   const { data: upd, error: updErr } = await admin
     .from("shifts")
-    .update({ seller_id: user.id })
+    .update({ seller_id: volunteerSellerId })
     .eq("date", abs.date)
     .eq("shift_code", shiftCode)
     .eq("seller_id", abs.seller_id)
@@ -98,7 +170,7 @@ export default async function handler(req, res) {
   // 6) Enregistrer replacement_interest (accepted)
   const payload = {
     absence_id: absenceId,
-    volunteer_id: user.id,
+    volunteer_id: volunteerSellerId,
     status: "accepted",
     accepted_shift_code: shiftCode,
   };
@@ -113,7 +185,7 @@ export default async function handler(req, res) {
         .from("replacement_interest")
         .update({ status: "accepted", accepted_shift_code: shiftCode })
         .eq("absence_id", absenceId)
-        .eq("volunteer_id", user.id);
+        .eq("volunteer_id", volunteerSellerId);
       if (upErr) return json(res, 500, { ok: false, error: upErr.message || "REPL_UPSERT_FAILED" });
     } else {
       return json(res, 500, { ok: false, error: insErr.message || "REPL_INSERT_FAILED" });
@@ -126,5 +198,7 @@ export default async function handler(req, res) {
     date: abs.date,
     extra_shift: !!mine?.shift_code,
     your_shift_code: mine?.shift_code || null,
+    volunteer_id: volunteerSellerId,
+    force_used: !!force,
   });
 }
