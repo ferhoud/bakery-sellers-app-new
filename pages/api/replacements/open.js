@@ -1,4 +1,4 @@
-﻿// pages/api/replacements/open.js
+// pages/api/replacements/open.js
 import { createClient } from "@supabase/supabase-js";
 
 function json(res, status, body) {
