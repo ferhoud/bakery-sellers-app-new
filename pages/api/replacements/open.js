@@ -74,6 +74,20 @@ export default async function handler(req, res) {
   });
 
   // Shifts encore assignés à l'absente
+  const shiftRows = [];
+
+  const { data: vwRows, error: vwErr } = await admin
+    .from("view_week_assignments")
+    .select("date, shift_code, seller_id")
+    .in("seller_id", absentIds)
+    .in("date", dateSet);
+
+  if (vwErr) {
+    // La vue peut ne pas exister selon l'environnement, on continue avec la table shifts.
+  } else if (Array.isArray(vwRows)) {
+    shiftRows.push(...vwRows);
+  }
+
   const { data: shiftsRows, error: shErr } = await admin
     .from("shifts")
     .select("date, shift_code, seller_id")
@@ -81,13 +95,14 @@ export default async function handler(req, res) {
     .in("date", dateSet);
 
   if (shErr) return json(res, 500, { ok: false, error: shErr.message || "SHIFTS_FAILED" });
+  if (Array.isArray(shiftsRows)) shiftRows.push(...shiftsRows);
 
   const shiftsBySellerDate = new Map();
-  (shiftsRows || []).forEach((r) => {
+  shiftRows.forEach((r) => {
     if (!r?.seller_id || !r?.date || !r?.shift_code) return;
     const k = `${r.seller_id}|${r.date}`;
     const arr = shiftsBySellerDate.get(k) || [];
-    arr.push(r.shift_code);
+    if (!arr.includes(r.shift_code)) arr.push(r.shift_code);
     shiftsBySellerDate.set(k, arr);
   });
 
@@ -107,9 +122,20 @@ export default async function handler(req, res) {
   });
 
   const items = [];
+  const skippedNoShift = [];
   for (const a of abs) {
     const k = `${a.seller_id}|${a.date}`;
     const codes = (shiftsBySellerDate.get(k) || []).slice().sort(sortShift);
+    if (codes.length === 0) {
+      skippedNoShift.push({
+        absence_id: a.id,
+        date: a.date,
+        absent_id: a.seller_id,
+        absent_name: nameById[a.seller_id] || "",
+      });
+      continue;
+    }
+
     for (const c of codes) {
       if (acceptedSet.has(`${a.id}|${c}`)) continue;
       items.push({
@@ -122,5 +148,12 @@ export default async function handler(req, res) {
     }
   }
 
-  return json(res, 200, { ok: true, items });
+  return json(res, 200, {
+    ok: true,
+    items,
+    meta: {
+      skipped_no_shift: skippedNoShift.length,
+      skipped_no_shift_dates: skippedNoShift.map((x) => x.date),
+    },
+  });
 }

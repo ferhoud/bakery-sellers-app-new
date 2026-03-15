@@ -332,6 +332,8 @@ const [isPlanner, setIsPlanner] = useState(false);
   const [reasonAbs, setReasonAbs] = useState("");
   const [absDate, setAbsDate] = useState(todayIso);
   const [msgAbs, setMsgAbs] = useState("");
+  const [submitAbsBusy, setSubmitAbsBusy] = useState(false);
+  const [myUpcomingAbsErr, setMyUpcomingAbsErr] = useState("");
 
   const [replAsk, setReplAsk] = useState(null);
   const [approvalMsg, setApprovalMsg] = useState(null);
@@ -724,6 +726,38 @@ useEffect(() => {
   useEffect(() => {
     loadTodayPlan();
   }, [loadTodayPlan]);
+
+  const loadPlanningRowsForDate = useCallback(async (isoDate) => {
+    if (!isoDate) return [];
+
+    const { data: vw, error: e1 } = await supabase
+      .from("view_week_assignments")
+      .select("date, shift_code, seller_id, full_name")
+      .eq("date", isoDate);
+
+    if (!e1 && Array.isArray(vw) && vw.length > 0) {
+      return vw.map((row) => ({
+        date: row.date,
+        shift_code: row.shift_code,
+        seller_id: row.seller_id || null,
+        full_name: row.full_name || null,
+      }));
+    }
+
+    const { data: sh, error: e2 } = await supabase
+      .from("shifts")
+      .select("date, shift_code, seller_id")
+      .eq("date", isoDate);
+
+    if (e2) throw e2;
+
+    return (sh || []).map((row) => ({
+      date: isoDate,
+      shift_code: row.shift_code,
+      seller_id: row.seller_id || null,
+      full_name: null,
+    }));
+  }, []);
 
   // ----------------------------
   // Pointage (checkins) — vendeuse
@@ -1166,32 +1200,84 @@ if (!/^\d{6}$/.test(code6)) {
 
   // Absence demande
   const submitAbs = async () => {
-    if (!userId) return;
+    if (!userId || submitAbsBusy) return;
     setMsgAbs("");
-
-    const { error } = await supabase.from("absences").insert({
-      date: absDate,
-      seller_id: userId,
-      reason: reasonAbs || null,
-      status: "pending",
-    });
-
-    if (error) {
-      console.error(error);
-      setMsgAbs("Échec d'envoi de la demande.");
-      return;
-    }
-
-    const sellerName =
-      session?.user?.user_metadata?.full_name ||
-      (userEmail ? userEmail.split("@")[0] : "Vendeuse");
+    setSubmitAbsBusy(true);
 
     try {
-      await notifyAdminsNewAbsence({ sellerName, startDate: absDate, endDate: absDate });
-    } catch (_) {}
+      const { data: existingRows, error: existingErr } = await supabase
+        .from("absences")
+        .select("id, status, admin_forced")
+        .eq("seller_id", userId)
+        .eq("date", absDate)
+        .in("status", ["pending", "approved"]);
 
-    setMsgAbs("Demande d'absence envoyée. En attente de validation.");
-    setReasonAbs("");
+      if (existingErr) {
+        console.error(existingErr);
+        setMsgAbs("Impossible de vérifier les demandes existantes.");
+        return;
+      }
+
+      if (Array.isArray(existingRows) && existingRows.length > 0) {
+        const hasApproved = existingRows.some((r) => r?.status === "approved");
+        setMsgAbs(hasApproved ? "Une absence approuvée existe déjà pour cette date." : "Une demande d'absence existe déjà pour cette date.");
+        await loadMyMonthUpcomingAbs();
+        return;
+      }
+
+      let planRows = [];
+      try {
+        planRows = await loadPlanningRowsForDate(absDate);
+      } catch (e) {
+        console.error("[app] loadPlanningRowsForDate error:", e);
+        setMsgAbs("Impossible de vérifier le planning pour cette date.");
+        return;
+      }
+
+      if (!Array.isArray(planRows) || planRows.length === 0) {
+        setMsgAbs("Le planning de cette journée n'est pas encore préparé. Merci de refaire la demande quand le planning sera publié, ou de prévenir l'administrateur.");
+        return;
+      }
+
+      const myPlannedSlots = planRows.filter((row) => row?.seller_id === userId);
+      if (myPlannedSlots.length === 0) {
+        setMsgAbs("Vous n'êtes pas planifiée ce jour-là. Aucune demande n'a été envoyée.");
+        return;
+      }
+
+      const { error } = await supabase.from("absences").insert({
+        date: absDate,
+        seller_id: userId,
+        reason: (reasonAbs || "").trim() || null,
+        status: "pending",
+      });
+
+      if (error) {
+        console.error(error);
+        const errMsg = String(error?.message || "").toLowerCase();
+        if (error?.code === "23505" || errMsg.includes("duplicate") || errMsg.includes("unique")) {
+          setMsgAbs("Une demande d'absence existe déjà pour cette date.");
+        } else {
+          setMsgAbs("Échec d'envoi de la demande.");
+        }
+        return;
+      }
+
+      const sellerName =
+        session?.user?.user_metadata?.full_name ||
+        (userEmail ? userEmail.split("@")[0] : "Vendeuse");
+
+      try {
+        await notifyAdminsNewAbsence({ sellerName, startDate: absDate, endDate: absDate });
+      } catch (_) {}
+
+      setMsgAbs("Demande d'absence envoyée. En attente de validation.");
+      setReasonAbs("");
+      await loadMyMonthUpcomingAbs();
+      await loadTeamEvents();
+    } finally {
+      setSubmitAbsBusy(false);
+    }
   };
 
   // Mes absences (passées ce mois)
@@ -1214,7 +1300,9 @@ if (!/^\d{6}$/.test(code6)) {
   // Mes absences à venir (jusqu’à +60j)
   const loadMyMonthUpcomingAbs = useCallback(async () => {
     if (!userId) return;
-    const { data } = await supabase
+    setMyUpcomingAbsErr("");
+
+    const { data, error } = await supabase
       .from("absences")
       .select("id, date, status, admin_forced")
       .eq("seller_id", userId)
@@ -1222,6 +1310,13 @@ if (!/^\d{6}$/.test(code6)) {
       .gte("date", todayIso)
       .lte("date", rangeTo)
       .order("date", { ascending: true });
+
+    if (error) {
+      console.error("[app] loadMyMonthUpcomingAbs error:", error);
+      setMyMonthUpcomingAbs([]);
+      setMyUpcomingAbsErr("Impossible de charger vos absences à venir.");
+      return;
+    }
 
     const byDate = {};
     (data || []).forEach((r) => {
@@ -1342,7 +1437,13 @@ if (!/^\d{6}$/.test(code6)) {
         return;
       }
 
-      setOpenRepls(Array.isArray(j.items) ? j.items : []);
+      const items = Array.isArray(j.items) ? j.items : [];
+      const skippedNoShift = Number(j?.meta?.skipped_no_shift || 0) || 0;
+      if (skippedNoShift > 0 && items.length === 0) {
+        setOpenReplsMsg("Certaines absences approuvées n'ont pas encore de planning exploitable. Les remplacements apparaîtront dès que le planning sera publié.");
+      }
+
+      setOpenRepls(items);
     } catch (e) {
       setOpenRepls(null);
       setOpenReplsErr(e?.message || "Impossible de charger les remplacements.");
@@ -2681,7 +2782,7 @@ return (
 
       
       {role !== "admin" &&
-        (openReplsLoading || openReplsErr || (Array.isArray(openRepls) && openRepls.length > 0)) && (
+        (openReplsLoading || openReplsErr || openReplsMsg || (Array.isArray(openRepls) && openRepls.length > 0)) && (
           <div className="card">
             <div className="hdr mb-2">Remplacements disponibles</div>
 
@@ -2839,11 +2940,17 @@ return (
             <input type="text" className="input" placeholder="ex: RDV médical" value={reasonAbs} onChange={(e) => setReasonAbs(e.target.value)} />
           </div>
           <div>
-            <button className="btn" onClick={submitAbs}>
-              Envoyer la demande
+            <button className="btn" onClick={submitAbs} disabled={submitAbsBusy}>
+              {submitAbsBusy ? "Envoi..." : "Envoyer la demande"}
             </button>
           </div>
         </div>
+        <div className="text-xs text-gray-500 mt-2">
+          La demande est envoyée seulement si le planning du jour est déjà publié et si vous êtes bien planifiée ce jour-là.
+        </div>
+        {myUpcomingAbsErr && (
+          <div className="text-sm mt-2" style={{ color: "#b91c1c" }}>{myUpcomingAbsErr}</div>
+        )}
         {msgAbs && <div className="text-sm mt-2">{msgAbs}</div>}
       </div>
     </div>
