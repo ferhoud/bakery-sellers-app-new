@@ -1,12 +1,12 @@
 // pages/api/checkins/confirm.js
 //
 // Confirme un pointage vendeuse via code 6 chiffres.
-// Règle importante : le retard est toujours compté directement quand le pointage est confirmé,
-// même si la vendeuse pointe après la fenêtre standard de 2h.
-// - Matin/Midi : heure prévue 06:30, fenêtre standard jusqu'à 08:30
-// - Soir      : heure prévue 13:30, fenêtre standard jusqu'à 15:30
-// - Dimanche  : heure prévue 09:00, fenêtre standard jusqu'à 11:00
+// Le retard est toujours compté directement à partir de l'heure prévue.
+// - Matin/Midi : heure prévue 06:30
+// - Soir      : heure prévue 13:30
+// - Dimanche  : heure prévue 09:00
 // Bonus "avance" : uniquement pour MORNING (max 30 min).
+// Garde-fou : retard plafonné à 360 min pour éviter les valeurs absurdes.
 //
 import { createClient } from "@supabase/supabase-js";
 import { createHash } from "crypto";
@@ -76,12 +76,11 @@ function plannedMinutesFromShift(shiftCode) {
 }
 
 function maxLateAllowed() {
-  // Garde-fou anti-valeurs absurdes (6h max).
-  return 360;
+  return 360; // 6h de garde-fou
 }
 
 function windowEndMinutes(planned) {
-  return planned + 120; // 2h
+  return planned + 120; // conservé pour l'info UI (fenêtre standard)
 }
 
 function windowStartMinutes(planned) {
@@ -200,7 +199,6 @@ export default async function handler(req, res) {
     const earlyRaw = delta < 0 ? Math.min(Math.abs(delta), 30) : 0;
     const isMorning = String(row.shift_code || "").toUpperCase() === "MORNING";
     const early = isMorning ? earlyRaw : 0;
-    const windowClosed = nowMin > end;
 
     const { error: upErr } = await admin
       .from("daily_checkins")
@@ -220,7 +218,7 @@ export default async function handler(req, res) {
       confirmed_at: now.toISOString(),
       late_minutes: late,
       early_minutes: early,
-      window_closed: windowClosed,
+      window_closed: nowMin > end,
     });
   } catch (e) {
     return json(res, 500, { ok: false, error: e?.message || "Server error" });

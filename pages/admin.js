@@ -2703,6 +2703,31 @@ function applyHandovers(dict, handovers) {
     return out;
   }
 
+  async function fetchCheckinAdjustmentsRange(fromIso, toIso) {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      if (!token) return [];
+
+      const qs = new URLSearchParams({ from: fromIso, to: toIso });
+      const r = await fetch(`/api/admin/checkins/by-range?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      if (!r.ok) {
+        const txt = await r.text().catch(() => "");
+        console.warn("admin checkins by-range API failed", r.status, txt);
+        return [];
+      }
+
+      const j = await r.json().catch(() => ({}));
+      return Array.isArray(j?.items) ? j.items : [];
+    } catch (e) {
+      console.warn("admin checkins by-range API threw", e);
+      return [];
+    }
+  }
 
   // Heures sur une plage : tente l'RPC admin, puis fallback table shifts
   async function fetchHoursRange(fromIso, toIso, sellersList) {
@@ -2737,18 +2762,29 @@ function applyHandovers(dict, handovers) {
     }
 
     // 3) Applique les ajustements de pointage (retard/avance confirmés)
+    let checkinRows = [];
     try {
-      const { data: checkinRows, error: checkinErr } = await supabase
-        .from("daily_checkins")
-        .select("seller_id, late_minutes, early_minutes, confirmed_at, day")
-        .gte("day", fromIso)
-        .lte("day", toIso)
-        .not("confirmed_at", "is", null);
-      if (checkinErr) throw checkinErr;
-      base = applyCheckinAdjustments(base, checkinRows || []);
-    } catch (e) {
-      console.warn("checkins hours adjustment failed", e);
+      checkinRows = await fetchCheckinAdjustmentsRange(fromIso, toIso);
+    } catch {}
+
+    // Fallback ancien chemin si l'API n'est pas encore déployée mais que le rôle a accès
+    if (!Array.isArray(checkinRows) || checkinRows.length === 0) {
+      try {
+        const { data: fallbackRows, error: checkinErr } = await supabase
+          .from("daily_checkins")
+          .select("seller_id, late_minutes, early_minutes, confirmed_at, day")
+          .gte("day", fromIso)
+          .lte("day", toIso)
+          .not("confirmed_at", "is", null);
+        if (!checkinErr && Array.isArray(fallbackRows)) {
+          checkinRows = fallbackRows;
+        }
+      } catch (e) {
+        console.warn("checkins hours direct fallback failed", e);
+      }
     }
+
+    base = applyCheckinAdjustments(base, checkinRows || []);
 
     // 4) Applique les ajustements retard / relais saisis par l'admin
     try {
