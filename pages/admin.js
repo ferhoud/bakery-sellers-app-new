@@ -2690,6 +2690,20 @@ function applyHandovers(dict, handovers) {
 }
 
 
+  function applyCheckinAdjustments(baseDict, rows) {
+    const out = { ...(baseDict || {}) };
+    (rows || []).forEach((r) => {
+      const sellerId = r?.seller_id || null;
+      if (!sellerId) return;
+      const lateMin = Number(r?.late_minutes || 0) || 0;
+      const earlyMin = Number(r?.early_minutes || 0) || 0;
+      const deltaHours = (earlyMin - lateMin) / 60;
+      out[sellerId] = Number(out[sellerId] || 0) + deltaHours;
+    });
+    return out;
+  }
+
+
   // Heures sur une plage : tente l'RPC admin, puis fallback table shifts
   async function fetchHoursRange(fromIso, toIso, sellersList) {
     let base = null;
@@ -2722,7 +2736,21 @@ function applyHandovers(dict, handovers) {
       }
     }
 
-    // 3) Applique les ajustements retard / relais
+    // 3) Applique les ajustements de pointage (retard/avance confirmés)
+    try {
+      const { data: checkinRows, error: checkinErr } = await supabase
+        .from("daily_checkins")
+        .select("seller_id, late_minutes, early_minutes, confirmed_at, day")
+        .gte("day", fromIso)
+        .lte("day", toIso)
+        .not("confirmed_at", "is", null);
+      if (checkinErr) throw checkinErr;
+      base = applyCheckinAdjustments(base, checkinRows || []);
+    } catch (e) {
+      console.warn("checkins hours adjustment failed", e);
+    }
+
+    // 4) Applique les ajustements retard / relais saisis par l'admin
     try {
       const handovers = await fetchHandoversRange(fromIso, toIso);
       return applyHandovers(base, handovers);

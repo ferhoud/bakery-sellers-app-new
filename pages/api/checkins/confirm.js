@@ -1,10 +1,11 @@
 // pages/api/checkins/confirm.js
 //
 // Confirme un pointage vendeuse via code 6 chiffres.
-// Règle importante : si la vendeuse pointe "trop tard", on confirme MAIS sans compter de retard.
-// - Matin/Midi : heure prévue 06:30, fenêtre autorisée jusqu'à 08:30 (2h)
-// - Soir      : heure prévue 13:30, fenêtre autorisée jusqu'à 15:30 (2h)
-// - Dimanche  : heure prévue 09:00, fenêtre autorisée jusqu'à 11:00 (2h)
+// Règle importante : le retard est toujours compté directement quand le pointage est confirmé,
+// même si la vendeuse pointe après la fenêtre standard de 2h.
+// - Matin/Midi : heure prévue 06:30, fenêtre standard jusqu'à 08:30
+// - Soir      : heure prévue 13:30, fenêtre standard jusqu'à 15:30
+// - Dimanche  : heure prévue 09:00, fenêtre standard jusqu'à 11:00
 // Bonus "avance" : uniquement pour MORNING (max 30 min).
 //
 import { createClient } from "@supabase/supabase-js";
@@ -72,6 +73,11 @@ function plannedMinutesFromShift(shiftCode) {
   if (sc === "SUNDAY_EXTRA") return 9 * 60;  // 09:00
   // MORNING + MIDDAY -> même arrivée 06:30
   return 6 * 60 + 30; // 06:30
+}
+
+function maxLateAllowed() {
+  // Garde-fou anti-valeurs absurdes (6h max).
+  return 360;
 }
 
 function windowEndMinutes(planned) {
@@ -187,37 +193,14 @@ export default async function handler(req, res) {
 
     const now = new Date();
 
-    if (nowMin > end) {
-      // Trop tard => confirmé mais sans retard/avance
-      const { error: upErrLate } = await admin
-        .from("daily_checkins")
-        .update({
-          confirmed_at: now.toISOString(),
-          late_minutes: 0,
-          early_minutes: 0,
-        })
-        .eq("id", row.id);
-
-      if (upErrLate) return json(res, 500, { ok: false, error: upErrLate.message });
-
-      return json(res, 200, {
-        ok: true,
-        day,
-        shift_code: row.shift_code,
-        confirmed_at: now.toISOString(),
-        late_minutes: 0,
-        early_minutes: 0,
-        window_closed: true,
-      });
-    }
-
     // Calcul retard/avance
     const delta = nowMin - planned;
-    const late = delta > 0 ? Math.min(delta, 120) : 0;
+    const late = delta > 0 ? Math.min(delta, maxLateAllowed()) : 0;
 
     const earlyRaw = delta < 0 ? Math.min(Math.abs(delta), 30) : 0;
     const isMorning = String(row.shift_code || "").toUpperCase() === "MORNING";
     const early = isMorning ? earlyRaw : 0;
+    const windowClosed = nowMin > end;
 
     const { error: upErr } = await admin
       .from("daily_checkins")
@@ -237,6 +220,7 @@ export default async function handler(req, res) {
       confirmed_at: now.toISOString(),
       late_minutes: late,
       early_minutes: early,
+      window_closed: windowClosed,
     });
   } catch (e) {
     return json(res, 500, { ok: false, error: e?.message || "Server error" });

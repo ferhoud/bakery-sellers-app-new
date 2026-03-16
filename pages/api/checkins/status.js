@@ -2,8 +2,8 @@
 //
 // Retourne l'état de pointage du jour (vendeuse).
 // - Ne pénalise pas une vendeuse qui n'a pas pointé.
-// - Protège contre des retards absurdes (ex: 11:03 -> 301 min) : si un vieux record existe,
-//   on le "clamp" à une fenêtre max et on peut ignorer côté UI si besoin.
+// - Le retard confirmé est compté directement, même après la fenêtre standard.
+// - Protège seulement contre des valeurs absurdes (garde-fou haut).
 //
 import { createClient } from "@supabase/supabase-js";
 
@@ -133,8 +133,8 @@ function maxEarlyAllowed() {
 }
 
 function maxLateAllowed() {
-  // Doit matcher confirm.js (2h)
-  return 120;
+  // Doit matcher confirm.js (6h max pour éviter les valeurs absurdes).
+  return 360;
 }
 
 export default async function handler(req, res) {
