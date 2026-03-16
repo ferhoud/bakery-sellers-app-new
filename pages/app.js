@@ -2696,6 +2696,84 @@ return (
         </div>
       )}
 
+      {role !== "admin" && Array.isArray(openRepls) && openRepls.length > 0 && (
+        <div
+          className="card"
+          style={{
+            borderWidth: 2,
+            borderColor: "#86efac",
+            background: "linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%)",
+            boxShadow: "0 10px 30px rgba(34, 197, 94, 0.14)",
+            animation: "replacementPulseCard 1.5s ease-in-out infinite",
+          }}
+        >
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between mb-3">
+            <div>
+              <div className="hdr">Remplacements disponibles</div>
+              <div className="text-sm" style={{ color: "#166534" }}>
+                Une absence validée attend une remplaçante.
+              </div>
+            </div>
+
+            <div
+              className="text-xs font-semibold px-3 py-1 rounded-full"
+              style={{
+                backgroundColor: "#dcfce7",
+                color: "#166534",
+                border: "1px solid #86efac",
+                animation: "replacementBlink 1.1s ease-in-out infinite",
+              }}
+            >
+              À traiter
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {openRepls.map((it) => {
+              const k = `${it.absence_id}|${it.shift_code}`;
+              const busy = !!acceptReplBusy?.[k];
+              return (
+                <div
+                  key={k}
+                  className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border rounded-2xl p-3"
+                  style={{ backgroundColor: "#ffffff", borderColor: "#bbf7d0" }}
+                >
+                  <div className="text-sm">
+                    <div className="font-semibold" style={{ color: "#166534" }}>
+                      {frDate(it.date)} · {labelForShift(it.shift_code)}
+                    </div>
+                    <div style={{ opacity: 0.9 }}>
+                      Absence de <b>{it.absent_name || "—"}</b>
+                    </div>
+                  </div>
+
+                  <button
+                    className="btn"
+                    onClick={() => acceptReplacement(it)}
+                    disabled={busy}
+                    style={{
+                      backgroundColor: "#16a34a",
+                      color: "#fff",
+                      borderColor: "#15803d",
+                      minWidth: 168,
+                      fontWeight: 700,
+                      animation: busy ? "none" : "replacementBlink 1.1s ease-in-out infinite",
+                      boxShadow: busy ? "none" : "0 10px 22px rgba(22, 163, 74, 0.25)",
+                    }}
+                  >
+                    {busy ? "Envoi..." : "Je remplace"}
+                  </button>
+                </div>
+              );
+            })}
+
+            <div className="text-xs" style={{ color: "#166534" }}>
+              Ce bloc disparaît automatiquement dès qu’il n’y a plus d’absence à remplacer.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="card">
         <div className="hdr mb-2">Planning du jour - {todayIso}</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
@@ -2781,61 +2859,6 @@ return (
       )}
 
       
-      {role !== "admin" &&
-        (openReplsLoading || openReplsErr || openReplsMsg || (Array.isArray(openRepls) && openRepls.length > 0)) && (
-          <div className="card">
-            <div className="hdr mb-2">Remplacements disponibles</div>
-
-            {openReplsLoading && <div className="text-sm text-gray-600">Chargement...</div>}
-
-            {openReplsMsg && (
-              <div
-                className="text-sm mb-2 border rounded-xl p-2"
-                style={{ backgroundColor: "#dcfce7", borderColor: "#86efac" }}
-              >
-                {openReplsMsg}
-              </div>
-            )}
-
-            {openReplsErr && (
-              <div
-                className="text-sm mb-2 border rounded-xl p-2"
-                style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}
-              >
-                {openReplsErr}
-              </div>
-            )}
-
-            {!openReplsLoading && Array.isArray(openRepls) && openRepls.length > 0 ? (
-              <div className="space-y-2">
-                {openRepls.map((it) => {
-                  const k = `${it.absence_id}|${it.shift_code}`;
-                  const busy = !!acceptReplBusy?.[k];
-                  return (
-                    <div key={k} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border rounded-2xl p-3">
-                      <div className="text-sm">
-                        <div className="font-medium">
-                          {frDate(it.date)} · {labelForShift(it.shift_code)}
-                        </div>
-                        <div style={{ opacity: 0.85 }}>
-                          Absence de <b>{it.absent_name || "—"}</b>
-                        </div>
-                      </div>
-                      <button className="btn" onClick={() => acceptReplacement(it)} disabled={busy}>
-                        {busy ? "..." : "Je remplace"}
-                      </button>
-                    </div>
-                  );
-                })}
-
-                <div className="text-xs text-gray-500">
-                  Si vous êtes déjà planifiée ce jour-là, l’app refusera le remplacement.
-                </div>
-              </div>
-            ) : null}
-          </div>
-        )}
-
 <div className="card">
         <div className="hdr mb-4">Planning de la semaine</div>
         <WeekNav
@@ -2953,6 +2976,30 @@ return (
         )}
         {msgAbs && <div className="text-sm mt-2">{msgAbs}</div>}
       </div>
+      <style jsx global>{`
+        @keyframes replacementBlink {
+          0%, 100% {
+            transform: scale(1);
+            filter: brightness(1);
+            box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.35);
+          }
+          50% {
+            transform: scale(1.03);
+            filter: brightness(1.06);
+            box-shadow: 0 0 0 10px rgba(34, 197, 94, 0);
+          }
+        }
+
+        @keyframes replacementPulseCard {
+          0%, 100% {
+            box-shadow: 0 10px 30px rgba(34, 197, 94, 0.14);
+          }
+          50% {
+            box-shadow: 0 16px 40px rgba(34, 197, 94, 0.24);
+          }
+        }
+      `}</style>
+
     </div>
   );
 }
