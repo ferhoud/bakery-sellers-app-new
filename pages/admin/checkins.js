@@ -80,8 +80,34 @@ export default function AdminCheckinsPage() {
   const [sellerId, setSellerId] = useState("");
   const [onlyMissing, setOnlyMissing] = useState(false);
   const [data, setData] = useState({ rows: [], sellers: [], summary: null, month: monthValueFromDate(new Date()) });
+  const [sellerList, setSellerList] = useState([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+
+  const loadSellerList = useCallback(async () => {
+    if (!session?.access_token) return;
+    try {
+      const res = await fetch('/api/admin/sellers/list', {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.ok) throw new Error(json?.error || 'SELLERS_LIST_FAILED');
+      const rows = Array.isArray(json.sellers) ? json.sellers : Array.isArray(json.rows) ? json.rows : [];
+      const normalized = rows
+        .map((s) => ({
+          id: s?.id || s?.user_id || s?.seller_id || '',
+          full_name: s?.full_name || s?.name || s?.label || s?.id || s?.user_id || '',
+          is_active: s?.is_active !== false && s?.active !== false,
+        }))
+        .filter((s) => s.id)
+        .sort((a, b) => String(a.full_name || '').localeCompare(String(b.full_name || ''), 'fr'));
+      setSellerList(normalized);
+    } catch {
+      // fallback silencieux: on garde le fallback base sur history
+    }
+  }, [session?.access_token]);
 
   const loadHistory = useCallback(async () => {
     if (!session?.access_token) return;
@@ -116,6 +142,10 @@ export default function AdminCheckinsPage() {
     loadHistory();
   }, [loadHistory]);
 
+  useEffect(() => {
+    loadSellerList();
+  }, [loadSellerList]);
+
   const filteredRows = useMemo(() => {
     const rows = Array.isArray(data.rows) ? data.rows : [];
     if (!onlyMissing) return rows;
@@ -145,15 +175,16 @@ export default function AdminCheckinsPage() {
   }, [filteredRows]);
 
   const sellerOptions = useMemo(() => {
-    const base = Array.isArray(data.sellers) ? data.sellers : [];
-    if (base.length) return base;
+    const direct = Array.isArray(data.sellers) ? data.sellers : [];
+    if (direct.length) return direct;
+    if (Array.isArray(sellerList) && sellerList.length) return sellerList;
     const map = new Map();
     for (const r of Array.isArray(data.rows) ? data.rows : []) {
       if (!r?.seller_id) continue;
       if (!map.has(r.seller_id)) map.set(r.seller_id, { id: r.seller_id, full_name: r.seller_name || r.seller_id });
     }
     return Array.from(map.values()).sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || ""), "fr"));
-  }, [data.sellers, data.rows]);
+  }, [data.sellers, data.rows, sellerList]);
 
   return (
     <>
