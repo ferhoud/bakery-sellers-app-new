@@ -224,6 +224,7 @@ export default function AdminCheckinsPage() {
     return Array.from(map.values()).sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || ""), "fr"));
   }, [data.sellers, data.rows, sellerList]);
 
+  const sellerChips = useMemo(() => sellerOptions || [], [sellerOptions]);
   return (
     <>
       <Head>
