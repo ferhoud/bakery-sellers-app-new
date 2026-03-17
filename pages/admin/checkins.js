@@ -61,6 +61,36 @@ function cardStyle() {
   };
 }
 
+function rowTint(row) {
+  if (!row) return {};
+  if (row.is_missing) {
+    return { background: "#fff5f5" };
+  }
+  if (Number(row.late_minutes || 0) > 0) {
+    return { background: "#fff7ed" };
+  }
+  if (row.status_code === "confirmed") {
+    return { background: "#f0fdf4" };
+  }
+  if (row.status_code === "upcoming") {
+    return { background: "#eff6ff" };
+  }
+  return {};
+}
+
+function miniBadgeStyle(kind) {
+  if (kind === "missing") {
+    return { background: "#fef2f2", border: "#fecaca", color: "#b91c1c" };
+  }
+  if (kind === "late") {
+    return { background: "#fff7ed", border: "#fdba74", color: "#c2410c" };
+  }
+  if (kind === "ok") {
+    return { background: "#ecfdf5", border: "#a7f3d0", color: "#047857" };
+  }
+  return { background: "#eff6ff", border: "#bfdbfe", color: "#1d4ed8" };
+}
+
 export default function AdminCheckinsPage() {
   const router = useRouter();
   const { session, profile, loading } = useAuth();
@@ -85,22 +115,8 @@ export default function AdminCheckinsPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
-  const getAccessToken = useCallback(async () => {
-    try {
-      const { data } = await supabase.auth.getSession();
-      return data?.session?.access_token || "";
-    } catch {
-      return "";
-    }
-  }, []);
-
   const loadSellerList = useCallback(async () => {
-    const token = await getAccessToken();
-    if (!token) {
-      setSellerErr("Session admin introuvable.");
-      setSellerList([]);
-      return;
-    }
+    if (!session?.access_token) return;
     setSellerErr("");
 
     let rows = [];
@@ -132,7 +148,7 @@ export default function AdminCheckinsPage() {
     if (rows.length === 0) {
       try {
         const res = await fetch('/api/admin/sellers/list', {
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${session.access_token}` },
         });
         const json = await res.json().catch(() => ({}));
         const apiRows = Array.isArray(json?.sellers)
@@ -159,15 +175,10 @@ export default function AdminCheckinsPage() {
     if (!normalized.length) {
       setSellerErr("Aucune vendeuse trouvée pour remplir le filtre.");
     }
-  }, [getAccessToken]);
+  }, [session?.access_token]);
 
   const loadHistory = useCallback(async () => {
-    const token = await getAccessToken();
-    if (!token) {
-      setErr("Session admin introuvable.");
-      setData((prev) => ({ ...prev, rows: [], summary: null }));
-      return;
-    }
+    if (!session?.access_token) return;
     setBusy(true);
     setErr("");
     try {
@@ -176,7 +187,7 @@ export default function AdminCheckinsPage() {
       if (sellerId) qs.set("seller_id", sellerId);
       const res = await fetch(`/api/admin/checkins/history?${qs.toString()}`, {
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
       });
       const json = await res.json().catch(() => ({}));
@@ -193,7 +204,7 @@ export default function AdminCheckinsPage() {
     } finally {
       setBusy(false);
     }
-  }, [getAccessToken, month, day, sellerId]);
+  }, [session?.access_token, month, day, sellerId]);
 
   useEffect(() => {
     loadHistory();
@@ -244,6 +255,33 @@ export default function AdminCheckinsPage() {
   }, [data.sellers, data.rows, sellerList]);
 
   const sellerChips = useMemo(() => sellerOptions || [], [sellerOptions]);
+
+  const scheduledRows = useMemo(
+    () => filteredRows.filter((r) => r.is_scheduled),
+    [filteredRows]
+  );
+
+  const todayRoster = useMemo(() => {
+    return scheduledRows
+      .map((row) => {
+        let kind = "upcoming";
+        if (row.is_missing) kind = "missing";
+        else if (Number(row.late_minutes || 0) > 0) kind = "late";
+        else if (row.status_code === "confirmed") kind = "ok";
+        return {
+          key: row.key,
+          seller_name: row.seller_name || "-",
+          shift_label: row.shift_label || "-",
+          planned_time: row.planned_time || "-",
+          actual_time: row.actual_time || "",
+          late_minutes: Number(row.late_minutes || 0) || 0,
+          status_label: row.status_label || "-",
+          kind,
+        };
+      })
+      .sort((a, b) => String(a.seller_name).localeCompare(String(b.seller_name), "fr", { sensitivity: "base" }));
+  }, [scheduledRows]);
+
   return (
     <>
       <Head>
@@ -365,15 +403,15 @@ export default function AdminCheckinsPage() {
               <div style={{ fontSize: 28, fontWeight: 800, color: "#0f172a" }}>{visibleSummary.displayed}</div>
             </div>
             <div style={cardStyle()}>
-              <div style={{ fontSize: 13, color: "#64748b" }}>Shifts planifiés</div>
+              <div style={{ fontSize: 13, color: "#64748b" }}>{day ? "Prévues ce jour" : "Shifts planifiés"}</div>
               <div style={{ fontSize: 28, fontWeight: 800, color: "#0f172a" }}>{visibleSummary.scheduled}</div>
             </div>
             <div style={cardStyle()}>
-              <div style={{ fontSize: 13, color: "#64748b" }}>Pointages confirmés</div>
+              <div style={{ fontSize: 13, color: "#64748b" }}>{day ? "Ont pointé" : "Pointages confirmés"}</div>
               <div style={{ fontSize: 28, fontWeight: 800, color: "#047857" }}>{visibleSummary.confirmed}</div>
             </div>
             <div style={cardStyle()}>
-              <div style={{ fontSize: 13, color: "#64748b" }}>Non pointés</div>
+              <div style={{ fontSize: 13, color: "#64748b" }}>{day ? "Manquantes" : "Non pointés"}</div>
               <div style={{ fontSize: 28, fontWeight: 800, color: "#b91c1c" }}>{visibleSummary.missing}</div>
             </div>
             <div style={cardStyle()}>
@@ -385,6 +423,90 @@ export default function AdminCheckinsPage() {
               <div style={{ fontSize: 28, fontWeight: 800, color: "#1d4ed8" }}>{fmtMinutes(visibleSummary.earlyMinutes)}</div>
             </div>
           </div>
+
+
+          {day ? (
+            <div style={{ ...cardStyle(), display: "grid", gap: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 18, fontWeight: 800, color: "#0f172a" }}>Vendeuses prévues le {day}</div>
+                  <div style={{ color: "#64748b", fontSize: 14, marginTop: 4 }}>
+                    Vue rapide du jour : pointées, en retard, ou encore manquantes.
+                  </div>
+                </div>
+                <div style={{ fontSize: 13, color: "#64748b" }}>
+                  Total prévues : <strong style={{ color: "#0f172a" }}>{todayRoster.length}</strong>
+                </div>
+              </div>
+
+              {todayRoster.length === 0 ? (
+                <div style={{ color: "#64748b", fontSize: 14 }}>
+                  Aucune vendeuse planifiée pour cette journée avec les filtres actuels.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {todayRoster.map((item) => {
+                    const badge = miniBadgeStyle(item.kind);
+                    return (
+                      <div
+                        key={item.key}
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          gap: 12,
+                          flexWrap: "wrap",
+                          padding: 12,
+                          borderRadius: 14,
+                          border: `1px solid ${badge.border}`,
+                          background: badge.background,
+                        }}
+                      >
+                        <div style={{ display: "grid", gap: 4 }}>
+                          <div style={{ fontWeight: 800, color: "#0f172a" }}>{item.seller_name}</div>
+                          <div style={{ color: "#475569", fontSize: 14 }}>
+                            {item.shift_label} • prévu {item.planned_time}
+                            {item.actual_time ? ` • pointé ${item.actual_time}` : ""}
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          {item.late_minutes > 0 ? (
+                            <span
+                              style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                padding: "6px 10px",
+                                borderRadius: 999,
+                                border: "1px solid #fdba74",
+                                background: "#fff7ed",
+                                color: "#c2410c",
+                                fontWeight: 800,
+                              }}
+                            >
+                              Retard {fmtMinutes(item.late_minutes)}
+                            </span>
+                          ) : null}
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              border: `1px solid ${badge.border}`,
+                              background: "#fff",
+                              color: badge.color,
+                              fontWeight: 800,
+                            }}
+                          >
+                            {item.status_label}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : null}
 
           <div style={{ ...cardStyle(), padding: 0, overflow: "hidden" }}>
             <div style={{ padding: "14px 16px", borderBottom: "1px solid #e5e7eb", fontWeight: 800, color: "#0f172a" }}>
@@ -418,7 +540,7 @@ export default function AdminCheckinsPage() {
                   ) : filteredRows.map((row) => {
                     const badge = statusStyle(row.status_label);
                     return (
-                      <tr key={row.key} style={{ borderTop: "1px solid #eef2f7" }}>
+                      <tr key={row.key} style={{ borderTop: "1px solid #eef2f7", ...rowTint(row) }}>
                         <td style={tdStrong}>{row.date_label}</td>
                         <td style={td}>{row.seller_name || "-"}</td>
                         <td style={td}>{row.shift_label || "-"}</td>
