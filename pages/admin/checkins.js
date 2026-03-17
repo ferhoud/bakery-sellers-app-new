@@ -115,8 +115,18 @@ export default function AdminCheckinsPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  const getAccessToken = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      return data?.session?.access_token || "";
+    } catch {
+      return "";
+    }
+  }, []);
+
   const loadSellerList = useCallback(async () => {
-    if (!session?.access_token) return;
+    const token = await getAccessToken();
+    if (!token) return;
     setSellerErr("");
 
     let rows = [];
@@ -148,7 +158,7 @@ export default function AdminCheckinsPage() {
     if (rows.length === 0) {
       try {
         const res = await fetch('/api/admin/sellers/list', {
-          headers: { Authorization: `Bearer ${session.access_token}` },
+          headers: { Authorization: `Bearer ${token}` },
         });
         const json = await res.json().catch(() => ({}));
         const apiRows = Array.isArray(json?.sellers)
@@ -175,10 +185,11 @@ export default function AdminCheckinsPage() {
     if (!normalized.length) {
       setSellerErr("Aucune vendeuse trouvée pour remplir le filtre.");
     }
-  }, [session?.access_token]);
+  }, [getAccessToken]);
 
   const loadHistory = useCallback(async () => {
-    if (!session?.access_token) return;
+    const token = await getAccessToken();
+    if (!token) return;
     setBusy(true);
     setErr("");
     try {
@@ -187,7 +198,7 @@ export default function AdminCheckinsPage() {
       if (sellerId) qs.set("seller_id", sellerId);
       const res = await fetch(`/api/admin/checkins/history?${qs.toString()}`, {
         headers: {
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
       const json = await res.json().catch(() => ({}));
@@ -204,7 +215,7 @@ export default function AdminCheckinsPage() {
     } finally {
       setBusy(false);
     }
-  }, [session?.access_token, month, day, sellerId]);
+  }, [getAccessToken, month, day, sellerId]);
 
   useEffect(() => {
     loadHistory();
