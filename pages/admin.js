@@ -1536,6 +1536,7 @@ const deleteHandover = useCallback(
 
 
   // ✅ Notification même depuis l'accueil admin (pas uniquement sur /admin/checkins)
+  // Priorité au service worker / PWA (téléphone), puis fallback Notification navigateur.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const n = Number(missingCheckinsCount || 0);
@@ -1550,16 +1551,60 @@ const deleteHandover = useCallback(
 
     lastMissingCheckinsNotifiedRef.current = { count: n, ts: now };
 
-    // Notification navigateur (si permission déjà accordée)
-    if ("Notification" in window && Notification.permission === "granted") {
+    let cancelled = false;
+
+    (async () => {
       try {
-        new Notification("⏱️ Pointage manquant", {
-          body: `${n} pointage(s) manquant(s). Ouvre “Pointage” pour traiter.`,
-        });
+        if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+        const title = "⏱️ Pointage manquant";
+        const body = `${n} pointage(s) manquant(s). Ouvre “Pointage” pour traiter.`;
+
+        // 1) Service worker / PWA en priorité: meilleure remontée sur téléphone
+        if ("serviceWorker" in navigator) {
+          try {
+            let reg = await navigator.serviceWorker.getRegistration();
+            if (!reg) {
+              try {
+                reg = await navigator.serviceWorker.ready;
+              } catch {
+                reg = null;
+              }
+            }
+
+            if (!cancelled && reg && typeof reg.showNotification === "function") {
+              await reg.showNotification(title, {
+                body,
+                tag: "admin-missing-checkins",
+                renotify: true,
+                requireInteraction: false,
+                icon: "/icons/icon-192.png",
+                badge: "/icons/icon-192.png",
+                data: { url: "/admin/checkins" },
+              });
+              return;
+            }
+          } catch {
+            // fallback navigateur ci-dessous
+          }
+        }
+
+        // 2) Fallback navigateur classique
+        if (!cancelled) {
+          try {
+            new Notification(title, { body, tag: "admin-missing-checkins" });
+          } catch {
+            // silence
+          }
+        }
       } catch {
         // silence
       }
-    }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [missingCheckinsCount]);
 
 
