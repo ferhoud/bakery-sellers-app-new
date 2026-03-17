@@ -1,4 +1,4 @@
-﻿/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable react/no-unescaped-entities */
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
@@ -98,6 +98,15 @@ function fmtMinutesHM(mins) {
   const r = m % 60;
   if (h <= 0) return `${r}min`;
   return `${h}h${String(r).padStart(2, "0")}`;
+}
+
+function getBalanceSummary(delayMins, extraMins) {
+  const delay = Math.max(0, Math.round(Number(delayMins || 0) || 0));
+  const extra = Math.max(0, Math.round(Number(extraMins || 0) || 0));
+  const net = extra - delay;
+  const absNet = Math.abs(net);
+  const kind = net > 0 ? "extra" : net < 0 ? "delay" : "even";
+  return { delay, extra, net, absNet, kind };
 }
 
 
@@ -809,42 +818,33 @@ useEffect(() => {
 
 
 
-  const getServerCheckinAt = useCallback((rec) => {
-    if (!rec) return null;
-    return (
-      rec?.confirmed_at ||
-      ((rec?.issued_at && rec?.issued_by) ? rec?.issued_at : null) ||
-      rec?.checked_at ||
-      rec?.checked_in_at ||
-      rec?.checkin_at ||
-      rec?.at ||
-      null
-    );
-  }, []);
-
-  const isServerCheckinConfirmed = useCallback(
-    (rec) => {
-      const at = getServerCheckinAt(rec);
-      return (
-        !!at ||
-        rec?.confirmed === true ||
-        rec?.already_confirmed === true ||
-        rec?.ok === true ||
-        rec?.status === "confirmed" ||
-        rec?.status_code === "confirmed"
-      );
-    },
-    [getServerCheckinAt]
-  );
-
   const hasPendingCheckin = useMemo(() => {
     if (!myCheckinSlots.length) return false;
 
     return myCheckinSlots.some((slot) => {
       const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
-      return !isServerCheckinConfirmed(rec);
+      const localAt =
+        checkinLocalAtByBoundary?.[slot.primary] ||
+        checkinLocalAtByBoundary?.[slot.alt] ||
+        null;
+      const at =
+        rec?.checked_at ||
+        rec?.checked_in_at ||
+        rec?.checkin_at ||
+        rec?.confirmed_at ||
+        rec?.created_at ||
+        rec?.at ||
+        localAt ||
+        null;
+      const done =
+        !!at ||
+        rec?.checked === true ||
+        rec?.ok === true ||
+        rec?.status === "done" ||
+        rec?.status === "confirmed";
+      return !done;
     });
-  }, [myCheckinSlots, checkinsByBoundary, isServerCheckinConfirmed]);
+  }, [myCheckinSlots, checkinsByBoundary, checkinLocalAtByBoundary]);
 
 
   const hasPendingCheckinOpen = useMemo(() => {
@@ -852,7 +852,25 @@ useEffect(() => {
 
     return myCheckinSlots.some((slot) => {
       const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
-      const done = isServerCheckinConfirmed(rec);
+      const localAt =
+        checkinLocalAtByBoundary?.[slot.primary] ||
+        checkinLocalAtByBoundary?.[slot.alt] ||
+        null;
+      const at =
+        rec?.checked_at ||
+        rec?.checked_in_at ||
+        rec?.checkin_at ||
+        rec?.confirmed_at ||
+        rec?.created_at ||
+        rec?.at ||
+        localAt ||
+        null;
+      const done =
+        !!at ||
+        rec?.checked === true ||
+        rec?.ok === true ||
+        rec?.status === "done" ||
+        rec?.status === "confirmed";
 
       if (done) return false;
 
@@ -860,7 +878,7 @@ useEffect(() => {
       const sc = slot.alt || slot.primary || "";
       return isCheckinWindowOpen(sc);
     });
-  }, [myCheckinSlots, checkinsByBoundary, isServerCheckinConfirmed, nowMinLocal]);
+  }, [myCheckinSlots, checkinsByBoundary, checkinLocalAtByBoundary, nowMinLocal]);
 
 
   const fmtTimeHM = (iso) => {
@@ -1078,8 +1096,6 @@ if (!/^\d{6}$/.test(code6)) {
         let ok = false;
         let lastErr = "";
         let usedPath = null;
-        let successPayload = null;
-        let successBoundary = slot.primary;
 
         for (const path of paths) {
           // ignore 404 and try next
@@ -1091,8 +1107,6 @@ if (!/^\d{6}$/.test(code6)) {
 
           if (first.r.ok && first.j?.ok !== false) {
             ok = true;
-            successPayload = first.j || {};
-            successBoundary = slot.primary;
             break;
           }
 
@@ -1107,8 +1121,6 @@ if (!/^\d{6}$/.test(code6)) {
             if (second.authExpired) return;
             if (second.r.ok && second.j?.ok !== false) {
               ok = true;
-              successPayload = second.j || {};
-              successBoundary = slot.alt;
               break;
             }
             lastErr = String(second.j?.error || `HTTP ${second.r.status}`);
@@ -1129,48 +1141,9 @@ if (!/^\d{6}$/.test(code6)) {
           return;
         }
 
-        const confirmedAt =
-          successPayload?.confirmed_at ||
-          successPayload?.confirmedAt ||
-          new Date().toISOString();
-        const normalizedShiftCode = String(
-          successPayload?.shift_code || slot.alt || slot.primary || successBoundary || ""
-        ).toUpperCase();
-        const optimisticItem = {
-          boundary: successBoundary,
-          shift_code: normalizedShiftCode || null,
-          confirmed_at: confirmedAt,
-          late_minutes: Number(successPayload?.late_minutes || 0) || 0,
-          early_minutes: Number(successPayload?.early_minutes || 0) || 0,
-          status: "confirmed",
-          confirmed: true,
-        };
-
-        setCheckinsByBoundary((prev) => {
-          const next = { ...(prev || {}), [slot.primary]: optimisticItem };
-          if (slot.alt) next[slot.alt] = optimisticItem;
-          if (successBoundary) next[String(successBoundary).toUpperCase()] = optimisticItem;
-          if (normalizedShiftCode) next[normalizedShiftCode] = optimisticItem;
-          return next;
-        });
-        setCheckinLocalAtByBoundary((prev) => {
-          const next = { ...(prev || {}) };
-          delete next[slot.primary];
-          if (slot.alt) delete next[slot.alt];
-          return next;
-        });
-        setCheckinsStats((prev) => ({
-          ...prev,
-          todayDelay: Number(successPayload?.late_minutes || 0) || 0,
-          todayExtra: Number(successPayload?.early_minutes || 0) || 0,
-        }));
-        setCheckinsMsg(
-          `✅ Pointage confirmé à ${new Date(confirmedAt).toLocaleTimeString("fr-FR", {
-            hour: "2-digit",
-            minute: "2-digit",
-            second: "2-digit",
-          })}.`
-        );
+        const clickedAt = new Date();
+        setCheckinLocalAtByBoundary((prev) => ({ ...prev, [slot.primary]: clickedAt.toISOString() }));
+        setCheckinsMsg(`✅ Pointage enregistré à ${clickedAt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.`);
         await loadCheckinsStatus();
       } catch (e) {
         setCheckinsErr(e?.message || "Pointage impossible (exception).");
@@ -2163,27 +2136,42 @@ useEffect(() => {
 
           const totalDelay = Math.round(pDelay + rDelay);
           const totalExtra = Math.round(pExtra + rExtra);
+          const totalBalance = getBalanceSummary(totalDelay, totalExtra);
 
-          const hasDelay = totalDelay > 0;
-          const hasExtra = totalExtra > 0;
-
-          const border = hasDelay ? "border-red-200" : hasExtra ? "border-green-200" : "border-gray-200";
-          const bg = hasDelay ? "bg-red-50" : hasExtra ? "bg-green-50" : "bg-gray-50";
-          const text = hasDelay ? "text-red-800" : hasExtra ? "text-green-800" : "text-gray-800";
+          const border =
+            totalBalance.kind === "delay"
+              ? "border-red-200"
+              : totalBalance.kind === "extra"
+                ? "border-green-200"
+                : "border-gray-200";
+          const bg =
+            totalBalance.kind === "delay"
+              ? "bg-red-50"
+              : totalBalance.kind === "extra"
+                ? "bg-green-50"
+                : "bg-gray-50";
+          const text =
+            totalBalance.kind === "delay"
+              ? "text-red-800"
+              : totalBalance.kind === "extra"
+                ? "text-green-800"
+                : "text-gray-800";
 
           return (
             <div className={`rounded-xl border p-3 ${border} ${bg}`}>
               <div className={`text-sm font-semibold ${text}`}>
-                {hasDelay
-                  ? `Vous avez ${fmtMinutesHM(totalDelay)} de retard ce mois-ci.`
-                  : hasExtra
-                    ? `Vous avez ${fmtMinutesHM(totalExtra)} de travail en plus ce mois-ci.`
-                    : `Ce mois-ci : aucun retard, aucun travail en plus.`}
-                {hasDelay && hasExtra ? ` (Travail en plus: ${fmtMinutesHM(totalExtra)})` : ""}
+                {totalBalance.kind === "delay"
+                  ? `Vous avez ${fmtMinutesHM(totalBalance.absNet)} de retard ce mois-ci.`
+                  : totalBalance.kind === "extra"
+                    ? `Vous avez ${fmtMinutesHM(totalBalance.absNet)} de travail en plus ce mois-ci.`
+                    : totalDelay > 0 || totalExtra > 0
+                      ? `Ce mois-ci : votre retard et votre travail en plus s’équilibrent.`
+                      : `Ce mois-ci : aucun retard, aucun travail en plus.`}
               </div>
               <div className="text-xs text-gray-600 mt-1">
                 Pointage: retard {pDelay} min{pExtra > 0 ? ` • avance ${pExtra} min` : ""}
                 {!monthDeltaUnsupported ? ` • Relais: retard ${rDelay} min${rExtra > 0 ? ` / extra ${rExtra} min` : ""}` : ""}
+                {totalDelay > 0 || totalExtra > 0 ? ` • Solde ${totalBalance.net >= 0 ? "+" : "-"}${totalBalance.absNet} min` : ""}
               </div>
             </div>
           );
@@ -2327,10 +2315,27 @@ useEffect(() => {
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {myCheckinSlots.map((slot) => {
                   const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
-                  const at = getServerCheckinAt(rec);
-                  const done = isServerCheckinConfirmed(rec);
+                  const localAt =
+                    checkinLocalAtByBoundary?.[slot.primary] ||
+                    checkinLocalAtByBoundary?.[slot.alt] ||
+                    null;
+                  const at =
+                    rec?.checked_at ||
+                    rec?.checked_in_at ||
+                    rec?.checkin_at ||
+                    rec?.confirmed_at ||
+                    rec?.created_at ||
+                    rec?.at ||
+                    localAt ||
+                    null;
+                  const done =
+                    !!at ||
+                    rec?.checked === true ||
+                    rec?.ok === true ||
+                    rec?.status === "done" ||
+                    rec?.status === "confirmed";
 
-                  const phaseInfo = getCheckinPhase(slot.alt || slot.primary);
+                                    const phaseInfo = getCheckinPhase(slot.alt || slot.primary);
                   const phase = phaseInfo.phase;
                   const fmtHMFromMinutes = (min) => {
                     const m = ((min % (24 * 60)) + (24 * 60)) % (24 * 60);
@@ -2411,26 +2416,53 @@ return (
                 })}
               </div>
 
-              <div className="text-xs text-gray-600 mt-2">
-                Ce mois-ci (pointage):
-                {` retard ${checkinsStats.monthDelay} min`}{checkinsStats.monthExtra > 0 ? ` • travail en plus ${checkinsStats.monthExtra} min` : ""}
-              </div>
+              {(() => {
+                const pointageBalance = getBalanceSummary(checkinsStats.monthDelay, checkinsStats.monthExtra);
+                return (
+                  <>
+                    <div className="text-xs text-gray-600 mt-2">
+                      Ce mois-ci (pointage):
+                      {` retard ${pointageBalance.delay} min`}
+                      {pointageBalance.extra > 0 ? ` • travail en plus ${pointageBalance.extra} min` : ""}
+                      {(pointageBalance.delay > 0 || pointageBalance.extra > 0) ? ` • solde ${pointageBalance.net >= 0 ? "+" : "-"}${pointageBalance.absNet} min` : ""}
+                    </div>
 
-              {(checkinsStats.monthDelay > 0 || checkinsStats.monthExtra > 0) && (
-                <div
-                  className="mt-3 text-sm px-3 py-2 rounded-lg"
-                  style={{
-                    background: checkinsStats.monthDelay > 0 ? "#fee2e2" : "#dcfce7",
-                    color: checkinsStats.monthDelay > 0 ? "#991b1b" : "#166534",
-                    border: `1px solid ${checkinsStats.monthDelay > 0 ? "#fecaca" : "#bbf7d0"}`,
-                    fontWeight: 700,
-                  }}
-                >
-                  {checkinsStats.monthDelay > 0
-                    ? `Vous avez ${checkinsStats.monthDelay} min de retard ce mois-ci (pointage).`
-                    : `Vous avez ${checkinsStats.monthExtra} min de travail en plus ce mois-ci (pointage).`}
-                </div>
-              )}
+                    {(pointageBalance.delay > 0 || pointageBalance.extra > 0) && (
+                      <div
+                        className="mt-3 text-sm px-3 py-2 rounded-lg"
+                        style={{
+                          background:
+                            pointageBalance.kind === "delay"
+                              ? "#fee2e2"
+                              : pointageBalance.kind === "extra"
+                                ? "#dcfce7"
+                                : "#f3f4f6",
+                          color:
+                            pointageBalance.kind === "delay"
+                              ? "#991b1b"
+                              : pointageBalance.kind === "extra"
+                                ? "#166534"
+                                : "#374151",
+                          border: `1px solid ${
+                            pointageBalance.kind === "delay"
+                              ? "#fecaca"
+                              : pointageBalance.kind === "extra"
+                                ? "#bbf7d0"
+                                : "#d1d5db"
+                          }`,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {pointageBalance.kind === "delay"
+                          ? `Vous avez ${pointageBalance.absNet} min de retard ce mois-ci (pointage).`
+                          : pointageBalance.kind === "extra"
+                            ? `Vous avez ${pointageBalance.absNet} min de travail en plus ce mois-ci (pointage).`
+                            : `Ce mois-ci (pointage), votre retard et votre travail en plus s’équilibrent.`}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
 
 
               {hasPendingCheckinOpen && checkinCode.length > 0 && !isValidCheckinCode && (
@@ -2471,23 +2503,39 @@ return (
 
             {!monthDeltaLoading && !monthDeltaErr && (
               <div className="space-y-2">
-                {monthDelta.delayMinutes > 0 && (
-                  <div
-                    className="text-sm border rounded-xl p-2"
-                    style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}
-                  >
-                    ⏱️ Vous avez <b>{fmtMinutesHM(monthDelta.delayMinutes)}</b> de retard ce mois-ci.
-                  </div>
-                )}
+                {(() => {
+                  const relayBalance = getBalanceSummary(monthDelta.delayMinutes, monthDelta.extraMinutes);
+                  if (relayBalance.delay <= 0 && relayBalance.extra <= 0) return null;
 
-                {monthDelta.extraMinutes > 0 && (
-                  <div
-                    className="text-sm border rounded-xl p-2"
-                    style={{ backgroundColor: "#dcfce7", borderColor: "#86efac" }}
-                  >
-                    ➕ Vous avez <b>{fmtMinutesHM(monthDelta.extraMinutes)}</b> de travail en plus ce mois-ci.
-                  </div>
-                )}
+                  return (
+                    <div
+                      className="text-sm border rounded-xl p-2"
+                      style={{
+                        backgroundColor:
+                          relayBalance.kind === "delay"
+                            ? "#fef2f2"
+                            : relayBalance.kind === "extra"
+                              ? "#dcfce7"
+                              : "#f3f4f6",
+                        borderColor:
+                          relayBalance.kind === "delay"
+                            ? "#fecaca"
+                            : relayBalance.kind === "extra"
+                              ? "#86efac"
+                              : "#d1d5db",
+                      }}
+                    >
+                      {relayBalance.kind === "delay"
+                        ? <>⏱️ Vous avez <b>{fmtMinutesHM(relayBalance.absNet)}</b> de retard ce mois-ci.</>
+                        : relayBalance.kind === "extra"
+                          ? <>➕ Vous avez <b>{fmtMinutesHM(relayBalance.absNet)}</b> de travail en plus ce mois-ci.</>
+                          : <>⚖️ Ce mois-ci, le retard et le travail en plus se compensent.</>}
+                      <div className="text-xs text-gray-600 mt-1">
+                        Détail relais: retard {relayBalance.delay} min{relayBalance.extra > 0 ? ` • extra ${relayBalance.extra} min` : ""} • solde {relayBalance.net >= 0 ? "+" : "-"}{relayBalance.absNet} min
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             )}
           </div>
