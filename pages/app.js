@@ -960,17 +960,48 @@ useEffect(() => {
   const loadCheckinsStatus = useCallback(async () => {
     if (!userId || role === "admin" || checkinsUnsupported) return;
 
-    // Si pas planifiée sur matin/soir => rien à afficher
-    if (!myCheckinSlots.length) {
-      setCheckinsByBoundary({});
-      return;
-    }
+    const loadMonthTotalsFallback = async () => {
+      try {
+        const { data: rows, error: e2 } = await supabase
+          .from("daily_checkins")
+          .select("late_minutes, early_minutes, confirmed_at, day")
+          .eq("seller_id", userId)
+          .gte("day", myMonthFromPast)
+          .lte("day", todayIso)
+          .not("confirmed_at", "is", null);
+
+        if (!e2 && Array.isArray(rows)) {
+          let mDelay = 0;
+          let mExtra = 0;
+          rows.forEach((r0) => {
+            const d0 = Number(r0?.late_minutes || 0) || 0;
+            const e0 = Number(r0?.early_minutes || 0) || 0;
+            if (d0 > 0) mDelay += d0;
+            if (e0 > 0) mExtra += e0;
+          });
+
+          setCheckinsStats((prev) => ({
+            ...prev,
+            monthDelay: Math.round(mDelay),
+            monthExtra: Math.round(mExtra),
+          }));
+        }
+      } catch (_) {}
+    };
 
     setCheckinsErr("");
     setCheckinsMsg("");
     setCheckinsLoading(true);
 
     try {
+      // Même sans shift aujourd'hui, il faut garder les totaux mensuels à jour.
+      if (!myCheckinSlots.length) {
+        setCheckinsByBoundary({});
+        setCheckinsStats((prev) => ({ ...prev, todayDelay: 0, todayExtra: 0 }));
+        await loadMonthTotalsFallback();
+        return;
+      }
+
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token || null;
       if (!token) {
@@ -995,6 +1026,7 @@ useEffect(() => {
       if (!r) {
         setCheckinsUnsupported(true);
         setCheckinsByBoundary({});
+        await loadMonthTotalsFallback();
         return;
       }
 
@@ -1002,19 +1034,18 @@ useEffect(() => {
       if (await handleAuthResponse(r, j)) return;
       if (!r.ok || j?.ok === false) {
         setCheckinsErr(String(j?.error || `HTTP ${r.status}`));
+        await loadMonthTotalsFallback();
         return;
       }
 
       setCheckinsByBoundary(parseCheckinsToMap(j));
-      // Totaux pointage (retard/avance) utiles pour afficher "ce mois-ci"
       setCheckinsStats({
-        monthDelay: Number(j?.month_delay_minutes || 0) || 0,
-        monthExtra: Number(j?.month_extra_minutes || 0) || 0,
+        monthDelay: Number(j?.month_delay_minutes || j?.monthDelay || 0) || 0,
+        monthExtra: Number(j?.month_extra_minutes || j?.monthExtra || 0) || 0,
         todayDelay: Number(j?.today_delay_minutes ?? j?.late_minutes ?? 0) || 0,
         todayExtra: Number(j?.today_extra_minutes ?? j?.early_minutes ?? 0) || 0,
       });
 
-      // Fallback : si l'API ne renvoie pas les totaux du mois, on les calcule via la table daily_checkins
       const hasMonthTotals =
         j?.month_delay_minutes != null ||
         j?.month_extra_minutes != null ||
@@ -1022,41 +1053,15 @@ useEffect(() => {
         j?.monthExtra != null;
 
       if (!hasMonthTotals) {
-        try {
-          const { data: rows, error: e2 } = await supabase
-            .from("daily_checkins")
-            .select("late_minutes, early_minutes, confirmed_at, day")
-            .eq("seller_id", userId)
-            .gte("day", myMonthFromPast)
-            .lte("day", todayIso)
-            .not("confirmed_at", "is", null);
-
-          if (!e2 && Array.isArray(rows)) {
-            let mDelay = 0;
-            let mExtra = 0;
-            rows.forEach((r0) => {
-              const d0 = Number(r0?.late_minutes || 0) || 0;
-              const e0 = Number(r0?.early_minutes || 0) || 0;
-              if (d0 > 0) mDelay += d0;
-              if (e0 > 0) mExtra += e0;
-            });
-
-            setCheckinsStats((prev) => ({
-              ...prev,
-              monthDelay: Math.round(mDelay),
-              monthExtra: Math.round(mExtra),
-            }));
-          }
-        } catch (_) {}
+        await loadMonthTotalsFallback();
       }
-
-
     } catch (e) {
       setCheckinsErr(e?.message || "Impossible de charger le pointage.");
+      await loadMonthTotalsFallback();
     } finally {
       setCheckinsLoading(false);
     }
-  }, [userId, role, checkinsUnsupported, myCheckinSlots.length, todayIso, myMonthFromPast]);
+  }, [userId, role, checkinsUnsupported, myCheckinSlots.length, todayIso, myMonthFromPast, handleAuthResponse]);
 
   const confirmCheckin = useCallback(
     async (slot) => {
@@ -1156,11 +1161,10 @@ if (!/^\d{6}$/.test(code6)) {
 
   useEffect(() => {
     if (!userId || role === "admin") return;
-    if (!myCheckinSlots.length) return;
     loadCheckinsStatus();
     const id = setInterval(loadCheckinsStatus, 60 * 1000);
     return () => clearInterval(id);
-  }, [userId, role, myCheckinSlots.length, loadCheckinsStatus]);
+  }, [userId, role, loadCheckinsStatus]);
 
 
   // Realtime shifts

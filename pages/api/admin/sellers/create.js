@@ -121,6 +121,12 @@ export default async function handler(req, res) {
 
     const user_id = created.user.id;
 
+    const rollbackCreatedUser = async () => {
+      try {
+        await admin.auth.admin.deleteUser(user_id);
+      } catch (_) {}
+    };
+
     // Create / upsert profile
     const { error: profErr } = await admin
       .from("profiles")
@@ -135,8 +141,39 @@ export default async function handler(req, res) {
       );
 
     if (profErr) {
-      // If profile insert fails, we keep the auth user, but report error.
+      await rollbackCreatedUser();
       return res.status(400).json({ ok: false, error: profErr.message || "Profile upsert failed" });
+    }
+
+    // Important: keep sellers table aligned with profiles/auth for new sellers
+    // so shifts, checkins and admin history all speak the same UUID.
+    let sellersErr = null;
+    const sellerPayloads = [
+      { id: user_id, full_name, is_active: true },
+      { id: user_id, full_name, active: true },
+    ];
+
+    for (const payload of sellerPayloads) {
+      const { error } = await admin.from("sellers").upsert(payload, { onConflict: "id" });
+      if (!error) {
+        sellersErr = null;
+        break;
+      }
+      sellersErr = error;
+      const msg = String(error?.message || "").toLowerCase();
+      // Retry with alternate payload if a column differs.
+      if (msg.includes("column") || msg.includes("schema cache")) continue;
+      break;
+    }
+
+    if (sellersErr) {
+      const msg = String(sellersErr?.message || "").toLowerCase();
+      const missingTable = msg.includes('relation "public.sellers" does not exist') || msg.includes("relation "sellers" does not exist");
+      if (!missingTable) {
+        await admin.from("profiles").delete().eq("user_id", user_id);
+        await rollbackCreatedUser();
+        return res.status(400).json({ ok: false, error: sellersErr.message || "Seller sync failed" });
+      }
     }
 
     return res.status(200).json({ ok: true, user_id });
