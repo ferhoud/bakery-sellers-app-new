@@ -61,6 +61,16 @@ function cardStyle() {
   };
 }
 
+
+async function getAccessToken() {
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token || "";
+  } catch {
+    return "";
+  }
+}
+
 export default function AdminCheckinsPage() {
   const router = useRouter();
   const { session, profile, loading } = useAuth();
@@ -86,7 +96,11 @@ export default function AdminCheckinsPage() {
   const [err, setErr] = useState("");
 
   const loadSellerList = useCallback(async () => {
-    if (!session?.access_token) return;
+    const token = await getAccessToken();
+    if (!token) {
+      setSellerErr("Session introuvable pour charger les vendeuses.");
+      return;
+    }
     setSellerErr("");
 
     let rows = [];
@@ -118,7 +132,7 @@ export default function AdminCheckinsPage() {
     if (rows.length === 0) {
       try {
         const res = await fetch('/api/admin/sellers/list', {
-          headers: { Authorization: `Bearer ${session.access_token}` },
+          headers: { Authorization: `Bearer ${token}` },
         });
         const json = await res.json().catch(() => ({}));
         const apiRows = Array.isArray(json?.sellers)
@@ -145,10 +159,14 @@ export default function AdminCheckinsPage() {
     if (!normalized.length) {
       setSellerErr("Aucune vendeuse trouvée pour remplir le filtre.");
     }
-  }, [session?.access_token]);
+  }, []);
 
   const loadHistory = useCallback(async () => {
-    if (!session?.access_token) return;
+    const token = await getAccessToken();
+    if (!token) {
+      setErr("Session introuvable pour charger l\'historique de pointage.");
+      return;
+    }
     setBusy(true);
     setErr("");
     try {
@@ -157,7 +175,7 @@ export default function AdminCheckinsPage() {
       if (sellerId) qs.set("seller_id", sellerId);
       const res = await fetch(`/api/admin/checkins/history?${qs.toString()}`, {
         headers: {
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
       const json = await res.json().catch(() => ({}));
@@ -174,15 +192,17 @@ export default function AdminCheckinsPage() {
     } finally {
       setBusy(false);
     }
-  }, [session?.access_token, month, day, sellerId]);
+  }, [month, day, sellerId]);
 
   useEffect(() => {
+    if (loading || !session) return;
     loadHistory();
-  }, [loadHistory]);
+  }, [loading, session, loadHistory]);
 
   useEffect(() => {
+    if (loading || !session) return;
     loadSellerList();
-  }, [loadSellerList]);
+  }, [loading, session, loadSellerList]);
 
   const filteredRows = useMemo(() => {
     const rows = Array.isArray(data.rows) ? data.rows : [];
