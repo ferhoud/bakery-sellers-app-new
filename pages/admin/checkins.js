@@ -81,31 +81,52 @@ export default function AdminCheckinsPage() {
   const [onlyMissing, setOnlyMissing] = useState(false);
   const [data, setData] = useState({ rows: [], sellers: [], summary: null, month: monthValueFromDate(new Date()) });
   const [sellerList, setSellerList] = useState([]);
+  const [sellerErr, setSellerErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const loadSellerList = useCallback(async () => {
     if (!session?.access_token) return;
-    try {
-      const res = await fetch('/api/admin/checkins/sellers', {
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json?.ok) throw new Error(json?.error || 'SELLERS_LIST_FAILED');
-      const rows = Array.isArray(json.sellers) ? json.sellers : Array.isArray(json.rows) ? json.rows : [];
-      const normalized = rows
-        .map((s) => ({
-          id: s?.id || s?.user_id || s?.seller_id || '',
-          full_name: s?.full_name || s?.name || s?.label || s?.id || s?.user_id || '',
-          is_active: s?.is_active !== false && s?.active !== false,
-        }))
-        .filter((s) => s.id)
-        .sort((a, b) => String(a.full_name || '').localeCompare(String(b.full_name || ''), 'fr'));
-      setSellerList(normalized);
-    } catch {
-      // fallback silencieux: on garde le fallback base sur history
+    setSellerErr("");
+
+    const headers = {
+      Authorization: `Bearer ${session.access_token}`,
+    };
+
+    const candidates = [
+      '/api/admin/sellers/list',
+      '/api/admin/checkins/sellers',
+    ];
+
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url, { headers });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json?.ok) throw new Error(json?.error || 'SELLERS_LIST_FAILED');
+        const rows = Array.isArray(json.sellers)
+          ? json.sellers
+          : Array.isArray(json.rows)
+            ? json.rows
+            : Array.isArray(json.items)
+              ? json.items
+              : [];
+        const normalized = rows
+          .map((s) => ({
+            id: s?.id || s?.user_id || s?.seller_id || '',
+            full_name: s?.full_name || s?.name || s?.label || s?.id || s?.user_id || '',
+            is_active: s?.is_active !== false && s?.active !== false,
+          }))
+          .filter((s) => s.id)
+          .sort((a, b) => String(a.full_name || '').localeCompare(String(b.full_name || ''), 'fr'));
+
+        if (normalized.length) {
+          setSellerList(normalized);
+          setSellerErr("");
+          return;
+        }
+      } catch (e) {
+        setSellerErr(e?.message || 'Impossible de charger la liste des vendeuses.');
+      }
     }
   }, [session?.access_token]);
 
@@ -175,9 +196,9 @@ export default function AdminCheckinsPage() {
   }, [filteredRows]);
 
   const sellerOptions = useMemo(() => {
+    if (Array.isArray(sellerList) && sellerList.length) return sellerList;
     const direct = Array.isArray(data.sellers) ? data.sellers : [];
     if (direct.length) return direct;
-    if (Array.isArray(sellerList) && sellerList.length) return sellerList;
     const map = new Map();
     for (const r of Array.isArray(data.rows) ? data.rows : []) {
       if (!r?.seller_id) continue;
@@ -258,6 +279,7 @@ export default function AdminCheckinsPage() {
               {day ? <span style={{ marginLeft: 8 }}>(jour précis)</span> : <span style={{ marginLeft: 8 }}>(mois complet)</span>}
             </div>
             {err ? <div style={{ color: "#b91c1c", fontWeight: 700 }}>{err}</div> : null}
+            {!err && sellerErr ? <div style={{ color: "#c2410c", fontWeight: 700 }}>{sellerErr}</div> : null}
           </div>
 
           <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
