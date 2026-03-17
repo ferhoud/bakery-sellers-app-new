@@ -297,6 +297,46 @@ export default function AdminCheckinsPage() {
             </div>
             {err ? <div style={{ color: "#b91c1c", fontWeight: 700 }}>{err}</div> : null}
             {!err && sellerErr ? <div style={{ color: "#c2410c", fontWeight: 700 }}>{sellerErr}</div> : null}
+            <div style={{ display: "grid", gap: 8 }}>
+              <div style={{ fontSize: 13, color: "#64748b" }}>
+                Vendeuses chargées : <strong style={{ color: "#0f172a" }}>{sellerChips.length}</strong>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  onClick={() => setSellerId("")}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: 999,
+                    border: sellerId ? "1px solid #cbd5e1" : "1px solid #16a34a",
+                    background: sellerId ? "#fff" : "#f0fdf4",
+                    color: sellerId ? "#0f172a" : "#166534",
+                    fontWeight: 700,
+                    cursor: "pointer",
+                  }}
+                >
+                  Toutes
+                </button>
+                {sellerChips.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => setSellerId(s.id)}
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: 999,
+                      border: sellerId === s.id ? "1px solid #16a34a" : "1px solid #cbd5e1",
+                      background: sellerId === s.id ? "#f0fdf4" : "#fff",
+                      color: sellerId === s.id ? "#166534" : "#0f172a",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    {s.full_name || s.id}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
