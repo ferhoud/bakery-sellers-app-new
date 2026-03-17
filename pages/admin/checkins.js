@@ -76,6 +76,7 @@ export default function AdminCheckinsPage() {
   }, [session, profile, loading, router]);
 
   const [month, setMonth] = useState(monthValueFromDate(new Date()));
+  const [day, setDay] = useState("");
   const [sellerId, setSellerId] = useState("");
   const [onlyMissing, setOnlyMissing] = useState(false);
   const [data, setData] = useState({ rows: [], sellers: [], summary: null, month: monthValueFromDate(new Date()) });
@@ -88,6 +89,7 @@ export default function AdminCheckinsPage() {
     setErr("");
     try {
       const qs = new URLSearchParams({ month });
+      if (day) qs.set("day", day);
       if (sellerId) qs.set("seller_id", sellerId);
       const res = await fetch(`/api/admin/checkins/history?${qs.toString()}`, {
         headers: {
@@ -108,7 +110,7 @@ export default function AdminCheckinsPage() {
     } finally {
       setBusy(false);
     }
-  }, [session?.access_token, month, sellerId]);
+  }, [session?.access_token, month, day, sellerId]);
 
   useEffect(() => {
     loadHistory();
@@ -142,7 +144,16 @@ export default function AdminCheckinsPage() {
     return out;
   }, [filteredRows]);
 
-  const sellerOptions = useMemo(() => Array.isArray(data.sellers) ? data.sellers : [], [data.sellers]);
+  const sellerOptions = useMemo(() => {
+    const base = Array.isArray(data.sellers) ? data.sellers : [];
+    if (base.length) return base;
+    const map = new Map();
+    for (const r of Array.isArray(data.rows) ? data.rows : []) {
+      if (!r?.seller_id) continue;
+      if (!map.has(r.seller_id)) map.set(r.seller_id, { id: r.seller_id, full_name: r.seller_name || r.seller_id });
+    }
+    return Array.from(map.values()).sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || ""), "fr"));
+  }, [data.sellers, data.rows]);
 
   return (
     <>
@@ -182,6 +193,16 @@ export default function AdminCheckinsPage() {
               </label>
 
               <label style={{ display: "grid", gap: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>Jour précis (optionnel)</span>
+                <input
+                  type="date"
+                  value={day}
+                  onChange={(e) => setDay(e.target.value)}
+                  style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #cbd5e1", background: "#fff" }}
+                />
+              </label>
+
+              <label style={{ display: "grid", gap: 6 }}>
                 <span style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>Vendeuse</span>
                 <select
                   value={sellerId}
@@ -202,7 +223,8 @@ export default function AdminCheckinsPage() {
             </div>
 
             <div style={{ color: "#64748b", fontSize: 14 }}>
-              Période affichée : <strong style={{ color: "#0f172a" }}>{monthLabelFr(data.month || month)}</strong>
+              Période affichée : <strong style={{ color: "#0f172a" }}>{day || monthLabelFr(data.month || month)}</strong>
+              {day ? <span style={{ marginLeft: 8 }}>(jour précis)</span> : <span style={{ marginLeft: 8 }}>(mois complet)</span>}
             </div>
             {err ? <div style={{ color: "#b91c1c", fontWeight: 700 }}>{err}</div> : null}
           </div>
@@ -239,6 +261,9 @@ export default function AdminCheckinsPage() {
               Tableau pointage
             </div>
             <div style={{ overflowX: "auto" }}>
+              <div style={{ padding: "0 16px 12px", color: "#64748b", fontSize: 14 }}>
+                {day ? "Le tableau ci-dessous affiche uniquement la journée sélectionnée." : "Le tableau ci-dessous affiche tout le mois sélectionné."}
+              </div>
               <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1100 }}>
                 <thead>
                   <tr style={{ background: "#f8fafc", textAlign: "left" }}>

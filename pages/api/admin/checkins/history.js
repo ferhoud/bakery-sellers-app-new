@@ -60,6 +60,13 @@ function rangeForMonth(monthValue) {
   };
 }
 
+function parseIsoDay(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(value || ""));
+  if (!m) return "";
+  return `${m[1]}-${m[2]}-${m[3]}`;
+}
+
+
 function plannedTimeFromShift(code) {
   const sc = String(code || "").toUpperCase();
   if (sc === "EVENING") return "13:30";
@@ -140,20 +147,44 @@ export default async function handler(req, res) {
 
     const sellerId = String(req.query.seller_id || "").trim();
     const range = rangeForMonth(req.query.month);
+    const day = parseIsoDay(req.query.day);
+    const from = day || range.from;
+    const to = day || range.to;
     const today = nowParisYmd();
 
-    let sellersQuery = admin.from("sellers").select("id, full_name, is_active").order("full_name", { ascending: true });
-    const { data: sellersRows, error: sellersErr } = await sellersQuery;
+    const sellerMapObj = new Map();
+
+    const { data: sellersRows, error: sellersErr } = await admin
+      .from("sellers")
+      .select("id, full_name, is_active")
+      .order("full_name", { ascending: true });
     if (sellersErr) return json(res, 500, { ok: false, error: sellersErr.message || "SELLERS_FAILED" });
 
-    const sellers = (sellersRows || []).map((s) => ({ id: s.id, full_name: s.full_name || s.id, is_active: s.is_active !== false }));
+    for (const s of sellersRows || []) {
+      sellerMapObj.set(s.id, { id: s.id, full_name: s.full_name || s.id, is_active: s.is_active !== false });
+    }
+
+    const { data: profileSellerRows } = await admin
+      .from("profiles")
+      .select("user_id, full_name, active, role")
+      .eq("role", "seller")
+      .order("full_name", { ascending: true });
+
+    for (const p of profileSellerRows || []) {
+      if (!p?.user_id) continue;
+      if (!sellerMapObj.has(p.user_id)) {
+        sellerMapObj.set(p.user_id, { id: p.user_id, full_name: p.full_name || p.user_id, is_active: p.active !== false });
+      }
+    }
+
+    const sellers = Array.from(sellerMapObj.values()).sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || ""), "fr"));
     const sellerMap = Object.fromEntries(sellers.map((s) => [s.id, s]));
 
     let shiftsQuery = admin
       .from("shifts")
       .select("date, seller_id, shift_code")
-      .gte("date", range.from)
-      .lte("date", range.to)
+      .gte("date", from)
+      .lte("date", to)
       .order("date", { ascending: false });
     if (sellerId) shiftsQuery = shiftsQuery.eq("seller_id", sellerId);
     const { data: shiftRows, error: shiftsErr } = await shiftsQuery;
@@ -162,8 +193,8 @@ export default async function handler(req, res) {
     let checkinsQuery = admin
       .from("daily_checkins")
       .select("id, day, seller_id, shift_code, confirmed_at, late_minutes, early_minutes, created_at")
-      .gte("day", range.from)
-      .lte("day", range.to)
+      .gte("day", from)
+      .lte("day", to)
       .order("day", { ascending: false })
       .order("created_at", { ascending: false });
     if (sellerId) checkinsQuery = checkinsQuery.eq("seller_id", sellerId);
@@ -261,8 +292,9 @@ export default async function handler(req, res) {
     return json(res, 200, {
       ok: true,
       month: range.month,
-      from: range.from,
-      to: range.to,
+      from,
+      to,
+      selected_day: day || "",
       today,
       sellers,
       rows,
