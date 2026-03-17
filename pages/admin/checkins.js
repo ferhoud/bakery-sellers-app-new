@@ -61,16 +61,6 @@ function cardStyle() {
   };
 }
 
-
-async function getAccessToken() {
-  try {
-    const { data } = await supabase.auth.getSession();
-    return data?.session?.access_token || "";
-  } catch {
-    return "";
-  }
-}
-
 export default function AdminCheckinsPage() {
   const router = useRouter();
   const { session, profile, loading } = useAuth();
@@ -95,10 +85,20 @@ export default function AdminCheckinsPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
+  const getAccessToken = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      return data?.session?.access_token || "";
+    } catch {
+      return "";
+    }
+  }, []);
+
   const loadSellerList = useCallback(async () => {
     const token = await getAccessToken();
     if (!token) {
-      setSellerErr("Session introuvable pour charger les vendeuses.");
+      setSellerErr("Session admin introuvable.");
+      setSellerList([]);
       return;
     }
     setSellerErr("");
@@ -159,12 +159,13 @@ export default function AdminCheckinsPage() {
     if (!normalized.length) {
       setSellerErr("Aucune vendeuse trouvée pour remplir le filtre.");
     }
-  }, []);
+  }, [getAccessToken]);
 
   const loadHistory = useCallback(async () => {
     const token = await getAccessToken();
     if (!token) {
-      setErr("Session introuvable pour charger l\'historique de pointage.");
+      setErr("Session admin introuvable.");
+      setData((prev) => ({ ...prev, rows: [], summary: null }));
       return;
     }
     setBusy(true);
@@ -192,17 +193,15 @@ export default function AdminCheckinsPage() {
     } finally {
       setBusy(false);
     }
-  }, [month, day, sellerId]);
+  }, [getAccessToken, month, day, sellerId]);
 
   useEffect(() => {
-    if (loading || !session) return;
     loadHistory();
-  }, [loading, session, loadHistory]);
+  }, [loadHistory]);
 
   useEffect(() => {
-    if (loading || !session) return;
     loadSellerList();
-  }, [loading, session, loadSellerList]);
+  }, [loadSellerList]);
 
   const filteredRows = useMemo(() => {
     const rows = Array.isArray(data.rows) ? data.rows : [];
