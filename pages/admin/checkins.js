@@ -1,343 +1,344 @@
 // pages/admin/checkins.js
-// Page admin dédiée: "Pointages manquants" (alerte après 60 min).
-// - Poll toutes les 60s
-// - Notifications navigateur (si autorisées)
-// - Ne marque PAS absent automatiquement
-// ✅ Fix hydration: on calcule Notification.permission + date après mount (client only)
-
 import Head from "next/head";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { supabase } from "../../lib/supabaseClient";
+import { useRouter } from "next/router";
+import { useEffect, useMemo, useState, useCallback } from "react";
 
-function pad2(n) {
-  return String(n).padStart(2, "0");
-}
-function parisTodayISO() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Europe/Paris",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const y = parts.find((p) => p.type === "year")?.value;
-  const m = parts.find((p) => p.type === "month")?.value;
-  const d = parts.find((p) => p.type === "day")?.value;
-  return `${y}-${m}-${d}`;
-}
-function fmtHM(min) {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  return `${h}h${pad2(m)}`;
-}
-function humanSince(min) {
-  if (min < 60) return `${min} min`;
-  return fmtHM(min);
+import { supabase } from "@/lib/supabaseClient";
+import { useAuth } from "@/lib/useAuth";
+import { isAdminEmail } from "@/lib/admin";
+
+function monthValueFromDate(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-const SHIFT_LABEL = {
-  MORNING: "Matin",
-  MIDDAY: "Matin",
-  EVENING: "Après-midi",
-  SUNDAY_EXTRA: "Dimanche",
-};
+function monthLabelFr(monthValue) {
+  try {
+    const [y, m] = String(monthValue || "").split("-").map(Number);
+    if (!y || !m) return monthValue || "-";
+    return new Date(y, m - 1, 1).toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
+  } catch {
+    return monthValue || "-";
+  }
+}
+
+function fmtMinutes(mins) {
+  const n = Number(mins || 0) || 0;
+  if (!n) return "0 min";
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
+  const h = Math.floor(abs / 60);
+  const m = abs % 60;
+  if (h && m) return `${sign}${h}h${String(m).padStart(2, "0")}`;
+  if (h) return `${sign}${h}h`;
+  return `${sign}${m} min`;
+}
+
+function statusStyle(status) {
+  const s = String(status || "").toLowerCase();
+  if (s.includes("non pointé") || s.includes("non pointe")) {
+    return { bg: "#fef2f2", border: "#fecaca", text: "#b91c1c" };
+  }
+  if (s.includes("hors planning")) {
+    return { bg: "#fff7ed", border: "#fdba74", text: "#c2410c" };
+  }
+  if (s.includes("à venir") || s.includes("a venir")) {
+    return { bg: "#eff6ff", border: "#bfdbfe", text: "#1d4ed8" };
+  }
+  if (s.includes("code émis") || s.includes("code emis")) {
+    return { bg: "#fff7ed", border: "#fdba74", text: "#c2410c" };
+  }
+  return { bg: "#ecfdf5", border: "#a7f3d0", text: "#047857" };
+}
+
+function cardStyle() {
+  return {
+    background: "#fff",
+    border: "1px solid #e5e7eb",
+    borderRadius: 16,
+    padding: 16,
+    boxShadow: "0 8px 30px rgba(15,23,42,0.06)",
+  };
+}
 
 export default function AdminCheckinsPage() {
-  const [mounted, setMounted] = useState(false);
-  const [day, setDay] = useState(""); // date Europe/Paris, calculée côté client
-  const [items, setItems] = useState([]);
+  const router = useRouter();
+  const { session, profile, loading } = useAuth();
+
+  useEffect(() => {
+    if (loading) return;
+    if (!session) {
+      router.replace("/login");
+      return;
+    }
+    if (isAdminEmail(session.user?.email)) return;
+    if (profile?.role !== "admin") router.replace("/app");
+  }, [session, profile, loading, router]);
+
+  const [month, setMonth] = useState(monthValueFromDate(new Date()));
+  const [sellerId, setSellerId] = useState("");
+  const [onlyMissing, setOnlyMissing] = useState(false);
+  const [data, setData] = useState({ rows: [], sellers: [], summary: null, month: monthValueFromDate(new Date()) });
+  const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [loading, setLoading] = useState(true);
 
-  // Notification state, calculé côté client
-  const [notifState, setNotifState] = useState("…");
-
-  const seenRef = useRef(new Set());
-  const notifiedRef = useRef(new Set());
-  const lastKeyRef = useRef("");
-
-  const storageKey = useMemo(() => {
-    return day ? `seen_missing_checkins_${day}` : "";
-  }, [day]);
-
-  const notifiedKey = useMemo(() => {
-    return day ? `notified_missing_checkins_${day}` : "";
-  }, [day]);
-
-  // Mount: init date + Notification.permission (client-only)
-  useEffect(() => {
-    setMounted(true);
-    setDay(parisTodayISO());
-
-    if (typeof Notification === "undefined") {
-      setNotifState("unsupported");
-    } else {
-      setNotifState(Notification.permission);
-    }
-  }, []);
-
-  // Load "seen" (ACK) from localStorage (quand day est connu)
-  useEffect(() => {
-    if (!storageKey) return;
-    try {
-      const raw = localStorage.getItem(storageKey) || "[]";
-      const arr = JSON.parse(raw);
-      seenRef.current = new Set(Array.isArray(arr) ? arr : []);
-    } catch {
-      seenRef.current = new Set();
-    }
-  }, [storageKey]);
-
-  // Load "notified" from localStorage (évite spam de notifications)
-  useEffect(() => {
-    if (!notifiedKey) return;
-    try {
-      const raw = localStorage.getItem(notifiedKey) || "[]";
-      const arr = JSON.parse(raw);
-      notifiedRef.current = new Set(Array.isArray(arr) ? arr : []);
-    } catch {
-      notifiedRef.current = new Set();
-    }
-  }, [notifiedKey]);
-
-  function saveSeen() {
-    if (!storageKey) return;
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(Array.from(seenRef.current)));
-    } catch {}
-  }
-
-  function saveNotified() {
-    if (!notifiedKey) return;
-    try {
-      localStorage.setItem(notifiedKey, JSON.stringify(Array.from(notifiedRef.current)));
-    } catch {}
-  }
-
-  async function fetchMissing() {
-    if (!day) return;
+  const loadHistory = useCallback(async () => {
+    if (!session?.access_token) return;
+    setBusy(true);
     setErr("");
-
-    const { data: sess } = await supabase.auth.getSession();
-    const token = sess?.session?.access_token;
-    if (!token) {
-      window.location.href = `/login?next=/admin/checkins&stay=1`;
-      return;
+    try {
+      const qs = new URLSearchParams({ month });
+      if (sellerId) qs.set("seller_id", sellerId);
+      const res = await fetch(`/api/admin/checkins/history?${qs.toString()}`, {
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.ok) throw new Error(json?.error || "Impossible de charger l'historique de pointage.");
+      setData({
+        rows: Array.isArray(json.rows) ? json.rows : [],
+        sellers: Array.isArray(json.sellers) ? json.sellers : [],
+        summary: json.summary || null,
+        month: json.month || month,
+      });
+    } catch (e) {
+      setErr(e?.message || "Impossible de charger l'historique de pointage.");
+      setData((prev) => ({ ...prev, rows: [], summary: null }));
+    } finally {
+      setBusy(false);
     }
+  }, [session?.access_token, month, sellerId]);
 
-    const r = await fetch(`/api/admin/checkins/missing?day=${encodeURIComponent(day)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (!r.ok) {
-      const t = await r.text().catch(() => "");
-      setErr(`Erreur API (${r.status}) ${t}`);
-      setItems([]);
-      setLoading(false);
-      return;
-    }
-
-    const j = await r.json().catch(() => ({}));
-    if (!j?.ok) {
-      setErr(`Erreur: ${j?.error || "UNKNOWN"}`);
-      setItems([]);
-      setLoading(false);
-      return;
-    }
-
-    const listAll = Array.isArray(j.items) ? j.items : [];
-
-    // Affichage: on cache immédiatement ceux déjà "vus" (ACK) par l'admin
-    const list = listAll.filter((it) => {
-      const key = `${it.day}:${it.seller_id}:${it.shift_code}`;
-      return !seenRef.current.has(key);
-    });
-
-    setItems(list);
-    setLoading(false);
-
-    // Browser notifications for NEW missing checkins (sans marquer "vu")
-    if (
-      mounted &&
-      typeof Notification !== "undefined" &&
-      Notification.permission === "granted" &&
-      listAll.length
-    ) {
-      for (const it of listAll) {
-        const key = `${it.day}:${it.seller_id}:${it.shift_code}`;
-        if (seenRef.current.has(key)) continue; // déjà ACK, pas besoin
-        if (notifiedRef.current.has(key)) continue; // déjà notifié, pas spam
-
-        const name = it.full_name || "Vendeuse";
-        const label = SHIFT_LABEL[it.shift_code] || it.shift_code;
-        const body = `${name} • ${label} • non pointée depuis ${humanSince(it.minutes_since_start || 0)}.`;
-
-        // eslint-disable-next-line no-new
-        new Notification("⚠️ Pointage manquant", { body });
-
-        notifiedRef.current.add(key);
-      }
-      saveNotified();
-    }
-
-    lastKeyRef.current = `${day}:${list.length}:${Date.now()}`;
-  }
-
-  // Start polling only when day is ready
   useEffect(() => {
-    if (!day) return;
-    fetchMissing();
-    const id = setInterval(fetchMissing, 60 * 1000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [day]);
+    loadHistory();
+  }, [loadHistory]);
 
-  async function askNotif() {
-    if (typeof Notification === "undefined") return;
-    const p = await Notification.requestPermission();
-    setNotifState(p);
-  }
+  const filteredRows = useMemo(() => {
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    if (!onlyMissing) return rows;
+    return rows.filter((r) => !!r.is_missing);
+  }, [data.rows, onlyMissing]);
 
-  function markSeen(it) {
-    const key = `${it.day}:${it.seller_id}:${it.shift_code}`;
+  const visibleSummary = useMemo(() => {
+    const rows = filteredRows;
+    const out = {
+      displayed: rows.length,
+      scheduled: 0,
+      confirmed: 0,
+      missing: 0,
+      upcoming: 0,
+      lateMinutes: 0,
+      earlyMinutes: 0,
+    };
+    rows.forEach((r) => {
+      if (r.is_scheduled) out.scheduled += 1;
+      if (r.status_code === "confirmed") out.confirmed += 1;
+      if (r.is_missing) out.missing += 1;
+      if (r.status_code === "upcoming") out.upcoming += 1;
+      out.lateMinutes += Number(r.late_minutes || 0) || 0;
+      out.earlyMinutes += Number(r.early_minutes || 0) || 0;
+    });
+    return out;
+  }, [filteredRows]);
 
-    // 1) UI instantanée: on retire la ligne tout de suite
-    setItems((cur) =>
-      Array.isArray(cur)
-        ? cur.filter((x) => `${x.day}:${x.seller_id}:${x.shift_code}` !== key)
-        : []
-    );
-
-    // 2) On garde en mémoire "vu" (ACK) pour ne plus le revoir aujourd'hui
-    seenRef.current.add(key);
-
-    // Bonus: si on l'a vu, on ne veut plus être re-notifié non plus
-    notifiedRef.current.add(key);
-
-    saveSeen();
-    saveNotified();
-
-    // 3) Petit refresh de sécurité (sans attendre) pour recalculer les minutes, et sync si besoin
-    setTimeout(() => {
-      fetchMissing();
-      // ping autres onglets/pages (badge admin) via event storage
-      try {
-        localStorage.setItem(`missing_checkins_ping_${day || "today"}`, String(Date.now()));
-      } catch {}
-    }, 50);
-  }
+  const sellerOptions = useMemo(() => Array.isArray(data.sellers) ? data.sellers : [], [data.sellers]);
 
   return (
     <>
       <Head>
-        <title>Admin • Pointages manquants</title>
-        <meta name="robots" content="noindex,nofollow" />
+        <title>Admin • Historique pointage</title>
       </Head>
 
-      <div style={{ width: "100%", padding: 16, maxWidth: 1100, margin: "0 auto" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 22, fontWeight: 900 }}>Pointages manquants</div>
-            <div style={{ fontSize: 12, opacity: 0.75 }}>
-              Alerte après 60 minutes • Date: {day || "…"}
-            </div>
-          </div>
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <button className="btn" onClick={fetchMissing} disabled={loading || !day}>
-              Rafraîchir
-            </button>
-            <Link className="btn" href="/admin">Retour admin</Link>
-          </div>
-        </div>
-
-        <div style={{ height: 14 }} />
-
-        <div className="card">
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+      <div style={{ minHeight: "100vh", background: "#f8fafc", padding: 16 }}>
+        <div style={{ maxWidth: 1500, margin: "0 auto", display: "grid", gap: 16 }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
             <div>
-              <div className="hdr">Notifications navigateur</div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>
-                Statut: <b>{notifState}</b>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#0f172a" }}>Historique pointage</div>
+              <div style={{ color: "#475569", marginTop: 4 }}>
+                Voir qui a pointé, à quelle heure, et repérer immédiatement les pointages manquants.
               </div>
             </div>
-
-            {mounted && typeof Notification !== "undefined" && Notification.permission !== "granted" ? (
-              <button className="btn" onClick={askNotif}>Activer</button>
-            ) : null}
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Link href="/admin" legacyBehavior>
+                <a className="btn" style={{ textDecoration: "none" }}>← Retour admin</a>
+              </Link>
+              <button className="btn" type="button" onClick={loadHistory} disabled={busy}>
+                {busy ? "Chargement..." : "Rafraîchir"}
+              </button>
+            </div>
           </div>
 
-          <div style={{ marginTop: 10, fontSize: 13, opacity: 0.85 }}>
-            Astuce: laisse cette page ouverte en admin. Si une vendeuse n’a pas pointé 1h après son début, tu reçois une alerte.
+          <div style={{ ...cardStyle(), display: "grid", gap: 12 }}>
+            <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", alignItems: "end" }}>
+              <label style={{ display: "grid", gap: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>Mois / année</span>
+                <input
+                  type="month"
+                  value={month}
+                  onChange={(e) => setMonth(e.target.value)}
+                  style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #cbd5e1", background: "#fff" }}
+                />
+              </label>
+
+              <label style={{ display: "grid", gap: 6 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#334155" }}>Vendeuse</span>
+                <select
+                  value={sellerId}
+                  onChange={(e) => setSellerId(e.target.value)}
+                  style={{ padding: "10px 12px", borderRadius: 12, border: "1px solid #cbd5e1", background: "#fff" }}
+                >
+                  <option value="">Toutes les vendeuses</option>
+                  {sellerOptions.map((s) => (
+                    <option key={s.id} value={s.id}>{s.full_name || s.id}</option>
+                  ))}
+                </select>
+              </label>
+
+              <label style={{ display: "flex", alignItems: "center", gap: 10, paddingBottom: 10 }}>
+                <input type="checkbox" checked={onlyMissing} onChange={(e) => setOnlyMissing(e.target.checked)} />
+                <span style={{ fontSize: 14, fontWeight: 700, color: "#334155" }}>Afficher seulement les non pointés</span>
+              </label>
+            </div>
+
+            <div style={{ color: "#64748b", fontSize: 14 }}>
+              Période affichée : <strong style={{ color: "#0f172a" }}>{monthLabelFr(data.month || month)}</strong>
+            </div>
+            {err ? <div style={{ color: "#b91c1c", fontWeight: 700 }}>{err}</div> : null}
+          </div>
+
+          <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+            <div style={cardStyle()}>
+              <div style={{ fontSize: 13, color: "#64748b" }}>Lignes affichées</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#0f172a" }}>{visibleSummary.displayed}</div>
+            </div>
+            <div style={cardStyle()}>
+              <div style={{ fontSize: 13, color: "#64748b" }}>Shifts planifiés</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#0f172a" }}>{visibleSummary.scheduled}</div>
+            </div>
+            <div style={cardStyle()}>
+              <div style={{ fontSize: 13, color: "#64748b" }}>Pointages confirmés</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#047857" }}>{visibleSummary.confirmed}</div>
+            </div>
+            <div style={cardStyle()}>
+              <div style={{ fontSize: 13, color: "#64748b" }}>Non pointés</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#b91c1c" }}>{visibleSummary.missing}</div>
+            </div>
+            <div style={cardStyle()}>
+              <div style={{ fontSize: 13, color: "#64748b" }}>Retard cumulé</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#c2410c" }}>{fmtMinutes(visibleSummary.lateMinutes)}</div>
+            </div>
+            <div style={cardStyle()}>
+              <div style={{ fontSize: 13, color: "#64748b" }}>Avance cumulée</div>
+              <div style={{ fontSize: 28, fontWeight: 800, color: "#1d4ed8" }}>{fmtMinutes(visibleSummary.earlyMinutes)}</div>
+            </div>
+          </div>
+
+          <div style={{ ...cardStyle(), padding: 0, overflow: "hidden" }}>
+            <div style={{ padding: "14px 16px", borderBottom: "1px solid #e5e7eb", fontWeight: 800, color: "#0f172a" }}>
+              Tableau pointage
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1100 }}>
+                <thead>
+                  <tr style={{ background: "#f8fafc", textAlign: "left" }}>
+                    <th style={th}>Date</th>
+                    <th style={th}>Vendeuse</th>
+                    <th style={th}>Shift</th>
+                    <th style={th}>Heure prévue</th>
+                    <th style={th}>Pointé à</th>
+                    <th style={th}>Statut</th>
+                    <th style={th}>Retard</th>
+                    <th style={th}>Avance</th>
+                    <th style={th}>Source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} style={{ padding: 24, textAlign: "center", color: "#64748b" }}>
+                        Aucun pointage à afficher pour ce filtre.
+                      </td>
+                    </tr>
+                  ) : filteredRows.map((row) => {
+                    const badge = statusStyle(row.status_label);
+                    return (
+                      <tr key={row.key} style={{ borderTop: "1px solid #eef2f7" }}>
+                        <td style={tdStrong}>{row.date_label}</td>
+                        <td style={td}>{row.seller_name || "-"}</td>
+                        <td style={td}>{row.shift_label || "-"}</td>
+                        <td style={td}>{row.planned_time || "-"}</td>
+                        <td style={td}>{row.actual_time || "-"}</td>
+                        <td style={td}>
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "6px 10px",
+                              borderRadius: 999,
+                              border: `1px solid ${badge.border}`,
+                              background: badge.bg,
+                              color: badge.text,
+                              fontWeight: 800,
+                              whiteSpace: "nowrap",
+                            }}
+                          >
+                            {row.status_label}
+                          </span>
+                        </td>
+                        <td style={td}>{Number(row.late_minutes || 0) ? fmtMinutes(row.late_minutes) : "-"}</td>
+                        <td style={td}>{Number(row.early_minutes || 0) ? fmtMinutes(row.early_minutes) : "-"}</td>
+                        <td style={td}>{row.source_label || "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
-
-        <div style={{ height: 14 }} />
-
-        {loading ? (
-          <div className="card">Chargement…</div>
-        ) : err ? (
-          <div className="card" style={{ borderColor: "#ef4444" }}>
-            <div style={{ fontWeight: 900, marginBottom: 6 }}>Erreur</div>
-            <div style={{ whiteSpace: "pre-wrap" }}>{err}</div>
-          </div>
-        ) : items.length === 0 ? (
-          <div className="card">
-            <div style={{ fontWeight: 800 }}>Aucun pointage manquant</div>
-            <div style={{ marginTop: 6, opacity: 0.8 }}>Tout va bien 🎯</div>
-          </div>
-        ) : (
-          <div className="card">
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ fontWeight: 900 }}>⚠️ {items.length} vendeur(s) non pointé(s)</div>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>Mise à jour auto chaque minute</div>
-            </div>
-
-            <div style={{ height: 12 }} />
-
-            <div style={{ display: "grid", gap: 10 }}>
-              {items.map((it) => {
-                const key = `${it.day}:${it.seller_id}:${it.shift_code}`;
-                const wasNotified = notifiedRef.current.has(key);
-                return (
-                  <div
-                    key={key}
-                    style={{
-                      border: "1px solid #e5e7eb",
-                      borderRadius: 14,
-                      padding: 12,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: 12,
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 900, fontSize: 16 }}>
-                        {it.full_name || "Vendeuse"}{" "}
-                        <span style={{ fontSize: 12, opacity: 0.7 }}>
-                          • {SHIFT_LABEL[it.shift_code] || it.shift_code}
-                        </span>
-                      </div>
-                      <div style={{ fontSize: 13, opacity: 0.85 }}>
-                        Non pointée depuis <b>{humanSince(it.minutes_since_start || 0)}</b>
-                      </div>
-                    </div>
-
-                    <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                      <span style={{ fontSize: 12, opacity: 0.7 }}>{wasNotified ? "alerte envoyée" : "nouveau"}</span>
-                      <button className="btn" onClick={() => markSeen(it)}>Marquer vu</button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div style={{ marginTop: 14, fontSize: 13, opacity: 0.85 }}>
-              Ensuite: tu vérifies les caméras et, si besoin, tu appliques un retard dans l’admin. Sinon tu ne fais rien: les heures restent comptées.
-            </div>
-          </div>
-        )}
       </div>
+
+      <style jsx>{`
+        .btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          padding: 10px 14px;
+          border-radius: 12px;
+          border: 1px solid #cbd5e1;
+          background: #fff;
+          color: #0f172a;
+          font-weight: 700;
+          cursor: pointer;
+        }
+        .btn:disabled {
+          opacity: 0.65;
+          cursor: not-allowed;
+        }
+      `}</style>
     </>
   );
 }
+
+const th = {
+  padding: "12px 14px",
+  fontSize: 13,
+  fontWeight: 800,
+  color: "#334155",
+  borderBottom: "1px solid #e5e7eb",
+  whiteSpace: "nowrap",
+};
+
+const td = {
+  padding: "12px 14px",
+  color: "#0f172a",
+  verticalAlign: "top",
+};
+
+const tdStrong = {
+  ...td,
+  fontWeight: 700,
+};
