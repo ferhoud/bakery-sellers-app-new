@@ -105,6 +105,34 @@ function sha256Hex(s) {
   return createHash("sha256").update(s).digest("hex");
 }
 
+function safeTs(value) {
+  if (!value) return 0;
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function isBetterCheckinRow(nextRow, currentRow) {
+  if (!currentRow) return true;
+
+  const nextConfirmed = !!nextRow?.confirmed_at;
+  const currentConfirmed = !!currentRow?.confirmed_at;
+  if (nextConfirmed !== currentConfirmed) return nextConfirmed;
+
+  const nextTs = Math.max(
+    safeTs(nextRow?.confirmed_at),
+    safeTs(nextRow?.updated_at),
+    safeTs(nextRow?.created_at)
+  );
+  const currentTs = Math.max(
+    safeTs(currentRow?.confirmed_at),
+    safeTs(currentRow?.updated_at),
+    safeTs(currentRow?.created_at)
+  );
+
+  if (nextTs !== currentTs) return nextTs > currentTs;
+  return String(nextRow?.id || "") > String(currentRow?.id || "");
+}
+
 export default async function handler(req, res) {
   try {
     res.setHeader("Cache-Control", "no-store");
@@ -138,30 +166,15 @@ export default async function handler(req, res) {
     }
 
     // On récupère le code émis
-    const { data: row, error: rErr } = await admin
+    const { data: rows, error: rErr } = await admin
       .from("daily_checkins")
-      .select("id, day, seller_id, shift_code, code_hash, confirmed_at, late_minutes, early_minutes")
+      .select("id, day, seller_id, shift_code, code_hash, confirmed_at, late_minutes, early_minutes, created_at, updated_at")
       .eq("day", day)
       .eq("seller_id", user.id)
-      .maybeSingle();
+      .order("created_at", { ascending: false });
 
     if (rErr) return json(res, 500, { ok: false, error: rErr.message });
-    if (!row) return json(res, 400, { ok: false, error: "NO_CODE_ISSUED" });
-
-    // Déjà confirmé => idempotent
-    if (row.confirmed_at) {
-      return json(res, 200, {
-        ok: true,
-        already_confirmed: true,
-        day,
-        shift_code: row.shift_code,
-        late_minutes: Number(row.late_minutes || 0) || 0,
-        early_minutes: Number(row.early_minutes || 0) || 0,
-      });
-    }
-
-    const expected = (row.code_hash || "").toString();
-    if (!expected) return json(res, 500, { ok: false, error: "MISSING_CODE_HASH" });
+    if (!Array.isArray(rows) || rows.length === 0) return json(res, 400, { ok: false, error: "NO_CODE_ISSUED" });
 
     const secret = getCheckinSecret();
     if (!secret) return json(res, 500, { ok: false, error: "MISSING_CHECKIN_CODE_SECRET" });
@@ -172,7 +185,37 @@ export default async function handler(req, res) {
     // Compat ancien format (si jamais): sha256(secret:code)
     const h2 = sha256Hex(`${secret}:${code}`);
 
-    if (h1 !== expected && h2 !== expected) {
+    let matchedRow = null;
+    let confirmedRow = null;
+    let bestRow = null;
+
+    for (const candidate of rows) {
+      if (isBetterCheckinRow(candidate, bestRow)) bestRow = candidate;
+      if (candidate?.confirmed_at && isBetterCheckinRow(candidate, confirmedRow)) confirmedRow = candidate;
+      const expected = (candidate?.code_hash || "").toString();
+      if (!expected) continue;
+      if (h1 === expected || h2 === expected) {
+        if (!matchedRow || isBetterCheckinRow(candidate, matchedRow)) matchedRow = candidate;
+      }
+    }
+
+    const row = matchedRow || confirmedRow || bestRow;
+    if (!row) return json(res, 400, { ok: false, error: "NO_CODE_ISSUED" });
+
+    // Déjà confirmé => idempotent
+    if (row.confirmed_at) {
+      return json(res, 200, {
+        ok: true,
+        already_confirmed: true,
+        day,
+        shift_code: row.shift_code,
+        confirmed_at: row.confirmed_at,
+        late_minutes: Number(row.late_minutes || 0) || 0,
+        early_minutes: Number(row.early_minutes || 0) || 0,
+      });
+    }
+
+    if (!matchedRow) {
       return json(res, 400, { ok: false, error: "BAD_CODE" });
     }
 

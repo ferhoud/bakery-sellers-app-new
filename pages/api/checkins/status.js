@@ -137,6 +137,42 @@ function maxLateAllowed() {
   return 360;
 }
 
+function safeTs(value) {
+  if (!value) return 0;
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function isBetterCheckinRow(nextRow, currentRow) {
+  if (!currentRow) return true;
+
+  const nextConfirmed = !!nextRow?.confirmed_at;
+  const currentConfirmed = !!currentRow?.confirmed_at;
+  if (nextConfirmed !== currentConfirmed) return nextConfirmed;
+
+  const nextTs = Math.max(
+    safeTs(nextRow?.confirmed_at),
+    safeTs(nextRow?.updated_at),
+    safeTs(nextRow?.created_at)
+  );
+  const currentTs = Math.max(
+    safeTs(currentRow?.confirmed_at),
+    safeTs(currentRow?.updated_at),
+    safeTs(currentRow?.created_at)
+  );
+
+  if (nextTs !== currentTs) return nextTs > currentTs;
+  return String(nextRow?.id || "") > String(currentRow?.id || "");
+}
+
+function pickBestCheckinRow(rows) {
+  let best = null;
+  for (const row of rows || []) {
+    if (isBetterCheckinRow(row, best)) best = row;
+  }
+  return best;
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "GET") return json(res, 405, { ok: false, error: "Method not allowed" });
@@ -172,15 +208,16 @@ export default async function handler(req, res) {
     const scheduledMain = scheduledShiftCodes[0] || null;
 
     // daily_checkins du jour (créée quand le superviseur génère le code)
-    const { data: row, error: rErr } = await admin
+    const { data: checkinRows, error: rErr } = await admin
       .from("daily_checkins")
-      .select("day, shift_code, confirmed_at, late_minutes, early_minutes, created_at, updated_at")
+      .select("id, day, shift_code, confirmed_at, late_minutes, early_minutes, created_at, updated_at")
       .eq("day", day)
       .eq("seller_id", user.id)
-      .maybeSingle();
+      .order("created_at", { ascending: false });
 
     if (rErr) return json(res, 500, { ok: false, error: rErr.message });
 
+    const row = pickBestCheckinRow(checkinRows || []);
     const effectiveShift = row?.shift_code || scheduledMain || null;
     const boundary = boundaryFromShift(effectiveShift);
 
@@ -251,7 +288,14 @@ if (monthStart) {
     .not("confirmed_at", "is", null);
 
   if (!mErr && Array.isArray(monthRows)) {
+    const monthBestByDay = new Map();
     for (const r of monthRows) {
+      const key = String(r?.day || "");
+      const current = monthBestByDay.get(key) || null;
+      if (isBetterCheckinRow(r, current)) monthBestByDay.set(key, r);
+    }
+
+    for (const r of monthBestByDay.values()) {
       const eff = r?.shift_code || null;
       const pm = plannedMinutesFromShift(eff);
       // Recalc si besoin
@@ -284,8 +328,10 @@ const todayExtra = early;
       today_extra_minutes: todayExtra,
       scheduled,
       scheduled_shift_codes: scheduledShiftCodes,
-      issued: !!row,
-      confirmed: !!row?.confirmed_at,
+      issued: Array.isArray(checkinRows) ? checkinRows.length > 0 : !!row,
+      confirmed: Array.isArray(checkinRows)
+        ? checkinRows.some((it) => !!it?.confirmed_at)
+        : !!row?.confirmed_at,
       shift_code: effectiveShift,
       late_minutes: late,
       early_minutes: early,

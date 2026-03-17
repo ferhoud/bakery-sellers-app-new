@@ -809,33 +809,41 @@ useEffect(() => {
 
 
 
+  const getServerCheckinAt = useCallback((rec) => {
+    if (!rec) return null;
+    return (
+      rec?.confirmed_at ||
+      rec?.checked_at ||
+      rec?.checked_in_at ||
+      rec?.checkin_at ||
+      rec?.at ||
+      null
+    );
+  }, []);
+
+  const isServerCheckinConfirmed = useCallback(
+    (rec) => {
+      const at = getServerCheckinAt(rec);
+      return (
+        !!at ||
+        rec?.confirmed === true ||
+        rec?.already_confirmed === true ||
+        rec?.ok === true ||
+        rec?.status === "confirmed" ||
+        rec?.status_code === "confirmed"
+      );
+    },
+    [getServerCheckinAt]
+  );
+
   const hasPendingCheckin = useMemo(() => {
     if (!myCheckinSlots.length) return false;
 
     return myCheckinSlots.some((slot) => {
       const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
-      const localAt =
-        checkinLocalAtByBoundary?.[slot.primary] ||
-        checkinLocalAtByBoundary?.[slot.alt] ||
-        null;
-      const at =
-        rec?.checked_at ||
-        rec?.checked_in_at ||
-        rec?.checkin_at ||
-        rec?.confirmed_at ||
-        rec?.created_at ||
-        rec?.at ||
-        localAt ||
-        null;
-      const done =
-        !!at ||
-        rec?.checked === true ||
-        rec?.ok === true ||
-        rec?.status === "done" ||
-        rec?.status === "confirmed";
-      return !done;
+      return !isServerCheckinConfirmed(rec);
     });
-  }, [myCheckinSlots, checkinsByBoundary, checkinLocalAtByBoundary]);
+  }, [myCheckinSlots, checkinsByBoundary, isServerCheckinConfirmed]);
 
 
   const hasPendingCheckinOpen = useMemo(() => {
@@ -843,25 +851,7 @@ useEffect(() => {
 
     return myCheckinSlots.some((slot) => {
       const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
-      const localAt =
-        checkinLocalAtByBoundary?.[slot.primary] ||
-        checkinLocalAtByBoundary?.[slot.alt] ||
-        null;
-      const at =
-        rec?.checked_at ||
-        rec?.checked_in_at ||
-        rec?.checkin_at ||
-        rec?.confirmed_at ||
-        rec?.created_at ||
-        rec?.at ||
-        localAt ||
-        null;
-      const done =
-        !!at ||
-        rec?.checked === true ||
-        rec?.ok === true ||
-        rec?.status === "done" ||
-        rec?.status === "confirmed";
+      const done = isServerCheckinConfirmed(rec);
 
       if (done) return false;
 
@@ -869,7 +859,7 @@ useEffect(() => {
       const sc = slot.alt || slot.primary || "";
       return isCheckinWindowOpen(sc);
     });
-  }, [myCheckinSlots, checkinsByBoundary, checkinLocalAtByBoundary, nowMinLocal]);
+  }, [myCheckinSlots, checkinsByBoundary, isServerCheckinConfirmed, nowMinLocal]);
 
 
   const fmtTimeHM = (iso) => {
@@ -1087,6 +1077,8 @@ if (!/^\d{6}$/.test(code6)) {
         let ok = false;
         let lastErr = "";
         let usedPath = null;
+        let successPayload = null;
+        let successBoundary = slot.primary;
 
         for (const path of paths) {
           // ignore 404 and try next
@@ -1098,6 +1090,8 @@ if (!/^\d{6}$/.test(code6)) {
 
           if (first.r.ok && first.j?.ok !== false) {
             ok = true;
+            successPayload = first.j || {};
+            successBoundary = slot.primary;
             break;
           }
 
@@ -1112,6 +1106,8 @@ if (!/^\d{6}$/.test(code6)) {
             if (second.authExpired) return;
             if (second.r.ok && second.j?.ok !== false) {
               ok = true;
+              successPayload = second.j || {};
+              successBoundary = slot.alt;
               break;
             }
             lastErr = String(second.j?.error || `HTTP ${second.r.status}`);
@@ -1132,9 +1128,48 @@ if (!/^\d{6}$/.test(code6)) {
           return;
         }
 
-        const clickedAt = new Date();
-        setCheckinLocalAtByBoundary((prev) => ({ ...prev, [slot.primary]: clickedAt.toISOString() }));
-        setCheckinsMsg(`✅ Pointage enregistré à ${clickedAt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.`);
+        const confirmedAt =
+          successPayload?.confirmed_at ||
+          successPayload?.confirmedAt ||
+          new Date().toISOString();
+        const normalizedShiftCode = String(
+          successPayload?.shift_code || slot.alt || slot.primary || successBoundary || ""
+        ).toUpperCase();
+        const optimisticItem = {
+          boundary: successBoundary,
+          shift_code: normalizedShiftCode || null,
+          confirmed_at: confirmedAt,
+          late_minutes: Number(successPayload?.late_minutes || 0) || 0,
+          early_minutes: Number(successPayload?.early_minutes || 0) || 0,
+          status: "confirmed",
+          confirmed: true,
+        };
+
+        setCheckinsByBoundary((prev) => {
+          const next = { ...(prev || {}), [slot.primary]: optimisticItem };
+          if (slot.alt) next[slot.alt] = optimisticItem;
+          if (successBoundary) next[String(successBoundary).toUpperCase()] = optimisticItem;
+          if (normalizedShiftCode) next[normalizedShiftCode] = optimisticItem;
+          return next;
+        });
+        setCheckinLocalAtByBoundary((prev) => {
+          const next = { ...(prev || {}) };
+          delete next[slot.primary];
+          if (slot.alt) delete next[slot.alt];
+          return next;
+        });
+        setCheckinsStats((prev) => ({
+          ...prev,
+          todayDelay: Number(successPayload?.late_minutes || 0) || 0,
+          todayExtra: Number(successPayload?.early_minutes || 0) || 0,
+        }));
+        setCheckinsMsg(
+          `✅ Pointage confirmé à ${new Date(confirmedAt).toLocaleTimeString("fr-FR", {
+            hour: "2-digit",
+            minute: "2-digit",
+            second: "2-digit",
+          })}.`
+        );
         await loadCheckinsStatus();
       } catch (e) {
         setCheckinsErr(e?.message || "Pointage impossible (exception).");
@@ -2291,27 +2326,10 @@ useEffect(() => {
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {myCheckinSlots.map((slot) => {
                   const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
-                  const localAt =
-                    checkinLocalAtByBoundary?.[slot.primary] ||
-                    checkinLocalAtByBoundary?.[slot.alt] ||
-                    null;
-                  const at =
-                    rec?.checked_at ||
-                    rec?.checked_in_at ||
-                    rec?.checkin_at ||
-                    rec?.confirmed_at ||
-                    rec?.created_at ||
-                    rec?.at ||
-                    localAt ||
-                    null;
-                  const done =
-                    !!at ||
-                    rec?.checked === true ||
-                    rec?.ok === true ||
-                    rec?.status === "done" ||
-                    rec?.status === "confirmed";
+                  const at = getServerCheckinAt(rec);
+                  const done = isServerCheckinConfirmed(rec);
 
-                                    const phaseInfo = getCheckinPhase(slot.alt || slot.primary);
+                  const phaseInfo = getCheckinPhase(slot.alt || slot.primary);
                   const phase = phaseInfo.phase;
                   const fmtHMFromMinutes = (min) => {
                     const m = ((min % (24 * 60)) + (24 * 60)) % (24 * 60);

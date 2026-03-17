@@ -110,6 +110,34 @@ function formatTimeParis(ts) {
   }
 }
 
+function safeTs(value) {
+  if (!value) return 0;
+  const ts = new Date(value).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function isBetterCheckinRow(nextRow, currentRow) {
+  if (!currentRow) return true;
+
+  const nextConfirmed = !!nextRow?.confirmed_at;
+  const currentConfirmed = !!currentRow?.confirmed_at;
+  if (nextConfirmed !== currentConfirmed) return nextConfirmed;
+
+  const nextTs = Math.max(
+    safeTs(nextRow?.confirmed_at),
+    safeTs(nextRow?.updated_at),
+    safeTs(nextRow?.created_at)
+  );
+  const currentTs = Math.max(
+    safeTs(currentRow?.confirmed_at),
+    safeTs(currentRow?.updated_at),
+    safeTs(currentRow?.created_at)
+  );
+
+  if (nextTs !== currentTs) return nextTs > currentTs;
+  return String(nextRow?.id || "") > String(currentRow?.id || "");
+}
+
 function buildStatus({ date, hasShift, confirmedAt, hasCheckinRow, today }) {
   if (confirmedAt) return { code: "confirmed", label: "Pointé" };
   if (date > today) return { code: "upcoming", label: "À venir" };
@@ -192,7 +220,7 @@ export default async function handler(req, res) {
 
     let checkinsQuery = admin
       .from("daily_checkins")
-      .select("id, day, seller_id, shift_code, confirmed_at, late_minutes, early_minutes, created_at")
+      .select("id, day, seller_id, shift_code, confirmed_at, late_minutes, early_minutes, created_at, updated_at")
       .gte("day", from)
       .lte("day", to)
       .order("day", { ascending: false })
@@ -204,8 +232,11 @@ export default async function handler(req, res) {
     const checkinMap = new Map();
     for (const row of checkinRows || []) {
       const key = `${row.day}|${row.seller_id}`;
-      if (!checkinMap.has(key)) checkinMap.set(key, row);
+      const current = checkinMap.get(key) || null;
+      if (isBetterCheckinRow(row, current)) checkinMap.set(key, row);
     }
+
+    const bestCheckinRows = Array.from(checkinMap.values());
 
     const rows = [];
     const shiftKeys = new Set();
@@ -242,7 +273,7 @@ export default async function handler(req, res) {
       });
     }
 
-    for (const ci of checkinRows || []) {
+    for (const ci of bestCheckinRows) {
       const key = `${ci.day}|${ci.seller_id}`;
       if (shiftKeys.has(key)) continue;
       const status = buildStatus({
