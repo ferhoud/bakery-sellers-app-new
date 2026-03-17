@@ -116,20 +116,61 @@ function safeTs(value) {
   return Number.isFinite(ts) ? ts : 0;
 }
 
+
+function plannedMinutesFromShift(code) {
+  const sc = String(code || "").toUpperCase();
+  if (sc === "EVENING") return 13 * 60 + 30;
+  if (sc === "SUNDAY_EXTRA") return 9 * 60;
+  return 6 * 60 + 30;
+}
+
+function getEffectiveConfirmedAt(row) {
+  if (!row) return null;
+  if (row.confirmed_at) return row.confirmed_at;
+  if (row.issued_at && row.issued_by) return row.issued_at;
+  return null;
+}
+
+function computeLateEarly(row) {
+  const at = getEffectiveConfirmedAt(row);
+  const planned = plannedMinutesFromShift(row?.shift_code);
+  if (!at) return {
+    late: Number(row?.late_minutes || 0) || 0,
+    early: Number(row?.early_minutes || 0) || 0,
+  };
+  const dt = new Date(at);
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Paris",
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(dt);
+  const hh = Number(parts.find((p) => p.type === "hour")?.value || 0) || 0;
+  const mm = Number(parts.find((p) => p.type === "minute")?.value || 0) || 0;
+  const mins = hh * 60 + mm;
+  const delta = mins - planned;
+  return {
+    late: delta > 0 ? delta : 0,
+    early: delta < 0 ? Math.min(Math.abs(delta), 30) : 0,
+  };
+}
+
 function isBetterCheckinRow(nextRow, currentRow) {
   if (!currentRow) return true;
 
-  const nextConfirmed = !!nextRow?.confirmed_at;
-  const currentConfirmed = !!currentRow?.confirmed_at;
+  const nextConfirmed = !!getEffectiveConfirmedAt(nextRow);
+  const currentConfirmed = !!getEffectiveConfirmedAt(currentRow);
   if (nextConfirmed !== currentConfirmed) return nextConfirmed;
 
   const nextTs = Math.max(
-    safeTs(nextRow?.confirmed_at),
+    safeTs(getEffectiveConfirmedAt(nextRow)),
+    safeTs(nextRow?.issued_at),
     safeTs(nextRow?.updated_at),
     safeTs(nextRow?.created_at)
   );
   const currentTs = Math.max(
-    safeTs(currentRow?.confirmed_at),
+    safeTs(getEffectiveConfirmedAt(currentRow)),
+    safeTs(currentRow?.issued_at),
     safeTs(currentRow?.updated_at),
     safeTs(currentRow?.created_at)
   );
@@ -220,7 +261,7 @@ export default async function handler(req, res) {
 
     let checkinsQuery = admin
       .from("daily_checkins")
-      .select("id, day, seller_id, shift_code, confirmed_at, late_minutes, early_minutes, created_at, updated_at")
+      .select("id, day, seller_id, shift_code, confirmed_at, issued_at, issued_by, late_minutes, early_minutes, created_at, updated_at")
       .gte("day", from)
       .lte("day", to)
       .order("day", { ascending: false })
@@ -245,10 +286,12 @@ export default async function handler(req, res) {
       const key = `${sh.date}|${sh.seller_id}`;
       shiftKeys.add(key);
       const ci = checkinMap.get(key) || null;
+      const effectiveConfirmedAt = getEffectiveConfirmedAt(ci);
+      const lateEarly = computeLateEarly(ci);
       const status = buildStatus({
         date: sh.date,
         hasShift: true,
-        confirmedAt: ci?.confirmed_at,
+        confirmedAt: effectiveConfirmedAt,
         hasCheckinRow: !!ci,
         today,
       });
@@ -261,13 +304,13 @@ export default async function handler(req, res) {
         shift_code: sh.shift_code,
         shift_label: shiftLabel(sh.shift_code),
         planned_time: plannedTimeFromShift(sh.shift_code),
-        actual_time: formatTimeParis(ci?.confirmed_at),
-        confirmed_at: ci?.confirmed_at || null,
-        late_minutes: Number(ci?.late_minutes || 0) || 0,
-        early_minutes: Number(ci?.early_minutes || 0) || 0,
+        actual_time: formatTimeParis(effectiveConfirmedAt),
+        confirmed_at: effectiveConfirmedAt || null,
+        late_minutes: lateEarly.late,
+        early_minutes: lateEarly.early,
         status_code: status.code,
         status_label: status.label,
-        source_label: ci?.confirmed_at ? "Planning + pointage" : "Planning",
+        source_label: effectiveConfirmedAt ? "Planning + pointage" : "Planning",
         is_scheduled: true,
         is_missing: status.code === "missing" || status.code === "issued_unconfirmed",
       });
@@ -276,10 +319,12 @@ export default async function handler(req, res) {
     for (const ci of bestCheckinRows) {
       const key = `${ci.day}|${ci.seller_id}`;
       if (shiftKeys.has(key)) continue;
+      const effectiveConfirmedAt = getEffectiveConfirmedAt(ci);
+      const lateEarly = computeLateEarly(ci);
       const status = buildStatus({
         date: ci.day,
         hasShift: false,
-        confirmedAt: ci.confirmed_at,
+        confirmedAt: effectiveConfirmedAt,
         hasCheckinRow: true,
         today,
       });
@@ -292,13 +337,13 @@ export default async function handler(req, res) {
         shift_code: ci.shift_code,
         shift_label: shiftLabel(ci.shift_code),
         planned_time: plannedTimeFromShift(ci.shift_code),
-        actual_time: formatTimeParis(ci.confirmed_at),
-        confirmed_at: ci.confirmed_at || null,
-        late_minutes: Number(ci.late_minutes || 0) || 0,
-        early_minutes: Number(ci.early_minutes || 0) || 0,
+        actual_time: formatTimeParis(effectiveConfirmedAt),
+        confirmed_at: effectiveConfirmedAt || null,
+        late_minutes: lateEarly.late,
+        early_minutes: lateEarly.early,
         status_code: status.code,
         status_label: status.label,
-        source_label: ci.confirmed_at ? "Pointage seul" : "Code émis seul",
+        source_label: effectiveConfirmedAt ? "Pointage seul" : "Code émis seul",
         is_scheduled: false,
         is_missing: false,
       });

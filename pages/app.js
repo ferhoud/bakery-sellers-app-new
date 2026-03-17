@@ -813,6 +813,7 @@ useEffect(() => {
     if (!rec) return null;
     return (
       rec?.confirmed_at ||
+      ((rec?.issued_at && rec?.issued_by) ? rec?.issued_at : null) ||
       rec?.checked_at ||
       rec?.checked_in_at ||
       rec?.checkin_at ||

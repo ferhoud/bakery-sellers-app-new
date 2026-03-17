@@ -143,20 +143,35 @@ function safeTs(value) {
   return Number.isFinite(ts) ? ts : 0;
 }
 
+
+function getEffectiveConfirmedAt(row) {
+  if (!row) return null;
+  if (row.confirmed_at) return row.confirmed_at;
+  // Compat héritée: certains pointages tablette ont été validés à l'émission du code.
+  if (row.issued_at && row.issued_by) return row.issued_at;
+  return null;
+}
+
+function hasEffectiveConfirmation(row) {
+  return !!getEffectiveConfirmedAt(row);
+}
+
 function isBetterCheckinRow(nextRow, currentRow) {
   if (!currentRow) return true;
 
-  const nextConfirmed = !!nextRow?.confirmed_at;
-  const currentConfirmed = !!currentRow?.confirmed_at;
+  const nextConfirmed = hasEffectiveConfirmation(nextRow);
+  const currentConfirmed = hasEffectiveConfirmation(currentRow);
   if (nextConfirmed !== currentConfirmed) return nextConfirmed;
 
   const nextTs = Math.max(
-    safeTs(nextRow?.confirmed_at),
+    safeTs(getEffectiveConfirmedAt(nextRow)),
+    safeTs(nextRow?.issued_at),
     safeTs(nextRow?.updated_at),
     safeTs(nextRow?.created_at)
   );
   const currentTs = Math.max(
-    safeTs(currentRow?.confirmed_at),
+    safeTs(getEffectiveConfirmedAt(currentRow)),
+    safeTs(currentRow?.issued_at),
     safeTs(currentRow?.updated_at),
     safeTs(currentRow?.created_at)
   );
@@ -210,7 +225,7 @@ export default async function handler(req, res) {
     // daily_checkins du jour (créée quand le superviseur génère le code)
     const { data: checkinRows, error: rErr } = await admin
       .from("daily_checkins")
-      .select("id, day, shift_code, confirmed_at, late_minutes, early_minutes, created_at, updated_at")
+      .select("id, day, shift_code, confirmed_at, issued_at, issued_by, late_minutes, early_minutes, created_at, updated_at")
       .eq("day", day)
       .eq("seller_id", user.id)
       .order("created_at", { ascending: false });
@@ -220,6 +235,7 @@ export default async function handler(req, res) {
     const row = pickBestCheckinRow(checkinRows || []);
     const effectiveShift = row?.shift_code || scheduledMain || null;
     const boundary = boundaryFromShift(effectiveShift);
+    const effectiveConfirmedAt = getEffectiveConfirmedAt(row);
 
     const plannedMinutes = plannedMinutesFromShift(effectiveShift);
 
@@ -234,8 +250,8 @@ let ignored = false;
 
 // Si un pointage est confirmé mais que late/early sont vides ou incohérents,
 // on recalcule à partir de confirmed_at (heure Paris) et de l'heure prévue.
-if (row?.confirmed_at) {
-  const rec = recomputeFromConfirmedAt(row.confirmed_at, plannedMinutes);
+if (effectiveConfirmedAt) {
+  const rec = recomputeFromConfirmedAt(effectiveConfirmedAt, plannedMinutes);
   if (rec.has) {
     // Si les valeurs stockées sont 0/0 mais qu'on peut calculer mieux, on prend le calcul.
     const storedZero = (late === 0 && early === 0);
@@ -258,7 +274,7 @@ const item = row
       ? {
           boundary,
           shift_code: effectiveShift,
-          confirmed_at: row.confirmed_at,
+          confirmed_at: effectiveConfirmedAt,
           late_minutes: late,
           early_minutes: early,
           created_at: row.created_at,
@@ -281,11 +297,10 @@ let monthExtra = 0;
 if (monthStart) {
   const { data: monthRows, error: mErr } = await admin
     .from("daily_checkins")
-    .select("day, shift_code, confirmed_at, late_minutes, early_minutes")
+    .select("id, day, shift_code, confirmed_at, issued_at, issued_by, late_minutes, early_minutes, created_at, updated_at")
     .eq("seller_id", user.id)
     .gte("day", monthStart)
-    .lte("day", day)
-    .not("confirmed_at", "is", null);
+    .lte("day", day);
 
   if (!mErr && Array.isArray(monthRows)) {
     const monthBestByDay = new Map();
@@ -296,12 +311,14 @@ if (monthStart) {
     }
 
     for (const r of monthBestByDay.values()) {
+      const effectiveAt = getEffectiveConfirmedAt(r);
+      if (!effectiveAt) continue;
       const eff = r?.shift_code || null;
       const pm = plannedMinutesFromShift(eff);
       // Recalc si besoin
       let l = Number(r?.late_minutes || 0) || 0;
       let e = Number(r?.early_minutes || 0) || 0;
-      const rec = recomputeFromConfirmedAt(r?.confirmed_at, pm);
+      const rec = recomputeFromConfirmedAt(effectiveAt, pm);
       const storedZero = (l === 0 && e === 0);
       const storedOutOfRange = (l > maxLateAllowed() || e > maxEarlyAllowed());
       if (rec.has && (storedZero || storedOutOfRange)) {
@@ -330,8 +347,8 @@ const todayExtra = early;
       scheduled_shift_codes: scheduledShiftCodes,
       issued: Array.isArray(checkinRows) ? checkinRows.length > 0 : !!row,
       confirmed: Array.isArray(checkinRows)
-        ? checkinRows.some((it) => !!it?.confirmed_at)
-        : !!row?.confirmed_at,
+        ? checkinRows.some((it) => hasEffectiveConfirmation(it))
+        : hasEffectiveConfirmation(row),
       shift_code: effectiveShift,
       late_minutes: late,
       early_minutes: early,

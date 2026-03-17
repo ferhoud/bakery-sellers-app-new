@@ -136,7 +136,7 @@ export default async function handler(req, res) {
     if (uErr || !userById?.user?.email) return json(res, 400, { ok: false, error: "SELLER_EMAIL_NOT_FOUND" });
     const sellerEmail = userById.user.email;
 
-    // Check password (auth vendeur) — ne valide PAS le pointage, juste vérifie le mdp
+    // Check password (auth vendeur) — la tablette confirme désormais le pointage immédiatement
     const { error: pwErr } = await sbAnon.auth.signInWithPassword({ email: sellerEmail, password });
     if (pwErr) return json(res, 403, { ok: false, error: "BAD_PASSWORD" });
 
@@ -157,7 +157,7 @@ export default async function handler(req, res) {
       return json(res, 409, { ok: false, error: "TOO_EARLY" });
     }
 
-    // Preview uniquement (pour affichage du superviseur)
+    // Calcul du retard / avance (utilisé pour l'écriture en base et l'affichage superviseur)
     const delta = nowMin - planned;
     const previewLate = delta > 0 ? delta : 0;
     const previewEarlyRaw = delta < 0 ? Math.min(Math.abs(delta), EARLY_WINDOW) : 0;
@@ -179,7 +179,8 @@ export default async function handler(req, res) {
 
     if (existing?.confirmed_at) return json(res, 409, { ok: false, error: "ALREADY_CONFIRMED" });
 
-    // IMPORTANT: on n'écrit plus early/late ici (sinon ça peut être compté comme "pointage fait")
+    // Confirmation immédiate: la vérification du mot de passe sur la tablette vaut pointage confirmé.
+    // On garde le code pour compatibilité / affichage, mais la source de vérité devient confirmed_at.
     const nowIso = new Date().toISOString();
     const { error: upErr } = await admin.from("daily_checkins").upsert(
       {
@@ -189,9 +190,9 @@ export default async function handler(req, res) {
         code_hash: codeHash,
         issued_at: nowIso,
         issued_by: caller.id,
-        confirmed_at: null,
-        late_minutes: 0,
-        early_minutes: 0,
+        confirmed_at: nowIso,
+        late_minutes: previewLate,
+        early_minutes: previewEarly,
         updated_at: nowIso,
       },
       { onConflict: "day,seller_id" }

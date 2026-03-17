@@ -414,7 +414,7 @@ export default function SupervisorCheckinPage() {
                         <button className="btn" onClick={nextSeller}>Passer à la suivante</button>
                       </div>
                       <div style={{ marginTop: 10, fontSize: 13, opacity: 0.8 }}>
-                        Ensuite: sur le compte vendeuse → <b>Pointage</b> → saisir ce code.
+                        Le pointage est confirmé dès cette étape sur la tablette. Le code reste affiché à titre informatif / compatibilité.
                       </div>
                     </div>
                   ) : null}
