@@ -89,44 +89,61 @@ export default function AdminCheckinsPage() {
     if (!session?.access_token) return;
     setSellerErr("");
 
-    const headers = {
-      Authorization: `Bearer ${session.access_token}`,
-    };
+    let rows = [];
 
-    const candidates = [
-      '/api/admin/sellers/list',
-      '/api/admin/checkins/sellers',
-    ];
+    // 1) Même logique que la page admin principale : RPC list_sellers
+    try {
+      const { data, error } = await supabase.rpc("list_sellers");
+      if (!error && Array.isArray(data) && data.length) rows = data;
+    } catch {}
 
-    for (const url of candidates) {
+    // 2) Fallback direct sur profiles (seller)
+    if (rows.length === 0) {
       try {
-        const res = await fetch(url, { headers });
+        const { data: profs } = await supabase
+          .from("profiles")
+          .select("user_id, full_name, role, active")
+          .eq("role", "seller");
+        if (Array.isArray(profs) && profs.length) {
+          rows = profs.map(({ user_id, full_name, active }) => ({
+            user_id,
+            full_name: full_name || user_id,
+            active,
+          }));
+        }
+      } catch {}
+    }
+
+    // 3) Dernier fallback sur l'API admin existante si besoin
+    if (rows.length === 0) {
+      try {
+        const res = await fetch('/api/admin/sellers/list', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
         const json = await res.json().catch(() => ({}));
-        if (!res.ok || !json?.ok) throw new Error(json?.error || 'SELLERS_LIST_FAILED');
-        const rows = Array.isArray(json.sellers)
+        const apiRows = Array.isArray(json?.sellers)
           ? json.sellers
-          : Array.isArray(json.rows)
+          : Array.isArray(json?.rows)
             ? json.rows
-            : Array.isArray(json.items)
+            : Array.isArray(json?.items)
               ? json.items
               : [];
-        const normalized = rows
-          .map((s) => ({
-            id: s?.id || s?.user_id || s?.seller_id || '',
-            full_name: s?.full_name || s?.name || s?.label || s?.id || s?.user_id || '',
-            is_active: s?.is_active !== false && s?.active !== false,
-          }))
-          .filter((s) => s.id)
-          .sort((a, b) => String(a.full_name || '').localeCompare(String(b.full_name || ''), 'fr'));
+        if (res.ok && json?.ok && apiRows.length) rows = apiRows;
+      } catch {}
+    }
 
-        if (normalized.length) {
-          setSellerList(normalized);
-          setSellerErr("");
-          return;
-        }
-      } catch (e) {
-        setSellerErr(e?.message || 'Impossible de charger la liste des vendeuses.');
-      }
+    const normalized = (rows || [])
+      .map((s) => ({
+        id: s?.id || s?.user_id || s?.seller_id || "",
+        full_name: s?.full_name || s?.name || s?.label || s?.id || s?.user_id || "",
+        is_active: s?.is_active !== false && s?.active !== false,
+      }))
+      .filter((s) => s.id)
+      .sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || ""), "fr", { sensitivity: "base" }));
+
+    setSellerList(normalized);
+    if (!normalized.length) {
+      setSellerErr("Aucune vendeuse trouvée pour remplir le filtre.");
     }
   }, [session?.access_token]);
 
