@@ -960,6 +960,8 @@ useEffect(() => {
   const loadCheckinsStatus = useCallback(async () => {
     if (!userId || role === "admin" || checkinsUnsupported) return;
 
+    const hasTodayCheckinSlots = myCheckinSlots.length > 0;
+
     const loadMonthTotalsFallback = async () => {
       try {
         const { data: rows, error: e2 } = await supabase
@@ -994,12 +996,11 @@ useEffect(() => {
     setCheckinsLoading(true);
 
     try {
-      // Même sans shift aujourd'hui, il faut garder les totaux mensuels à jour.
-      if (!myCheckinSlots.length) {
+      // Même sans shift aujourd'hui, on interroge l'API statut pour récupérer les totaux du mois.
+      // L'API est plus fiable que le fallback direct si la RLS ou le cache côté app brouillent la lecture.
+      if (!hasTodayCheckinSlots) {
         setCheckinsByBoundary({});
         setCheckinsStats((prev) => ({ ...prev, todayDelay: 0, todayExtra: 0 }));
-        await loadMonthTotalsFallback();
-        return;
       }
 
       const { data } = await supabase.auth.getSession();
@@ -1038,7 +1039,7 @@ useEffect(() => {
         return;
       }
 
-      setCheckinsByBoundary(parseCheckinsToMap(j));
+      setCheckinsByBoundary(hasTodayCheckinSlots ? parseCheckinsToMap(j) : {});
       setCheckinsStats({
         monthDelay: Number(j?.month_delay_minutes || j?.monthDelay || 0) || 0,
         monthExtra: Number(j?.month_extra_minutes || j?.monthExtra || 0) || 0,
@@ -2277,7 +2278,7 @@ useEffect(() => {
         </div>
       )}
 
-      {role !== "admin" && myCheckinSlots.length > 0 && !absentToday && (
+      {role !== "admin" && !absentToday && (
         <div className="card">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -2317,6 +2318,14 @@ useEffect(() => {
               )}
 
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {!myCheckinSlots.length && (
+                <div
+                  className="sm:col-span-2 text-sm border rounded-2xl p-3"
+                  style={{ backgroundColor: "#f8fafc", borderColor: "#e5e7eb", color: "#374151" }}
+                >
+                  Aucun pointage prévu aujourd'hui. Les totaux du mois restent affichés ci-dessous.
+                </div>
+              )}
                 {myCheckinSlots.map((slot) => {
                   const rec = checkinsByBoundary?.[slot.primary] || checkinsByBoundary?.[slot.alt] || null;
                   const localAt =
