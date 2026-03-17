@@ -76,7 +76,7 @@ export default function AdminCheckinsPage() {
   }, [session, profile, loading, router]);
 
   const [month, setMonth] = useState(monthValueFromDate(new Date()));
-  const [day, setDay] = useState("");
+  const [day, setDay] = useState(new Date().toISOString().slice(0, 10));
   const [sellerId, setSellerId] = useState("");
   const [onlyMissing, setOnlyMissing] = useState(false);
   const [data, setData] = useState({ rows: [], sellers: [], summary: null, month: monthValueFromDate(new Date()) });
@@ -87,7 +87,7 @@ export default function AdminCheckinsPage() {
   const loadSellerList = useCallback(async () => {
     if (!session?.access_token) return;
     try {
-      const res = await fetch('/api/admin/sellers/list', {
+      const res = await fetch('/api/admin/checkins/sellers', {
         headers: {
           Authorization: `Bearer ${session.access_token}`,
         },
