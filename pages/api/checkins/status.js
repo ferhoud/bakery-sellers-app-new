@@ -201,7 +201,7 @@ let ignored = false;
 // Si un pointage est confirmé mais que late/early sont vides ou incohérents,
 // on recalcule à partir de confirmed_at (heure Paris) et de l'heure prévue.
 if (row?.confirmed_at) {
-  const rec = recomputeFromConfirmedAt(row.confirmed_at, plannedMinutes);
+  const rec = recomputeFromConfirmedAt(row.confirmed_at, plannedMinutes, effectiveShift);
   if (rec.has) {
     // Si les valeurs stockées sont 0/0 mais qu'on peut calculer mieux, on prend le calcul.
     const storedZero = (late === 0 && early === 0);
@@ -260,7 +260,7 @@ if (monthStart) {
       // Recalc si besoin
       let l = Number(r?.late_minutes || 0) || 0;
       let e = Number(r?.early_minutes || 0) || 0;
-      const rec = recomputeFromConfirmedAt(r?.confirmed_at, pm);
+      const rec = recomputeFromConfirmedAt(r?.confirmed_at, pm, eff);
       const storedZero = (l === 0 && e === 0);
       const storedOutOfRange = (l > maxLateAllowed() || e > maxEarlyAllowed());
       if (rec.has && (storedZero || storedOutOfRange)) {
