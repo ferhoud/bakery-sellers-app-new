@@ -7,6 +7,8 @@
 //
 import { createClient } from "@supabase/supabase-js";
 
+// COLLEEN_EARLY_FIX_2026_03_19
+
 function json(res, status, body) {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
@@ -99,21 +101,30 @@ function clampMinutes({ late, early }) {
   return { late: l, early: e, ignored };
 }
 
-function recomputeFromConfirmedAt(confirmedAt, plannedMinutes) {
+function recomputeFromConfirmedAt(confirmedAt, plannedMinutes, shiftCode) {
   if (!confirmedAt) return { late: 0, early: 0, ignored: false, has: false };
   const mins = parisMinutesOfDay(new Date(confirmedAt));
   const delta = mins - plannedMinutes;
   const maxLate = maxLateAllowed();
   const maxEarly = maxEarlyAllowed();
+  const sc = String(shiftCode || "").toUpperCase();
+
   if (delta > 0) {
     if (delta > maxLate) return { late: 0, early: 0, ignored: true, has: true };
     return { late: delta, early: 0, ignored: false, has: true };
   }
+
   if (delta < 0) {
+    // Travail en plus autorisé UNIQUEMENT pour MORNING
+    if (sc !== "MORNING") {
+      return { late: 0, early: 0, ignored: false, has: true };
+    }
+
     const e = -delta;
     if (e > maxEarly) return { late: 0, early: 0, ignored: true, has: true };
     return { late: 0, early: e, ignored: false, has: true };
   }
+
   return { late: 0, early: 0, ignored: false, has: true };
 }
 
