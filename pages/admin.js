@@ -4,10 +4,10 @@
    - Compute names with nameFromId (built from sellers list)
    - Totals use admin_hours_by_range RPC first, then fallback to direct shifts
 
-   + AJUSTEMENTS RETARD / RELAIS (soir)
-   - Admin peut saisir l'heure réelle d'arrivée du soir (ex 14:40)
-   - L'app applique automatiquement +delta à "celle qui reste" et -delta à "celle du soir"
-   - Stocké dans public.shift_handover_adjustments (RLS admin)
+   + TRAVAIL EN PLUS / RETARDS SOIR
+   - Bloc admin pour saisir un travail en plus / une couverture
+   - Bloc admin pour traiter les retards du shift 13h30
+   - Les totaux incluent public.extra_work_entries via admin_extra_work_by_range
 */
 
 import Head from "next/head";
@@ -105,7 +105,7 @@ const frDate = (iso) => {
 };
 const isSameISO = (d, iso) => fmtISODate(d) === iso;
 
-/* ---- Retard / relais helpers ---- */
+/* ---- Helpers horaires ---- */
 function parseHHMM(str) {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(str || "").trim());
   if (!m) return null;
@@ -128,16 +128,21 @@ function fmtDeltaMinutes(mins) {
 function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
-
-
-// ✅ Compat boundaries legacy (anciens enregistrements)
-function canonBoundary(b) {
-  return b === "MORNING" ? "MORNING_START" : b === "EVENING" ? "EVENING_START" : b;
+function toTimeWithSeconds(str) {
+  const s = String(str || "").trim();
+  if (!s) return "";
+  return /^\d{1,2}:\d{2}$/.test(s) ? `${s}:00` : s;
 }
-function boundaryAlternates(canon) {
-  if (canon === "MORNING_START") return ["MORNING_START", "MORNING"];
-  if (canon === "EVENING_START") return ["EVENING_START", "EVENING"];
-  return [canon];
+function toInputHHMM(str) {
+  return String(str || "").slice(0, 5);
+}
+function relayRowKey(row) {
+  return `${row?.work_date || ""}|${row?.late_seller_id || ""}|${row?.shift_code || ""}`;
+}
+function extraWorkKindLabel(kind) {
+  if (kind === "coverage") return "Couverture";
+  if (kind === "relay") return "Relai";
+  return "Travail en plus";
 }
 
 /* ---------- PETITS COMPOSANTS SANS HOOKS ---------- */
@@ -276,7 +281,7 @@ export default function AdminPage() {
   // Refs pour contrôler les reloads
   const reloadInFlight = useRef(false);
   const lastWakeRef = useRef(0);
-// UI: Retard / relais (bloc dédié sous le planning)
+// UI: jour sélectionné pour les blocs “retards soir” et “travail en plus”
   const [handoverDate, setHandoverDate] = useState(todayIso);
 
   const openHandover = useCallback((iso) => {
@@ -518,167 +523,209 @@ export default function AdminPage() {
     setAbsencesByDate(grouped);
   }, [days]);
 
-/* ======= RETARD / RELAIS (matin + soir) ======= */
-const [handoverByKey, setHandoverByKey] = useState({}); // { "YYYY-MM-DD|BOUNDARY": row }
-const [handoverEdit, setHandoverEdit] = useState({}); // { "YYYY-MM-DD|BOUNDARY": { planned_time, actual_time, stayed_seller_id, arrived_seller_id } }
+/* ======= TRAVAIL EN PLUS + RETARDS SOIR À TRAITER ======= */
+  const [extraWorkEntries, setExtraWorkEntries] = useState([]);
+  const [extraWorkDayMap, setExtraWorkDayMap] = useState({});
+  const [extraWorkForm, setExtraWorkForm] = useState({
+    seller_id: "",
+    start_time: "12:30",
+    end_time: "13:30",
+    kind: "manual_extra",
+    reason: "Couverture absence matin",
+    notes: "",
+  });
+  const [extraWorkSaving, setExtraWorkSaving] = useState(false);
+  const [extraWorkDeletingId, setExtraWorkDeletingId] = useState("");
 
-const loadWeekHandovers = useCallback(async () => {
-  const from = fmtISODate(days[0]);
-  const to = fmtISODate(days[6]);
+  const [lateRelayRows, setLateRelayRows] = useState([]);
+  const [lateRelayDayMap, setLateRelayDayMap] = useState({});
+  const [lateRelayOtherSellerByKey, setLateRelayOtherSellerByKey] = useState({});
+  const [lateRelaySubmittingKey, setLateRelaySubmittingKey] = useState("");
 
-  try {
-    const { data, error } = await supabase
-      .from("shift_handover_adjustments")
-      .select("id, date, boundary, planned_time, actual_time, stayed_seller_id, arrived_seller_id, created_at")
-      .in("boundary", ["MORNING_START", "EVENING_START", "MORNING", "EVENING"])
-      .gte("date", from)
-      .lte("date", to);
+  const getAdminAccessToken = useCallback(async () => {
+    const { data } = await supabase.auth.getSession();
+    return data?.session?.access_token || "";
+  }, []);
 
-    if (error) {
-      // si la table n'existe pas encore, on ignore sans casser l'UI
-      console.warn("loadWeekHandovers error:", error?.message || error);
-      setHandoverByKey({});
-      return;
-    }
-    const map = {};
-    (data || []).forEach((r) => {
-      const c = canonBoundary(r.boundary);
-      const key = `${r.date}|${c}`;
-      const isCanon = r.boundary === c;
-      const prev = map[key];
-      // Préfère *_START si doublon
-      if (!prev || (isCanon && prev?._orig_boundary !== c)) {
-        map[key] = { ...r, boundary: c, _orig_boundary: r.boundary };
-      }
-    });
-    setHandoverByKey(map);
-  } catch (e) {
-    console.warn("loadWeekHandovers exception:", e?.message || e);
-    setHandoverByKey({});
-  }
-}, [days]);
+  const fetchAdminJson = useCallback(
+    async (url, options = {}) => {
+      const token = await getAdminAccessToken();
+      if (!token) throw new Error("Session introuvable");
 
-const saveHandover = useCallback(
-  async (iso, boundary) => {
-    const morningId = assign[`${iso}|MORNING`] || "";
-    const middayId = assign[`${iso}|MIDDAY`] || "";
-    const eveningId = assign[`${iso}|EVENING`] || "";
-
-    const isMorning = boundary === "MORNING_START";
-    const defaultPlanned = isMorning ? "06:30" : "13:30";
-    const defaultStayed = ""; // retard simple par défaut (aucune vendeuse "restée")
-    const defaultArrived = isMorning ? (morningId || "") : (eveningId || "");
-
-    const key = `${iso}|${boundary}`;
-    const cur = handoverEdit[key] || {};
-    const planned_time = (cur.planned_time || defaultPlanned).trim();
-    const actual_time = (cur.actual_time || "").trim();
-    const stayed_seller_id = cur.stayed_seller_id ?? defaultStayed; // optionnel ("" => null)
-    const arrived_seller_id = cur.arrived_seller_id ?? defaultArrived;
-
-    const pMin = parseHHMM(planned_time);
-    const aMin = parseHHMM(actual_time);
-
-    if (pMin == null) {
-      alert("Heure prévue invalide. Exemple: 06:30 ou 13:30");
-      return;
-    }
-    if (aMin == null) {
-      alert("Heure réelle invalide. Exemple: 06:40 ou 14:40");
-      return;
-    }
-    if (!arrived_seller_id) {
-      alert("Choisis la vendeuse concernée (celle qui arrive).");
-      return;
-    }
-    if (stayed_seller_id && stayed_seller_id === arrived_seller_id) {
-      alert("La vendeuse 'qui a couvert' et la vendeuse concernée ne peuvent pas être la même.");
-      return;
-    }
-
-    // delta sécurité (évite des saisies absurdes)
-    const deltaMin = clamp(aMin - pMin, -360, 360); // -6h .. +6h
-    const safeActual = (() => {
-      const mins = pMin + deltaMin;
-      const hh = String(Math.floor(mins / 60)).padStart(2, "0");
-      const mm = String(mins % 60).padStart(2, "0");
-      return `${hh}:${mm}`;
-    })();
-
-    try {
-      const payload = {
-        date: iso,
-        boundary,
-        planned_time,
-        actual_time: safeActual,
-        stayed_seller_id: stayed_seller_id ? stayed_seller_id : null,
-        arrived_seller_id,
+      const headers = {
+        Authorization: `Bearer ${token}`,
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
+        ...(options.headers || {}),
       };
 
-      const { error } = await supabase.from("shift_handover_adjustments").upsert(payload, { onConflict: "date,boundary" });
-      if (error) {
-        console.error("saveHandover error:", error);
-        alert(`Impossible d'enregistrer l'ajustement. (${error.code || "?"}) ${error.message || ""}`);
-        return;
-      }
-
-
-      // ✅ Nettoyage legacy : évite les doublons si des anciens enregistrements existent (MORNING/EVENING)
-      try {
-        const legacy = boundary === "MORNING_START" ? "MORNING" : boundary === "EVENING_START" ? "EVENING" : null;
-        if (legacy) {
-          await supabase.from("shift_handover_adjustments").delete().eq("date", iso).eq("boundary", legacy);
-        }
-      } catch (_) {}
-
-      // Nettoie le draft local de ce jour/créneau
-      setHandoverEdit((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
+      const res = await fetch(url, {
+        cache: "no-store",
+        ...options,
+        headers,
       });
 
-      await loadWeekHandovers();
-      setRefreshKey((k) => k + 1);
-    } catch (e) {
-      console.error("saveHandover exception:", e);
-      alert("Impossible d'enregistrer l'ajustement (exception).");
-    }
-  },
-  [assign, handoverEdit, loadWeekHandovers]
-);
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(json?.error || `Erreur API (${res.status})`);
+      }
+      return json;
+    },
+    [getAdminAccessToken]
+  );
 
-const deleteHandover = useCallback(
-  async (iso, boundary) => {
+  const loadWeekExtraWork = useCallback(async () => {
+    const from = fmtISODate(days[0]);
+    const to = fmtISODate(days[6]);
     try {
-      const { error } = await supabase
-        .from("shift_handover_adjustments")
-        .delete()
-        .eq("date", iso)
-        .in("boundary", boundaryAlternates(boundary));
-      if (error) {
-        console.error("deleteHandover error:", error);
-        alert(`Impossible de supprimer l'ajustement. (${error.code || "?"}) ${error.message || ""}`);
-        return;
-      }
-
-      const key = `${iso}|${boundary}`;
-      setHandoverEdit((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
+      const json = await fetchAdminJson(`/api/admin/extra-work/list?from=${from}&to=${to}`);
+      const rows = Array.isArray(json?.rows) ? json.rows : [];
+      setExtraWorkEntries(rows);
+      const grouped = {};
+      rows.forEach((row) => {
+        const iso = row.work_date;
+        if (!grouped[iso]) grouped[iso] = [];
+        grouped[iso].push(row);
       });
+      setExtraWorkDayMap(grouped);
+    } catch (e) {
+      console.warn("loadWeekExtraWork error:", e?.message || e);
+      setExtraWorkEntries([]);
+      setExtraWorkDayMap({});
+    }
+  }, [days, fetchAdminJson]);
 
-      await loadWeekHandovers();
+  const loadLateRelayRows = useCallback(async () => {
+    const from = fmtISODate(days[0]);
+    const to = fmtISODate(days[6]);
+    try {
+      const json = await fetchAdminJson(`/api/admin/late-relays/list?from=${from}&to=${to}`);
+      const rows = Array.isArray(json?.rows) ? json.rows : [];
+      setLateRelayRows(rows);
+      const grouped = {};
+      rows.forEach((row) => {
+        const iso = row.work_date;
+        if (!grouped[iso]) grouped[iso] = [];
+        grouped[iso].push(row);
+      });
+      setLateRelayDayMap(grouped);
+    } catch (e) {
+      console.warn("loadLateRelayRows error:", e?.message || e);
+      setLateRelayRows([]);
+      setLateRelayDayMap({});
+    }
+  }, [days, fetchAdminJson]);
+
+  const createExtraWorkEntry = useCallback(async () => {
+    if (extraWorkSaving) return;
+    const seller_id = extraWorkForm.seller_id || "";
+    const start_time = (extraWorkForm.start_time || "").trim();
+    const end_time = (extraWorkForm.end_time || "").trim();
+    const reason = (extraWorkForm.reason || "Travail en plus").trim();
+    const notes = (extraWorkForm.notes || "").trim();
+    const kind = extraWorkForm.kind || "manual_extra";
+
+    if (!handoverDate || !seller_id || !start_time || !end_time) {
+      alert("Choisis le jour, la vendeuse, l'heure de début et l'heure de fin.");
+      return;
+    }
+    const startMin = parseHHMM(start_time);
+    const endMin = parseHHMM(end_time);
+    if (startMin == null || endMin == null || endMin <= startMin) {
+      alert("Plage horaire invalide.");
+      return;
+    }
+
+    setExtraWorkSaving(true);
+    try {
+      await fetchAdminJson("/api/admin/extra-work/create", {
+        method: "POST",
+        body: JSON.stringify({
+          work_date: handoverDate,
+          seller_id,
+          start_time: toTimeWithSeconds(start_time),
+          end_time: toTimeWithSeconds(end_time),
+          kind,
+          reason,
+          notes,
+        }),
+      });
+      setExtraWorkForm((prev) => ({ ...prev, notes: "" }));
+      await loadWeekExtraWork();
       setRefreshKey((k) => k + 1);
     } catch (e) {
-      console.error("deleteHandover exception:", e);
-      alert("Impossible de supprimer l'ajustement (exception).");
+      alert(e?.message || "Impossible d'enregistrer le travail en plus.");
+    } finally {
+      setExtraWorkSaving(false);
     }
-  },
-  [loadWeekHandovers]
-);
+  }, [extraWorkForm, extraWorkSaving, fetchAdminJson, handoverDate, loadWeekExtraWork]);
 
+  const deleteExtraWorkEntry = useCallback(
+    async (id) => {
+      if (!id || extraWorkDeletingId) return;
+      setExtraWorkDeletingId(id);
+      try {
+        await fetchAdminJson("/api/admin/extra-work/delete", {
+          method: "POST",
+          body: JSON.stringify({ id }),
+        });
+        await loadWeekExtraWork();
+        setRefreshKey((k) => k + 1);
+      } catch (e) {
+        alert(e?.message || "Impossible de supprimer l'entrée.");
+      } finally {
+        setExtraWorkDeletingId("");
+      }
+    },
+    [extraWorkDeletingId, fetchAdminJson, loadWeekExtraWork]
+  );
+
+  const resolveLateRelay = useCallback(
+    async (row, mode, coveringSellerId = "") => {
+      const key = relayRowKey(row);
+      if (!row || lateRelaySubmittingKey) return;
+
+      const payload = {
+        work_date: row.work_date,
+        late_seller_id: row.late_seller_id,
+        shift_code: row.shift_code || "EVENING",
+        planned_start_time: row.planned_start_time || "13:30:00",
+        actual_arrival_time: row.actual_arrival_time,
+        late_minutes: Number(row.late_minutes || 0),
+        coverage_status: mode,
+        notes:
+          mode === "covered"
+            ? "Couverture validée par l'admin"
+            : mode === "dismissed"
+            ? "Ignoré par l'admin"
+            : "Aucune couverture déclarée",
+      };
+
+      if (mode === "covered") {
+        if (!coveringSellerId) {
+          alert("Choisis la vendeuse qui a couvert.");
+          return;
+        }
+        payload.covering_seller_id = coveringSellerId;
+        payload.coverage_start_time = row.planned_start_time || "13:30:00";
+        payload.coverage_end_time = row.actual_arrival_time;
+      }
+
+      setLateRelaySubmittingKey(key);
+      try {
+        await fetchAdminJson("/api/admin/late-relays/resolve", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
+        await Promise.all([loadLateRelayRows(), loadWeekExtraWork()]);
+        setRefreshKey((k) => k + 1);
+      } catch (e) {
+        alert(e?.message || "Impossible d'enregistrer la décision.");
+      } finally {
+        setLateRelaySubmittingKey("");
+      }
+    },
+    [fetchAdminJson, lateRelaySubmittingKey, loadLateRelayRows, loadWeekExtraWork]
+  );
 
   /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
   const loadAbsencesToday = useCallback(async () => {
@@ -1032,11 +1079,18 @@ const deleteHandover = useCallback(
       })
       .subscribe();
 
-    // Retard / relais realtime (optionnel)
-    const chHandover = supabase
-      .channel("handover_rt_admin")
-      .on("postgres_changes", { event: "*", schema: "public", table: "shift_handover_adjustments" }, () => {
-        loadWeekHandovers();
+    const chExtraWork = supabase
+      .channel("extra_work_rt_admin")
+      .on("postgres_changes", { event: "*", schema: "public", table: "extra_work_entries" }, () => {
+        loadWeekExtraWork();
+        setRefreshKey((k) => k + 1);
+      })
+      .subscribe();
+
+    const chLateRes = supabase
+      .channel("late_arrival_resolutions_rt_admin")
+      .on("postgres_changes", { event: "*", schema: "public", table: "late_arrival_resolutions" }, () => {
+        loadLateRelayRows();
         setRefreshKey((k) => k + 1);
       })
       .subscribe();
@@ -1046,7 +1100,8 @@ const deleteHandover = useCallback(
       supabase.removeChannel(chRepl);
       supabase.removeChannel(chLeaves);
       supabase.removeChannel(chCancel);
-      supabase.removeChannel(chHandover);
+      supabase.removeChannel(chExtraWork);
+      supabase.removeChannel(chLateRes);
     };
   }, [
     todayIso,
@@ -1057,7 +1112,8 @@ const deleteHandover = useCallback(
     loadMonthAcceptedRepl,
     loadReplacements,
     loadLeavesUnified,
-    loadWeekHandovers,
+    loadWeekExtraWork,
+    loadLateRelayRows,
   ]);
 
   /* Sauvegarde d'une affectation */
@@ -1250,7 +1306,8 @@ const deleteHandover = useCallback(
       await Promise.all([
         loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
         loadWeekAbsences(),
-        loadWeekHandovers(),
+        loadWeekExtraWork(),
+        loadLateRelayRows(),
         loadPendingAbs?.(),
         loadAbsencesToday?.(),
         loadReplacements?.(),
@@ -1269,7 +1326,8 @@ const deleteHandover = useCallback(
     loadSellers,
     loadWeekAssignments,
     loadWeekAbsences,
-    loadWeekHandovers,
+    loadWeekExtraWork,
+    loadLateRelayRows,
     loadPendingAbs,
     loadAbsencesToday,
     loadReplacements,
@@ -1303,13 +1361,13 @@ const deleteHandover = useCallback(
 
   // SW push → reload
   useEffect(() => {
-    if (!("serviceWorker" in navigator)) return;
-    const handler = (e) => {
-      if (e?.data?.type === "push") reloadAll();
-    };
-    navigator.serviceWorker.addEventListener("message", handler);
-    return () => navigator.serviceWorker.removeEventListener("message", handler);
-  }, [reloadAll]);
+    if (!session) return;
+    const id = setInterval(() => {
+      loadLateRelayRows();
+      loadWeekExtraWork();
+    }, 30000);
+    return () => clearInterval(id);
+  }, [session, loadLateRelayRows, loadWeekExtraWork]);
 
   /* 🔔 Notifications admin: auto (sans bouton)
      - Les navigateurs bloquent la demande d'autorisation sans geste utilisateur.
@@ -1397,14 +1455,19 @@ const deleteHandover = useCallback(
   useEffect(() => {
     let isMounted = true;
     const run = async () => {
-      await Promise.all([loadSellers(), loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])), loadWeekHandovers()]);
+      await Promise.all([
+        loadSellers(),
+        loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])),
+        loadWeekExtraWork(),
+        loadLateRelayRows(),
+      ]);
       if (isMounted) setRefreshKey((k) => k + 1);
     };
     run();
     return () => {
       isMounted = false;
     };
-  }, [days, loadSellers, loadWeekAssignments, loadWeekHandovers]);
+  }, [days, loadSellers, loadWeekAssignments, loadWeekExtraWork, loadLateRelayRows]);
 
 
   // Badge bouton "Pointage" : vendeuses planifiées non pointées (alerte après 60 min)
@@ -1997,49 +2060,9 @@ const deleteHandover = useCallback(
               const highlight = isSameISO(d, todayIso);
               const currentAbs = absencesByDate[iso] || [];
 
-              // defaults depuis le planning
-              const morningId = assign[`${iso}|MORNING`] || "";
-              const middayId = assign[`${iso}|MIDDAY`] || "";
-              const eveningId = assign[`${iso}|EVENING`] || "";
-              const defaultStayed = middayId || morningId || "";
-              const defaultArrived = eveningId || "";
-
-const recMorning = handoverByKey[`${iso}|MORNING_START`] || null;
-const recEvening = handoverByKey[`${iso}|EVENING_START`] || null;
-
-const draftMorning = handoverEdit[`${iso}|MORNING_START`] || null;
-const draftEvening = handoverEdit[`${iso}|EVENING_START`] || null;
-
-const handoverCount = (recMorning ? 1 : 0) + (recEvening ? 1 : 0);
-
-// Matin (retard simple possible: stayed = null)
-const plannedMorning = (draftMorning?.planned_time ?? recMorning?.planned_time ?? "06:30").toString();
-const actualMorning = (draftMorning?.actual_time ?? recMorning?.actual_time ?? "").toString();
-const stayedMorningId = (draftMorning?.stayed_seller_id ?? recMorning?.stayed_seller_id ?? "") || "";
-const arrivedMorningId = (draftMorning?.arrived_seller_id ?? recMorning?.arrived_seller_id ?? (morningId || "")) || "";
-const mP = parseHHMM(plannedMorning);
-const mA = parseHHMM(actualMorning);
-const deltaMorningMin = mP != null && mA != null ? mA - mP : null;
-
-const stayedMorningName = stayedMorningId ? (nameFromId(stayedMorningId) || "-") : "-";
-const arrivedMorningName = arrivedMorningId ? (nameFromId(arrivedMorningId) || "-") : "-";
-
-// Soir
-const plannedEvening = (draftEvening?.planned_time ?? recEvening?.planned_time ?? "13:30").toString();
-const actualEvening = (draftEvening?.actual_time ?? recEvening?.actual_time ?? "").toString();
-const stayedEveningId = (draftEvening?.stayed_seller_id ?? recEvening?.stayed_seller_id ?? defaultStayed) || "";
-const arrivedEveningId = (draftEvening?.arrived_seller_id ?? recEvening?.arrived_seller_id ?? defaultArrived) || "";
-const eP = parseHHMM(plannedEvening);
-const eA = parseHHMM(actualEvening);
-const deltaEveningMin = eP != null && eA != null ? eA - eP : null;
-
-const stayedEveningName = stayedEveningId ? (nameFromId(stayedEveningId) || "-") : "-";
-const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "-") : "-";
-              const candidatesStayed = Array.from(new Set([middayId, morningId].filter(Boolean)));
-              const candidatesArrived = Array.from(new Set([eveningId].filter(Boolean)));
-
-              // options all sellers (dedupe)
-              const sellerOptions = (sellers || []).map((s) => ({ id: s.user_id, name: s.full_name }));
+              const dayExtraRows = extraWorkDayMap[iso] || [];
+              const dayLateRelayRows = lateRelayDayMap[iso] || [];
+              const dayInfoCount = dayExtraRows.length + dayLateRelayRows.length;
 
               return (
                 <div
@@ -2050,9 +2073,9 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                   <div className="text-xs uppercase text-gray-500">{capFirst(weekdayFR(d))}</div>
                   <div className="flex items-center justify-between">
                     <div className="font-semibold">{iso}</div>
-                    {handoverCount > 0 ? (
+                    {dayInfoCount > 0 ? (
                       <span
-                        title={`Retard / relais: ${handoverCount}`}
+                        title={`Éléments à revoir : ${dayInfoCount}`}
                         style={{
                           display: "inline-flex",
                           alignItems: "center",
@@ -2068,7 +2091,7 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                           lineHeight: "22px",
                         }}
                       >
-                        {handoverCount}
+                        {dayInfoCount}
                       </span>
                     ) : null}
                   </div>
@@ -2203,8 +2226,8 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                     style={{ background: "#f8fafc", borderColor: "#e2e8f0" }}
                   >
                     <div className="text-xs text-gray-700">
-                      ⏱️ Retard / relais
-                      {handoverCount > 0 ? (
+                      ⏱️ Travail en plus / retards soir
+                      {dayLateRelayRows.length > 0 ? (
                         <span
                           className="ml-2"
                           style={{
@@ -2222,8 +2245,11 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                             lineHeight: "20px",
                           }}
                         >
-                          {handoverCount}
+                          {dayLateRelayRows.length}
                         </span>
+                      ) : null}
+                      {dayExtraRows.length > 0 ? (
+                        <span className="ml-2 text-green-700 font-medium">+ {dayExtraRows.length} saisie(s)</span>
                       ) : null}
                     </div>
 
@@ -2231,10 +2257,10 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                       type="button"
                       className="btn"
                       onClick={() => openHandover(iso)}
-                      title="Ajuster un retard / relais pour ce jour"
+                      title="Ouvrir le bloc travail en plus / retards"
                       style={{ padding: "0.35rem 0.6rem", borderRadius: "0.9rem" }}
                     >
-                      Retard
+                      Ouvrir
                     </button>
                   </div>
 
@@ -2248,210 +2274,284 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
 
 
 
-{/* ===================== RETARD / RELAIS (BLOC DÉDIÉ) ===================== */}
-<div className="card" id="handover-day">
-          <div className="hdr mb-2">Retard / relais</div>
-          <div className="text-sm text-gray-600">
-            Sélectionne un jour, puis saisis l’heure <span className="font-medium">prévue</span> et l’heure{" "}
-            <span className="font-medium">réelle</span>. L’app applique automatiquement{" "}
-            <span className="font-medium">+delta</span> à la vendeuse “qui a couvert” (optionnel) et{" "}
-            <span className="font-medium">-delta</span> à la vendeuse concernée (celle qui arrive).
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-end gap-3">
-            <div>
-              <div className="text-sm mb-1">Jour</div>
-              <select className="input" value={handoverDate} onChange={(e) => setHandoverDate(e.target.value)}>
-                {days.map((d) => {
-                  const iso = fmtISODate(d);
-                  return (
-                    <option key={iso} value={iso}>
-                      {capFirst(weekdayFR(d))} {iso}
-                    </option>
-                  );
-                })}
-              </select>
+{/* ===================== TRAVAIL EN PLUS / RETARDS SOIR ===================== */}
+<div className="grid grid-cols-1 xl:grid-cols-2 gap-4" id="handover-day">
+          <div className="card">
+            <div className="hdr mb-2">Retards du soir à traiter {lateRelayRows.length > 0 ? `(${lateRelayRows.length})` : ""}</div>
+            <div className="text-sm text-gray-600">
+              Quand une vendeuse du shift <span className="font-medium">13h30</span> arrive en retard,
+              indique ici si la caisse a été couverte en attendant.
             </div>
 
-            <button type="button" className="btn" onClick={() => setHandoverDate(todayIso)}>
-              Aujourd’hui
-            </button>
-          </div>
+            <div className="mt-4 flex flex-wrap items-end gap-3">
+              <div>
+                <div className="text-sm mb-1">Jour</div>
+                <select className="input" value={handoverDate} onChange={(e) => setHandoverDate(e.target.value)}>
+                  {days.map((d) => {
+                    const iso = fmtISODate(d);
+                    return (
+                      <option key={iso} value={iso}>
+                        {capFirst(weekdayFR(d))} {iso}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
 
-          {(() => {
-            const iso = handoverDate;
+              <button type="button" className="btn" onClick={() => setHandoverDate(todayIso)}>
+                Aujourd’hui
+              </button>
+            </div>
 
-            const morningId = assign[`${iso}|MORNING`] || "";
-            const middayId = assign[`${iso}|MIDDAY`] || "";
-            const eveningId = assign[`${iso}|EVENING`] || "";
-
-            const sellerOptions = (sellers || []).map((s) => ({ id: s.user_id, name: s.full_name }));
-
-            const renderBoundary = (boundary) => {
-              const isMorning = boundary === "MORNING_START";
-              const label = isMorning ? "Matin" : "Soir";
-              const defaultPlanned = isMorning ? "06:30" : "13:30";
-              const defaultArrived = isMorning ? (morningId || "") : (eveningId || "");
-
-              const key = `${iso}|${boundary}`;
-              const rec = handoverByKey[key] || null;
-              const cur = handoverEdit[key] || {};
-
-              const planned_time = (cur.planned_time ?? rec?.planned_time ?? defaultPlanned ?? "").toString();
-              const actual_time = (cur.actual_time ?? rec?.actual_time ?? "" ?? "").toString();
-              const stayed_seller_id = (cur.stayed_seller_id ?? rec?.stayed_seller_id ?? "" ?? "") || "";
-              const arrived_seller_id = (cur.arrived_seller_id ?? rec?.arrived_seller_id ?? defaultArrived ?? "") || "";
-
-              const pMin = parseHHMM(planned_time);
-              const aMin = parseHHMM(actual_time);
-              const delta = pMin != null && aMin != null ? aMin - pMin : null;
-
-              const arrivedName = arrived_seller_id ? nameFromId(arrived_seller_id) || "-" : "-";
-              const stayedName = stayed_seller_id ? nameFromId(stayed_seller_id) || "-" : "Aucune (retard simple)";
+            {(() => {
+              const rows = lateRelayDayMap[handoverDate] || [];
+              if (!rows.length) {
+                return <div className="text-sm text-gray-600 mt-4">Aucun retard soir non traité pour ce jour.</div>;
+              }
 
               return (
-                <div className="border rounded-2xl p-4" style={{ borderColor: "#e5e7eb" }}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="font-semibold">
-                        {label}{" "}
-                        <span className="text-xs font-normal text-gray-500">
-                          ({isMorning ? "arrivée 6h30" : "arrivée 13h30"})
-                        </span>
+                <div className="mt-4 space-y-3">
+                  {rows.map((row) => {
+                    const rowKey = relayRowKey(row);
+                    const submitting = lateRelaySubmittingKey === rowKey;
+                    const otherSeller = lateRelayOtherSellerByKey[rowKey] || "";
+                    const otherOptions = (sellers || []).filter((s) => s.user_id !== row.late_seller_id);
+
+                    return (
+                      <div key={rowKey} className="border rounded-2xl p-3" style={{ borderColor: "#e5e7eb" }}>
+                        <div className="font-semibold text-red-700">⚠️ Retard détecté : {row.late_seller_name || nameFromId(row.late_seller_id) || "-"}</div>
+                        <div className="text-sm text-gray-700 mt-1">
+                          Prévu : <span className="font-medium">{toInputHHMM(row.planned_start_time) || "13:30"}</span>
+                          {" · "}
+                          Arrivée : <span className="font-medium">{toInputHHMM(row.actual_arrival_time) || "-"}</span>
+                          {" · "}
+                          Retard : <span className="font-medium text-red-700">{fmtDeltaMinutes(Number(row.late_minutes || 0))}</span>
+                        </div>
+                        <div className="text-sm text-gray-600 mt-2">La caisse a-t-elle été couverte jusqu’à son arrivée ?</div>
+
+                        {(row.morning_sellers || []).length > 0 ? (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {(row.morning_sellers || []).map((ms) => (
+                              <button
+                                key={ms.id}
+                                type="button"
+                                className="btn"
+                                disabled={submitting}
+                                onClick={() => resolveLateRelay(row, "covered", ms.id)}
+                                style={{ backgroundColor: "#16a34a", borderColor: "transparent", color: "#fff" }}
+                              >
+                                Oui, par {ms.full_name}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto] md:items-end">
+                          <div>
+                            <div className="text-sm mb-1">Oui, par une autre vendeuse</div>
+                            <select
+                              className="input"
+                              value={otherSeller}
+                              onChange={(e) =>
+                                setLateRelayOtherSellerByKey((prev) => ({
+                                  ...prev,
+                                  [rowKey]: e.target.value,
+                                }))
+                              }
+                            >
+                              <option value="">— Choisir —</option>
+                              {otherOptions.map((s) => (
+                                <option key={s.user_id} value={s.user_id}>
+                                  {s.full_name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={submitting || !otherSeller}
+                            onClick={() => resolveLateRelay(row, "covered", otherSeller)}
+                          >
+                            Valider la couverture
+                          </button>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={submitting}
+                            onClick={() => resolveLateRelay(row, "not_covered")}
+                            style={{ backgroundColor: "#dc2626", borderColor: "transparent", color: "#fff" }}
+                          >
+                            Non
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            disabled={submitting}
+                            onClick={() => resolveLateRelay(row, "dismissed")}
+                          >
+                            Ignorer
+                          </button>
+                        </div>
                       </div>
-                      <div className="text-xs text-gray-600 mt-1">
-                        {rec ? (
-                          <span className="text-green-700 font-medium">Enregistré</span>
-                        ) : (
-                          <span className="text-gray-500">Non saisi</span>
-                        )}
-                        {" · "}
-                        Δ{" "}
-                        {delta == null ? (
-                          "-"
-                        ) : (
-                          <span className={delta > 0 ? "text-red-700 font-medium" : "text-gray-800 font-medium"}>
-                            {delta > 0 ? `+${delta}` : `${delta}`} min
-                          </span>
-                        )}
-                        {" · "}
-                        {stayedName} + / {arrivedName} -
-                      </div>
-                    </div>
-
-                    {rec ? (
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => {
-                          if (confirm("Supprimer cet ajustement ?")) deleteHandover(iso, boundary);
-                        }}
-                        title="Supprimer l'ajustement enregistré"
-                        style={{
-                          backgroundColor: "#fff",
-                          color: "#111827",
-                          borderColor: "#ef4444",
-                        }}
-                      >
-                        Supprimer
-                      </button>
-                    ) : null}
-                  </div>
-
-                  <div className="mt-4 grid gap-3">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <div className="text-sm mb-1">Heure prévue</div>
-                        <input
-                          type="time"
-                          className="input"
-                          value={planned_time}
-                          onChange={(e) =>
-                            setHandoverEdit((prev) => ({
-                              ...prev,
-                              [key]: { ...(prev[key] || {}), planned_time: e.target.value },
-                            }))
-                          }
-                        />
-                      </div>
-                      <div>
-                        <div className="text-sm mb-1">Heure réelle</div>
-                        <input
-                          type="time"
-                          className="input"
-                          value={actual_time}
-                          onChange={(e) =>
-                            setHandoverEdit((prev) => ({
-                              ...prev,
-                              [key]: { ...(prev[key] || {}), actual_time: e.target.value },
-                            }))
-                          }
-                        />
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-sm mb-1">Vendeuse concernée (celle qui arrive)</div>
-                      <select
-                        className="input"
-                        value={arrived_seller_id}
-                        onChange={(e) =>
-                          setHandoverEdit((prev) => ({
-                            ...prev,
-                            [key]: { ...(prev[key] || {}), arrived_seller_id: e.target.value },
-                          }))
-                        }
-                      >
-                        <option value="">— Choisir —</option>
-                        {sellerOptions.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <div className="text-sm mb-1">Vendeuse “qui a couvert” (optionnel)</div>
-                      <select
-                        className="input"
-                        value={stayed_seller_id}
-                        onChange={(e) =>
-                          setHandoverEdit((prev) => ({
-                            ...prev,
-                            [key]: { ...(prev[key] || {}), stayed_seller_id: e.target.value },
-                          }))
-                        }
-                      >
-                        <option value="">Aucune / retard simple</option>
-                        {sellerOptions.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            {s.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="flex justify-end">
-                      <button type="button" className="btn" onClick={() => saveHandover(iso, boundary)}>
-                        Enregistrer
-                      </button>
-                    </div>
-                  </div>
+                    );
+                  })}
                 </div>
               );
-            };
+            })()}
+          </div>
 
-            return (
-              <div className="mt-4 grid gap-4 md:grid-cols-2">
-                {renderBoundary("MORNING_START")}
-                {renderBoundary("EVENING_START")}
+          <div className="card">
+            <div className="hdr mb-2">Travail en plus / couverture {extraWorkEntries.length > 0 ? `(${extraWorkEntries.length})` : ""}</div>
+            <div className="text-sm text-gray-600">
+              Saisie admin pour les cas exceptionnels. Le pointage normal ne change pas, mais ces minutes
+              s’ajoutent directement aux totaux.
+            </div>
+
+            <div className="mt-4 grid gap-3">
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-sm mb-1">Jour</div>
+                  <select className="input" value={handoverDate} onChange={(e) => setHandoverDate(e.target.value)}>
+                    {days.map((d) => {
+                      const iso = fmtISODate(d);
+                      return (
+                        <option key={iso} value={iso}>
+                          {capFirst(weekdayFR(d))} {iso}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+                <div>
+                  <div className="text-sm mb-1">Vendeuse</div>
+                  <select
+                    className="input"
+                    value={extraWorkForm.seller_id}
+                    onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, seller_id: e.target.value }))}
+                  >
+                    <option value="">— Choisir —</option>
+                    {sellers.map((s) => (
+                      <option key={s.user_id} value={s.user_id}>
+                        {s.full_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
-            );
-          })()}
+
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-sm mb-1">Heure début</div>
+                  <input
+                    type="time"
+                    className="input"
+                    value={extraWorkForm.start_time}
+                    onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, start_time: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <div className="text-sm mb-1">Heure fin</div>
+                  <input
+                    type="time"
+                    className="input"
+                    value={extraWorkForm.end_time}
+                    onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, end_time: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-sm mb-1">Type</div>
+                  <select
+                    className="input"
+                    value={extraWorkForm.kind}
+                    onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, kind: e.target.value }))}
+                  >
+                    <option value="manual_extra">Travail en plus</option>
+                    <option value="coverage">Couverture</option>
+                    <option value="relay">Relai</option>
+                  </select>
+                </div>
+                <div>
+                  <div className="text-sm mb-1">Motif</div>
+                  <input
+                    className="input"
+                    value={extraWorkForm.reason}
+                    onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, reason: e.target.value }))}
+                    placeholder="Ex: Couverture absence matin"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="text-sm mb-1">Notes (optionnel)</div>
+                <textarea
+                  className="input"
+                  rows={3}
+                  value={extraWorkForm.notes}
+                  onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, notes: e.target.value }))}
+                  placeholder="Ex: arrivée à 12h30 au lieu de 13h30"
+                />
+              </div>
+
+              <div className="flex justify-end">
+                <button type="button" className="btn" onClick={createExtraWorkEntry} disabled={extraWorkSaving}>
+                  {extraWorkSaving ? "Enregistrement…" : "Enregistrer"}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-5 border-t pt-4" style={{ borderColor: "#e5e7eb" }}>
+              <div className="text-sm font-medium mb-2">Saisies du jour sélectionné</div>
+              {(() => {
+                const rows = extraWorkDayMap[handoverDate] || [];
+                if (!rows.length) {
+                  return <div className="text-sm text-gray-600">Aucune saisie pour ce jour.</div>;
+                }
+                return (
+                  <div className="space-y-2">
+                    {rows.map((row) => (
+                      <div
+                        key={row.id}
+                        className="border rounded-2xl px-3 py-2 flex flex-col gap-2 md:flex-row md:items-center md:justify-between"
+                        style={{ borderColor: "#e5e7eb" }}
+                      >
+                        <div>
+                          <div className="text-sm font-medium">
+                            {row.seller_name || nameFromId(row.seller_id) || "-"} · {extraWorkKindLabel(row.kind)}
+                          </div>
+                          <div className="text-xs text-gray-600 mt-1">
+                            {toInputHHMM(row.start_time)} → {toInputHHMM(row.end_time)}
+                            {" · "}
+                            <span className="font-medium text-green-700">{fmtDeltaMinutes(Number(row.minutes || 0))}</span>
+                            {row.reason ? ` · ${row.reason}` : ""}
+                          </div>
+                          {row.notes ? <div className="text-xs text-gray-500 mt-1">{row.notes}</div> : null}
+                        </div>
+                        <button
+                          type="button"
+                          className="btn"
+                          disabled={extraWorkDeletingId === row.id}
+                          onClick={() => {
+                            if (confirm("Supprimer cette saisie ?")) deleteExtraWorkEntry(row.id);
+                          }}
+                          style={{ backgroundColor: "#fff", color: "#111827", borderColor: "#ef4444" }}
+                        >
+                          Supprimer
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
         </div>
-
-
 
 
         <div className="card">
@@ -2681,59 +2781,47 @@ function TotalsGrid({ sellers, monthFrom, monthTo, monthLabel, refreshKey, month
     return dict;
   }
 
-async function fetchHandoversRange(fromIso, toIso) {
+async function fetchExtraWorkRange(fromIso, toIso, sellersList) {
+  const dict = Object.fromEntries((sellersList || []).map((s) => [s.user_id, 0]));
+
   try {
-    const { data, error } = await supabase
-      .from("shift_handover_adjustments")
-      .select("date, boundary, planned_time, actual_time, stayed_seller_id, arrived_seller_id")
-      .in("boundary", ["MORNING_START", "EVENING_START", "MORNING", "EVENING"])
-      .gte("date", fromIso)
-      .lte("date", toIso);
-    if (error) throw error;
-    return data || [];
+    const { data, error } = await supabase.rpc("admin_extra_work_by_range", { p_from: fromIso, p_to: toIso });
+    if (!error && Array.isArray(data)) {
+      data.forEach((r) => {
+        if (!r?.seller_id) return;
+        dict[r.seller_id] = Number(r.extra_work_hours) || 0;
+      });
+      return dict;
+    }
   } catch (e) {
-    return [];
+    console.warn("RPC admin_extra_work_by_range threw -> fallback", e);
   }
+
+  try {
+    const { data: rows, error } = await supabase
+      .from("extra_work_entries")
+      .select("seller_id, minutes, work_date")
+      .gte("work_date", fromIso)
+      .lte("work_date", toIso);
+    if (error) throw error;
+    (rows || []).forEach((r) => {
+      if (!r?.seller_id) return;
+      dict[r.seller_id] = Number(dict[r.seller_id] || 0) + (Number(r.minutes || 0) / 60);
+    });
+  } catch (e) {
+    console.warn("extra_work_entries fallback failed", e);
+  }
+
+  return dict;
 }
 
-function applyHandovers(dict, handovers) {
-  const out = { ...(dict || {}) };
-  const list = Array.isArray(handovers) ? [...handovers] : [];
-
-  // ✅ En cas de doublon (MORNING vs MORNING_START), on préfère la version canonique (*_START)
-  list.sort((a, b) => {
-    const aCanon = (a?.boundary || "") === canonBoundary(a?.boundary || "");
-    const bCanon = (b?.boundary || "") === canonBoundary(b?.boundary || "");
-    if (aCanon === bCanon) return 0;
-    return aCanon ? -1 : 1;
+function applyExtraWorkHours(baseDict, extraDict) {
+  const out = { ...(baseDict || {}) };
+  Object.entries(extraDict || {}).forEach(([sellerId, hours]) => {
+    out[sellerId] = Number(out[sellerId] || 0) + (Number(hours) || 0);
   });
-
-  const seen = new Set();
-
-  list.forEach((h) => {
-    const b = canonBoundary(h.boundary);
-    const k = `${h.date}|${b}`;
-    if (seen.has(k)) return;
-    seen.add(k);
-
-    const fallbackPlanned = b === "MORNING_START" ? "06:30" : "13:30";
-    const planned = parseHHMM(h.planned_time || fallbackPlanned);
-    const actual = parseHHMM(h.actual_time || "");
-    if (planned == null || actual == null) return;
-
-    const deltaMin = clamp(actual - planned, -360, 360);
-    const deltaHours = deltaMin / 60;
-
-    const stayed = h.stayed_seller_id;
-    const arrived = h.arrived_seller_id;
-
-    if (stayed) out[stayed] = Number(out[stayed] || 0) + deltaHours;
-    if (arrived) out[arrived] = Number(out[arrived] || 0) - deltaHours;
-  });
-
   return out;
 }
-
 
   function applyCheckinAdjustments(baseDict, rows) {
     const out = { ...(baseDict || {}) };
@@ -2831,10 +2919,10 @@ function applyHandovers(dict, handovers) {
 
     base = applyCheckinAdjustments(base, checkinRows || []);
 
-    // 4) Applique les ajustements retard / relais saisis par l'admin
+    // 4) Ajoute le travail en plus / couverture validé par l'admin
     try {
-      const handovers = await fetchHandoversRange(fromIso, toIso);
-      return applyHandovers(base, handovers);
+      const extraWork = await fetchExtraWorkRange(fromIso, toIso, sellersList);
+      return applyExtraWorkHours(base, extraWork);
     } catch {
       return base;
     }
@@ -2966,7 +3054,7 @@ function applyHandovers(dict, handovers) {
         })}
       </div>
       <div className="text-xs text-gray-500 mt-3">
-        Les totaux incluent les ajustements “Retard / relais (soir)” saisis dans le bloc Retard / relais (soir).
+        Les totaux incluent le pointage confirmé ainsi que le travail en plus / la couverture saisis par l’admin.
       </div>
     </div>
   );
