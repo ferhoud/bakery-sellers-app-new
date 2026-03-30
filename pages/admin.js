@@ -281,15 +281,22 @@ export default function AdminPage() {
   // Refs pour contrôler les reloads
   const reloadInFlight = useRef(false);
   const lastWakeRef = useRef(0);
-// UI: jour sélectionné pour les blocs “retards soir” et “travail en plus”
+  const prevLateRelayCountRef = useRef(0);
+  // UI: jour sélectionné pour les blocs “retards soir” et “travail en plus”
   const [handoverDate, setHandoverDate] = useState(todayIso);
+  const [showHandoverManager, setShowHandoverManager] = useState(false);
 
   const openHandover = useCallback((iso) => {
-    setHandoverDate(iso);
+    setHandoverDate(iso || todayIso);
+    setShowHandoverManager(true);
     setTimeout(() => {
       const wrap = document.getElementById("handover-day");
       if (wrap?.scrollIntoView) wrap.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 0);
+  }, [todayIso]);
+
+  const closeHandover = useCallback(() => {
+    setShowHandoverManager(false);
   }, []);
 
 
@@ -726,6 +733,15 @@ export default function AdminPage() {
     },
     [fetchAdminJson, lateRelaySubmittingKey, loadLateRelayRows, loadWeekExtraWork]
   );
+
+  useEffect(() => {
+    const count = lateRelayRows?.length || 0;
+    if (count > 0 && prevLateRelayCountRef.current === 0) {
+      setShowHandoverManager(true);
+      setHandoverDate((prev) => prev || lateRelayRows[0]?.work_date || todayIso);
+    }
+    prevLateRelayCountRef.current = count;
+  }, [lateRelayRows, todayIso]);
 
   /* Absences d'aujourd'hui (avec remplacement accepté si existe) */
   const loadAbsencesToday = useCallback(async () => {
@@ -1678,6 +1694,7 @@ export default function AdminPage() {
 
   // ✅ Badge bouton: total global à traiter si dispo, sinon mois sélectionné
   const mhBadgeCount = mhToReviewTotal ?? mhToReviewCount;
+  const handoverBadgeCount = lateRelayRows?.length || 0;
   // ✅ Affichage compte au centre (jamais "-")
   const accountTopLabel = useMemo(() => {
     const forced = process.env.NEXT_PUBLIC_FORCE_ADMIN === "1";
@@ -1809,6 +1826,7 @@ export default function AdminPage() {
                                 {missingCheckinsCount}
                               </span>
                             ) : null}
+
                           </a>
                         </Link>
 
@@ -1849,6 +1867,49 @@ export default function AdminPage() {
                           </a>
                         </Link>
 
+                        <button
+                          type="button"
+                          className="btn"
+                          title="Retards / relais et travail en plus"
+                          onClick={() => {
+                            if (showHandoverManager) {
+                              closeHandover();
+                            } else {
+                              openHandover(lateRelayRows[0]?.work_date || handoverDate || todayIso);
+                            }
+                          }}
+                          style={{ position: "relative", overflow: "visible" }}
+                        >
+                          ⏱️ Retards / relais
+                          {handoverBadgeCount > 0 ? (
+                            <span
+                              title={`${handoverBadgeCount} retard(s) après-midi à traiter`}
+                              style={{
+                                position: "absolute",
+                                top: -6,
+                                right: -6,
+                                minWidth: 20,
+                                height: 20,
+                                padding: "0 6px",
+                                borderRadius: 999,
+                                background: "#dc2626",
+                                color: "#fff",
+                                fontSize: 12,
+                                fontWeight: 800,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                lineHeight: "20px",
+                                border: "2px solid #fff",
+                                boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+                                zIndex: 20,
+                              }}
+                            >
+                              {handoverBadgeCount > 99 ? "99+" : handoverBadgeCount}
+                            </span>
+                          ) : null}
+                        </button>
+
                         <Link href="/admin/leaves" legacyBehavior>
                           <a className="btn">🏖️ Congés</a>
                         </Link>
@@ -1886,6 +1947,36 @@ export default function AdminPage() {
                 <a style={{ textDecoration: "underline", fontWeight: 800 }}>Pointage</a>
               </Link>
               .
+            </div>
+          </div>
+        ) : null}
+
+        {handoverBadgeCount > 0 && !showHandoverManager ? (
+          <div
+            className="card"
+            style={{
+              borderColor: "#fde68a",
+              background: "#fffbeb",
+              padding: "10px 12px",
+            }}
+          >
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <div className="text-sm" style={{ fontWeight: 800, color: "#92400e" }}>
+                  ⚠️ {handoverBadgeCount} retard(s) de l’après-midi à traiter
+                </div>
+                <div className="text-sm" style={{ marginTop: 4, color: "#78350f" }}>
+                  Ouvre le bloc “Retards / relais” pour indiquer si quelqu’un a couvert entre 13h30 et l’heure réelle d’arrivée.
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => openHandover(lateRelayRows[0]?.work_date || handoverDate || todayIso)}
+                style={{ backgroundColor: "#f59e0b", borderColor: "transparent", color: "#111827" }}
+              >
+                Ouvrir retards / relais
+              </button>
             </div>
           </div>
         ) : null}
@@ -2275,7 +2366,30 @@ export default function AdminPage() {
 
 
 {/* ===================== TRAVAIL EN PLUS / RETARDS SOIR ===================== */}
-<div className="grid grid-cols-1 xl:grid-cols-2 gap-4" id="handover-day">
+{showHandoverManager ? (
+        <>
+        <div
+          className="card"
+          style={{
+            borderColor: handoverBadgeCount > 0 ? "#fde68a" : "#e5e7eb",
+            background: handoverBadgeCount > 0 ? "#fffdf5" : "#f8fafc",
+          }}
+          id="handover-day"
+        >
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <div className="hdr mb-1">Retards / relais et travail en plus</div>
+              <div className="text-sm text-gray-600">
+                Gère ici les retards de l’après-midi, les couvertures et les arrivées anticipées exceptionnelles.
+              </div>
+            </div>
+            <button type="button" className="btn" onClick={closeHandover}>
+              Fermer
+            </button>
+          </div>
+        </div>
+
+<div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div className="card">
             <div className="hdr mb-2">Retards du soir à traiter {lateRelayRows.length > 0 ? `(${lateRelayRows.length})` : ""}</div>
             <div className="text-sm text-gray-600">
@@ -2552,6 +2666,8 @@ export default function AdminPage() {
             </div>
           </div>
         </div>
+        </>
+      ) : null}
 
 
         <div className="card">
