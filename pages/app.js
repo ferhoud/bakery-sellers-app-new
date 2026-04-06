@@ -1569,86 +1569,6 @@ useEffect(() => {
     loadMyUpcomingRepl();
   }, [loadMyMonthAbs, loadMyMonthUpcomingAbs, reloadAccepted, loadMyUpcomingRepl]);
 
-  const loadExtraWorkMinutesRange = useCallback(async (fromIso, toIso) => {
-    if (!userId || !fromIso || !toIso) return 0;
-
-    const normalizeMinutes = (rows) => {
-      let total = 0;
-      (rows || []).forEach((row) => {
-        let mins = Number(
-          row?.minutes ?? row?.extra_minutes ?? row?.delta_minutes ?? row?.duration_minutes ?? row?.total_minutes ?? 0
-        );
-
-        if (!Number.isFinite(mins) || mins <= 0) {
-          const start = String(row?.start_time || row?.started_at || "");
-          const end = String(row?.end_time || row?.ended_at || "");
-          const ms = /^(\d{1,2}):(\d{2})/.exec(start);
-          const me = /^(\d{1,2}):(\d{2})/.exec(end);
-          if (ms && me) {
-            mins = (Number(me[1]) * 60 + Number(me[2])) - (Number(ms[1]) * 60 + Number(ms[2]));
-          }
-        }
-
-        if (Number.isFinite(mins) && mins > 0) total += mins;
-      });
-      return Math.round(total);
-    };
-
-    try {
-      const { data: rpcData, error: rpcErr } = await supabase.rpc("seller_extra_work_minutes_by_range", {
-        p_from: fromIso,
-        p_to: toIso,
-      });
-
-      if (!rpcErr) {
-        if (typeof rpcData === "number") return Math.round(rpcData || 0);
-        if (Array.isArray(rpcData) && rpcData.length > 0) {
-          const row = rpcData[0] || {};
-          return Math.round(Number(row?.minutes ?? row?.extra_minutes ?? row?.total_minutes ?? 0) || 0);
-        }
-        if (rpcData && typeof rpcData === "object") {
-          return Math.round(Number(rpcData?.minutes ?? rpcData?.extra_minutes ?? rpcData?.total_minutes ?? 0) || 0);
-        }
-        return 0;
-      }
-
-      const msg = String(rpcErr?.message || "");
-      const codeE = String(rpcErr?.code || "");
-      const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
-      if (!missingFn) throw rpcErr;
-    } catch (e) {
-      const msg = String(e?.message || "").toLowerCase();
-      const missingFn = msg.includes("does not exist");
-      if (!missingFn) {
-        console.warn("[app] seller_extra_work_minutes_by_range failed, fallback table:", e?.message || e);
-      }
-    }
-
-    try {
-      const { data: rows, error } = await supabase
-        .from("extra_work_entries")
-        .select("minutes, extra_minutes, duration_minutes, total_minutes, start_time, end_time, seller_id, work_date")
-        .eq("seller_id", userId)
-        .gte("work_date", fromIso)
-        .lte("work_date", toIso);
-
-      if (error) {
-        const m = String(error?.message || "").toLowerCase();
-        const c = String(error?.code || "");
-        const forbidden = m.includes("permission") || m.includes("rls") || m.includes("not allowed");
-        const missingTbl = c === "42P01" || m.includes("does not exist");
-        const missingCol = c === "42703" || m.includes("column");
-        if (forbidden || missingTbl || missingCol) return 0;
-        throw error;
-      }
-
-      return normalizeMinutes(rows);
-    } catch (e) {
-      console.warn("[app] extra_work_entries fallback failed:", e?.message || e);
-      return 0;
-    }
-  }, [userId]);
-
   // Retard / relais (mois en cours)
   const loadMyMonthDelta = useCallback(async () => {
     if (!userId) return;
@@ -1663,12 +1583,9 @@ useEffect(() => {
 
       if (!rpcErr && rpcData != null) {
         const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-        const extraBase = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
+        const extra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
         const delay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
-        const relayNet = Number(row?.net_minutes ?? row?.netMinutes ?? (extraBase - delay) ?? 0) || 0;
-        const extraWork = await loadExtraWorkMinutesRange(myMonthFromPast, myMonthToPast);
-        const extra = extraBase + extraWork;
-        const net = relayNet + extraWork;
+        const net = Number(row?.net_minutes ?? row?.netMinutes ?? (extra - delay) ?? 0) || 0;
 
         setMonthDelta({ extraMinutes: extra, delayMinutes: delay, netMinutes: net });
         setMonthDeltaUnsupported(false);
@@ -1749,10 +1666,6 @@ useEffect(() => {
           else delay += -signed;
         });
 
-        const extraWork = await loadExtraWorkMinutesRange(myMonthFromPast, myMonthToPast);
-        extra += extraWork;
-        net += extraWork;
-
         setMonthDelta({
           extraMinutes: Math.round(extra),
           delayMinutes: Math.round(delay),
@@ -1812,12 +1725,9 @@ useEffect(() => {
 
       if (!rpcErr && rpcData != null) {
         const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-        const extraBase = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
+        const extra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
         const delay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
-        const relayNet = Number(row?.net_minutes ?? row?.netMinutes ?? (extraBase - delay) ?? 0) || 0;
-        const extraWork = await loadExtraWorkMinutesRange(monthStartPrev, monthEndPrev);
-        const extra = extraBase + extraWork;
-        const net = relayNet + extraWork;
+        const net = Number(row?.net_minutes ?? row?.netMinutes ?? (extra - delay) ?? 0) || 0;
 
         setPrevDelta({ extraMinutes: extra, delayMinutes: delay, netMinutes: net });
         setPrevDeltaUnsupported(false);
@@ -1898,10 +1808,6 @@ useEffect(() => {
           else delay += -signed;
         });
 
-        const extraWork = await loadExtraWorkMinutesRange(monthStartPrev, monthEndPrev);
-        extra += extraWork;
-        net += extraWork;
-
         setPrevDelta({
           extraMinutes: Math.round(extra),
           delayMinutes: Math.round(delay),
@@ -1918,7 +1824,7 @@ useEffect(() => {
     } finally {
       setPrevDeltaLoading(false);
     }
-  }, [userId, role, monthStartPrev, monthEndPrev, loadExtraWorkMinutesRange]);
+  }, [userId, role, monthStartPrev, monthEndPrev]);
 
   useEffect(() => {
     if (!monthlyPanelOpen) return;
@@ -2220,27 +2126,30 @@ useEffect(() => {
 
           const totalDelay = Math.round(pDelay + rDelay);
           const totalExtra = Math.round(pExtra + rExtra);
+          const netMinutes = Math.round(totalExtra - totalDelay);
 
           const hasDelay = totalDelay > 0;
           const hasExtra = totalExtra > 0;
+          const hasNetPositive = netMinutes > 0;
+          const hasNetNegative = netMinutes < 0;
 
-          const border = hasDelay ? "border-red-200" : hasExtra ? "border-green-200" : "border-gray-200";
-          const bg = hasDelay ? "bg-red-50" : hasExtra ? "bg-green-50" : "bg-gray-50";
-          const text = hasDelay ? "text-red-800" : hasExtra ? "text-green-800" : "text-gray-800";
+          const border = hasNetNegative ? "border-red-200" : hasNetPositive ? "border-green-200" : "border-gray-200";
+          const bg = hasNetNegative ? "bg-red-50" : hasNetPositive ? "bg-green-50" : "bg-gray-50";
+          const text = hasNetNegative ? "text-red-800" : hasNetPositive ? "text-green-800" : "text-gray-800";
 
           return (
             <div className={`rounded-xl border p-3 ${border} ${bg}`}>
               <div className={`text-sm font-semibold ${text}`}>
-                {hasDelay
-                  ? `Vous avez ${fmtMinutesHM(totalDelay)} de retard ce mois-ci.`
-                  : hasExtra
-                    ? `Vous avez ${fmtMinutesHM(totalExtra)} de travail en plus ce mois-ci.`
-                    : `Ce mois-ci : aucun retard, aucun travail en plus.`}
-                {hasDelay && hasExtra ? ` (Travail en plus: ${fmtMinutesHM(totalExtra)})` : ""}
+                {hasNetNegative
+                  ? `Vous avez ${fmtMinutesHM(Math.abs(netMinutes))} de retard net ce mois-ci.`
+                  : hasNetPositive
+                    ? `Vous avez ${fmtMinutesHM(netMinutes)} de travail en plus ce mois-ci.`
+                    : `Ce mois-ci : retard et travail en plus s'équilibrent.`}
               </div>
               <div className="text-xs text-gray-600 mt-1">
                 Pointage: retard {pDelay} min{pExtra > 0 ? ` • avance ${pExtra} min` : ""}
-                {!monthDeltaUnsupported ? ` • Retards/relais/travail en plus: retard ${rDelay} min${rExtra > 0 ? ` / extra ${rExtra} min` : ""}` : ""}
+                {!monthDeltaUnsupported ? ` • Relais/travail en plus: retard ${rDelay} min${rExtra > 0 ? ` / extra ${rExtra} min` : ""}` : ""}
+                {hasDelay || hasExtra ? ` • Détail total: ${totalExtra} min de travail en plus et ${totalDelay} min de retard` : ""}
               </div>
             </div>
           );
@@ -2530,7 +2439,7 @@ return (
           monthDelta.extraMinutes > 0 ||
           monthDelta.delayMinutes > 0) && (
           <div className="card">
-            <div className="hdr mb-2">Retard / relais / travail en plus - mois en cours</div>
+            <div className="hdr mb-2">Retard / relais - mois en cours</div>
 
             {monthDeltaLoading && <div className="text-sm text-gray-600">Chargement...</div>}
 
@@ -2636,9 +2545,9 @@ return (
 
               <div className="mt-2">
                 {prevDeltaLoading ? (
-                  <div className="text-xs text-gray-600">Calcul des retards/relais/travail en plus du mois...</div>
+                  <div className="text-xs text-gray-600">Calcul des retards/relais du mois...</div>
                 ) : prevDeltaUnsupported ? (
-                  <div className="text-xs text-gray-500">Retards/relais/travail en plus non disponibles pour ce mois.</div>
+                  <div className="text-xs text-gray-500">Retards/relais non disponibles pour ce mois.</div>
                 ) : prevDeltaErr ? (
                   <div className="text-xs text-red-600">{prevDeltaErr}</div>
                 ) : (
@@ -2651,7 +2560,7 @@ return (
                     return (
                       <div className="space-y-1">
                         <div className="text-xs text-gray-700">
-                          Retards / relais / travail en plus sur le mois :{" "}
+                          Retards / relais sur le mois :{" "}
                           <span className="font-semibold" style={{ color: "#16a34a" }}>
                             +{extraH.toFixed(2)} h
                           </span>{" "}
@@ -2664,7 +2573,7 @@ return (
                           Total net estimé : <span className="font-semibold">{netH.toFixed(2)} h</span>
                         </div>
                         <div className="text-xs text-gray-500">
-                          Total net = planning + retards/relais + travail en plus. C’est ce total qui correspond à l’affichage admin.
+                          Total net = planning + retards/relais. C’est ce total qui correspond à l’affichage admin.
                         </div>
                       </div>
                     );
