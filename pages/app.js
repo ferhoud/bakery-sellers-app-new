@@ -382,11 +382,45 @@ useEffect(() => {
 
 
 
-  // Retard / relais (mois en cours) — affichage permanent
+  // Retard / relais / travail en plus (mois en cours) — affichage permanent
   const [monthDelta, setMonthDelta] = useState({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
   const [monthDeltaLoading, setMonthDeltaLoading] = useState(false);
   const [monthDeltaErr, setMonthDeltaErr] = useState("");
   const [monthDeltaUnsupported, setMonthDeltaUnsupported] = useState(false);
+
+  const loadExtraWorkMinutesRange = useCallback(async (fromIso, toIso) => {
+    if (!userId) return { minutes: 0, unsupported: false, error: null };
+
+    try {
+      const { data, error } = await supabase
+        .from("extra_work_entries")
+        .select("minutes")
+        .eq("seller_id", userId)
+        .gte("work_date", fromIso)
+        .lte("work_date", toIso);
+
+      if (error) {
+        const msg = String(error?.message || "");
+        const codeE = String(error?.code || "");
+        const forbidden =
+          msg.toLowerCase().includes("permission") ||
+          msg.toLowerCase().includes("rls") ||
+          msg.toLowerCase().includes("not allowed");
+        const missingTbl = codeE === "42P01" || msg.toLowerCase().includes("does not exist");
+        const missingCol = codeE === "42703" || msg.toLowerCase().includes("column");
+
+        if (forbidden || missingTbl || missingCol) {
+          return { minutes: 0, unsupported: true, error: null };
+        }
+        throw error;
+      }
+
+      const minutes = Math.round((data || []).reduce((sum, row) => sum + (Number(row?.minutes || 0) || 0), 0));
+      return { minutes, unsupported: false, error: null };
+    } catch (e) {
+      return { minutes: 0, unsupported: false, error: e };
+    }
+  }, [userId]);
 
   // Bloc "Validation des heures" : réduit du 05 au 27 pour alléger la page,
   // ouvert par défaut du 28 au 04 (mais toujours ouvrable manuellement).
@@ -1576,113 +1610,91 @@ useEffect(() => {
     setMonthDeltaLoading(true);
 
     try {
-      // 1) RPC (recommandée) : seller_handover_month_summary(p_month_start)
+      let relayExtra = 0;
+      let relayDelay = 0;
+      let relayNet = 0;
+      let relayUnsupported = false;
+
       const { data: rpcData, error: rpcErr } = await supabase.rpc("seller_handover_month_summary", {
         p_month_start: myMonthFromPast,
       });
 
       if (!rpcErr && rpcData != null) {
         const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-        const extra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
-        const delay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
-        const net = Number(row?.net_minutes ?? row?.netMinutes ?? (extra - delay) ?? 0) || 0;
+        relayExtra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
+        relayDelay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
+        relayNet = Number(row?.net_minutes ?? row?.netMinutes ?? (relayExtra - relayDelay) ?? 0) || 0;
+      } else {
+        const msg = String(rpcErr?.message || "");
+        const codeE = String(rpcErr?.code || "");
+        const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
 
-        setMonthDelta({ extraMinutes: extra, delayMinutes: delay, netMinutes: net });
-        setMonthDeltaUnsupported(false);
-        return;
-      }
+        if (missingFn) {
+          const { data: rows, error: e2 } = await supabase
+            .from("shift_handover_adjustments")
+            .select("*")
+            .gte("date", myMonthFromPast)
+            .lte("date", myMonthToPast)
+            .or(`staying_seller_id.eq.${userId},evening_seller_id.eq.${userId},seller_id.eq.${userId},to_seller_id.eq.${userId},from_seller_id.eq.${userId}`);
 
-      const msg = String(rpcErr?.message || "");
-      const codeE = String(rpcErr?.code || "");
-      const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
+          if (e2) {
+            const m2 = String(e2?.message || "");
+            const c2 = String(e2?.code || "");
+            const forbidden =
+              m2.toLowerCase().includes("permission") ||
+              m2.toLowerCase().includes("rls") ||
+              m2.toLowerCase().includes("not allowed");
+            const missingTbl = c2 === "42P01" || m2.toLowerCase().includes("does not exist");
+            const missingCol = c2 === "42703" || m2.toLowerCase().includes("column");
 
-      // 2) fallback direct table si RPC absente
-      if (missingFn) {
-        const { data: rows, error: e2 } = await supabase
-          .from("shift_handover_adjustments")
-          .select("*")
-          .gte("date", myMonthFromPast)
-          .lte("date", myMonthToPast)
-          .or(`staying_seller_id.eq.${userId},evening_seller_id.eq.${userId},seller_id.eq.${userId}`);
+            if (forbidden || missingTbl || missingCol) {
+              relayUnsupported = true;
+            } else {
+              throw e2;
+            }
+          } else {
+            (rows || []).forEach((row) => {
+              const raw = row?.delta_minutes ?? row?.delta ?? row?.minutes ?? row?.minute_delta ?? row?.delta_min ?? row?.deltaMinutes ?? null;
+              const base = Number(raw);
+              if (!Number.isFinite(base) || base === 0) return;
 
-        if (e2) {
-          const m2 = String(e2?.message || "");
-          const c2 = String(e2?.code || "");
-          const forbidden =
-            m2.toLowerCase().includes("permission") ||
-            m2.toLowerCase().includes("rls") ||
-            m2.toLowerCase().includes("not allowed");
-          const missingTbl = c2 === "42P01" || m2.toLowerCase().includes("does not exist");
-          const missingCol = c2 === "42703" || m2.toLowerCase().includes("column");
+              let signed = null;
+              if (row?.seller_id && row.seller_id === userId) signed = base;
+              if (signed == null) {
+                if (row?.staying_seller_id && row.staying_seller_id === userId) signed = Math.abs(base);
+                else if (row?.evening_seller_id && row.evening_seller_id === userId) signed = -Math.abs(base);
+              }
+              if (signed == null) {
+                if (row?.to_seller_id && row.to_seller_id === userId) signed = Math.abs(base);
+                else if (row?.from_seller_id && row.from_seller_id === userId) signed = -Math.abs(base);
+              }
+              if (signed == null) return;
 
-          if (forbidden || missingTbl || missingCol) {
-            setMonthDeltaUnsupported(true);
-            setMonthDelta({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
-            return;
+              relayNet += signed;
+              if (signed >= 0) relayExtra += signed;
+              else relayDelay += -signed;
+            });
           }
-          throw e2;
+        } else if (rpcErr) {
+          throw rpcErr;
         }
-
-        let extra = 0;
-        let delay = 0;
-        let net = 0;
-
-        (rows || []).forEach((row) => {
-          const raw =
-            row?.delta_minutes ??
-            row?.delta ??
-            row?.minutes ??
-            row?.minute_delta ??
-            row?.delta_min ??
-            row?.deltaMinutes ??
-            null;
-
-          const base = Number(raw);
-          if (!Number.isFinite(base) || base === 0) return;
-
-          let signed = null;
-
-          // Cas 1 : table déjà normalisée (seller_id + minutes signées)
-          if (row?.seller_id && row.seller_id === userId) {
-            signed = base;
-          }
-
-          // Cas 2 : une ligne = 2 vendeuses (celle qui reste / celle du soir)
-          if (signed == null) {
-            if (row?.staying_seller_id && row.staying_seller_id === userId) signed = Math.abs(base);
-            else if (row?.evening_seller_id && row.evening_seller_id === userId) signed = -Math.abs(base);
-          }
-
-          // Cas 3 : variantes to/from
-          if (signed == null) {
-            if (row?.to_seller_id && row.to_seller_id === userId) signed = Math.abs(base);
-            else if (row?.from_seller_id && row.from_seller_id === userId) signed = -Math.abs(base);
-          }
-
-          if (signed == null) return;
-
-          net += signed;
-          if (signed >= 0) extra += signed;
-          else delay += -signed;
-        });
-
-        setMonthDelta({
-          extraMinutes: Math.round(extra),
-          delayMinutes: Math.round(delay),
-          netMinutes: Math.round(net),
-        });
-        setMonthDeltaUnsupported(false);
-        return;
       }
 
-      // RPC existante mais erreur réelle
-      if (rpcErr) throw rpcErr;
+      const extraWork = await loadExtraWorkMinutesRange(myMonthFromPast, myMonthToPast);
+      if (extraWork?.error) throw extraWork.error;
+
+      setMonthDelta({
+        extraMinutes: Math.round(relayExtra + (Number(extraWork?.minutes || 0) || 0)),
+        delayMinutes: Math.round(relayDelay),
+        netMinutes: Math.round(relayNet + (Number(extraWork?.minutes || 0) || 0)),
+      });
+      setMonthDeltaUnsupported(Boolean(relayUnsupported && extraWork?.unsupported));
     } catch (e) {
-      setMonthDeltaErr(e?.message || "Impossible de charger les retards/relais du mois.");
+      setMonthDeltaErr(e?.message || "Impossible de charger les retards/relais/travail en plus du mois.");
     } finally {
       setMonthDeltaLoading(false);
     }
-  }, [userId, myMonthFromPast, myMonthToPast]);
+  }, [userId, myMonthFromPast, myMonthToPast, loadExtraWorkMinutesRange]);
 
   useEffect(() => {
     loadMyMonthDelta();
@@ -1718,113 +1730,91 @@ useEffect(() => {
     setPrevDeltaLoading(true);
 
     try {
-      // 1) RPC (recommandée) : seller_handover_month_summary(p_month_start)
+      let relayExtra = 0;
+      let relayDelay = 0;
+      let relayNet = 0;
+      let relayUnsupported = false;
+
       const { data: rpcData, error: rpcErr } = await supabase.rpc("seller_handover_month_summary", {
         p_month_start: monthStartPrev,
       });
 
       if (!rpcErr && rpcData != null) {
         const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-        const extra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
-        const delay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
-        const net = Number(row?.net_minutes ?? row?.netMinutes ?? (extra - delay) ?? 0) || 0;
+        relayExtra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
+        relayDelay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
+        relayNet = Number(row?.net_minutes ?? row?.netMinutes ?? (relayExtra - relayDelay) ?? 0) || 0;
+      } else {
+        const msg = String(rpcErr?.message || "");
+        const codeE = String(rpcErr?.code || "");
+        const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
 
-        setPrevDelta({ extraMinutes: extra, delayMinutes: delay, netMinutes: net });
-        setPrevDeltaUnsupported(false);
-        return;
-      }
+        if (missingFn) {
+          const { data: rows, error: e2 } = await supabase
+            .from("shift_handover_adjustments")
+            .select("*")
+            .gte("date", monthStartPrev)
+            .lte("date", monthEndPrev)
+            .or(`staying_seller_id.eq.${userId},evening_seller_id.eq.${userId},seller_id.eq.${userId},to_seller_id.eq.${userId},from_seller_id.eq.${userId}`);
 
-      const msg = String(rpcErr?.message || "");
-      const codeE = String(rpcErr?.code || "");
-      const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
+          if (e2) {
+            const m2 = String(e2?.message || "");
+            const c2 = String(e2?.code || "");
+            const forbidden =
+              m2.toLowerCase().includes("permission") ||
+              m2.toLowerCase().includes("rls") ||
+              m2.toLowerCase().includes("not allowed");
+            const missingTbl = c2 === "42P01" || m2.toLowerCase().includes("does not exist");
+            const missingCol = c2 === "42703" || m2.toLowerCase().includes("column");
 
-      // 2) fallback direct table si RPC absente
-      if (missingFn) {
-        const { data: rows, error: e2 } = await supabase
-          .from("shift_handover_adjustments")
-          .select("*")
-          .gte("date", monthStartPrev)
-          .lte("date", monthEndPrev)
-          .or(`staying_seller_id.eq.${userId},evening_seller_id.eq.${userId},seller_id.eq.${userId}`);
+            if (forbidden || missingTbl || missingCol) {
+              relayUnsupported = true;
+            } else {
+              throw e2;
+            }
+          } else {
+            (rows || []).forEach((row) => {
+              const raw = row?.delta_minutes ?? row?.delta ?? row?.minutes ?? row?.minute_delta ?? row?.delta_min ?? row?.deltaMinutes ?? null;
+              const base = Number(raw);
+              if (!Number.isFinite(base) || base === 0) return;
 
-        if (e2) {
-          const m2 = String(e2?.message || "");
-          const c2 = String(e2?.code || "");
-          const forbidden =
-            m2.toLowerCase().includes("permission") ||
-            m2.toLowerCase().includes("rls") ||
-            m2.toLowerCase().includes("not allowed");
-          const missingTbl = c2 === "42P01" || m2.toLowerCase().includes("does not exist");
-          const missingCol = c2 === "42703" || m2.toLowerCase().includes("column");
+              let signed = null;
+              if (row?.seller_id && row.seller_id === userId) signed = base;
+              if (signed == null) {
+                if (row?.staying_seller_id && row.staying_seller_id === userId) signed = Math.abs(base);
+                else if (row?.evening_seller_id && row.evening_seller_id === userId) signed = -Math.abs(base);
+              }
+              if (signed == null) {
+                if (row?.to_seller_id && row.to_seller_id === userId) signed = Math.abs(base);
+                else if (row?.from_seller_id && row.from_seller_id === userId) signed = -Math.abs(base);
+              }
+              if (signed == null) return;
 
-          if (forbidden || missingTbl || missingCol) {
-            setPrevDeltaUnsupported(true);
-            setPrevDelta({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
-            return;
+              relayNet += signed;
+              if (signed >= 0) relayExtra += signed;
+              else relayDelay += -signed;
+            });
           }
-          throw e2;
+        } else if (rpcErr) {
+          throw rpcErr;
         }
-
-        let extra = 0;
-        let delay = 0;
-        let net = 0;
-
-        (rows || []).forEach((row) => {
-          const raw =
-            row?.delta_minutes ??
-            row?.delta ??
-            row?.minutes ??
-            row?.minute_delta ??
-            row?.delta_min ??
-            row?.deltaMinutes ??
-            null;
-
-          const base = Number(raw);
-          if (!Number.isFinite(base) || base === 0) return;
-
-          let signed = null;
-
-          // Cas 1 : table déjà normalisée (seller_id + minutes signées)
-          if (row?.seller_id && row.seller_id === userId) {
-            signed = base;
-          }
-
-          // Cas 2 : une ligne = 2 vendeuses (celle qui reste / celle du soir)
-          if (signed == null) {
-            if (row?.staying_seller_id && row.staying_seller_id === userId) signed = Math.abs(base);
-            else if (row?.evening_seller_id && row.evening_seller_id === userId) signed = -Math.abs(base);
-          }
-
-          // Cas 3 : variantes to/from
-          if (signed == null) {
-            if (row?.to_seller_id && row.to_seller_id === userId) signed = Math.abs(base);
-            else if (row?.from_seller_id && row.from_seller_id === userId) signed = -Math.abs(base);
-          }
-
-          if (signed == null) return;
-
-          net += signed;
-          if (signed >= 0) extra += signed;
-          else delay += -signed;
-        });
-
-        setPrevDelta({
-          extraMinutes: Math.round(extra),
-          delayMinutes: Math.round(delay),
-          netMinutes: Math.round(net),
-        });
-        setPrevDeltaUnsupported(false);
-        return;
       }
 
-      // RPC existante mais erreur réelle
-      if (rpcErr) throw rpcErr;
+      const extraWork = await loadExtraWorkMinutesRange(monthStartPrev, monthEndPrev);
+      if (extraWork?.error) throw extraWork.error;
+
+      setPrevDelta({
+        extraMinutes: Math.round(relayExtra + (Number(extraWork?.minutes || 0) || 0)),
+        delayMinutes: Math.round(relayDelay),
+        netMinutes: Math.round(relayNet + (Number(extraWork?.minutes || 0) || 0)),
+      });
+      setPrevDeltaUnsupported(Boolean(relayUnsupported && extraWork?.unsupported));
     } catch (e) {
-      setPrevDeltaErr(e?.message || "Impossible de charger les retards/relais du mois.");
+      setPrevDeltaErr(e?.message || "Impossible de charger les retards/relais/travail en plus du mois.");
     } finally {
       setPrevDeltaLoading(false);
     }
-  }, [userId, role, monthStartPrev, monthEndPrev]);
+  }, [userId, role, monthStartPrev, monthEndPrev, loadExtraWorkMinutesRange]);
 
   useEffect(() => {
     if (!monthlyPanelOpen) return;
@@ -2126,30 +2116,31 @@ useEffect(() => {
 
           const totalDelay = Math.round(pDelay + rDelay);
           const totalExtra = Math.round(pExtra + rExtra);
-          const netMinutes = Math.round(totalExtra - totalDelay);
+          const totalNet = Math.round(totalExtra - totalDelay);
 
-          const hasDelay = totalDelay > 0;
-          const hasExtra = totalExtra > 0;
-          const hasNetPositive = netMinutes > 0;
-          const hasNetNegative = netMinutes < 0;
+          const isPositive = totalNet > 0;
+          const isNegative = totalNet < 0;
 
-          const border = hasNetNegative ? "border-red-200" : hasNetPositive ? "border-green-200" : "border-gray-200";
-          const bg = hasNetNegative ? "bg-red-50" : hasNetPositive ? "bg-green-50" : "bg-gray-50";
-          const text = hasNetNegative ? "text-red-800" : hasNetPositive ? "text-green-800" : "text-gray-800";
+          const border = isNegative ? "border-red-200" : isPositive ? "border-green-200" : "border-gray-200";
+          const bg = isNegative ? "bg-red-50" : isPositive ? "bg-green-50" : "bg-gray-50";
+          const text = isNegative ? "text-red-800" : isPositive ? "text-green-800" : "text-gray-800";
 
           return (
             <div className={`rounded-xl border p-3 ${border} ${bg}`}>
               <div className={`text-sm font-semibold ${text}`}>
-                {hasNetNegative
-                  ? `Vous avez ${fmtMinutesHM(Math.abs(netMinutes))} de retard net ce mois-ci.`
-                  : hasNetPositive
-                    ? `Vous avez ${fmtMinutesHM(netMinutes)} de travail en plus ce mois-ci.`
-                    : `Ce mois-ci : retard et travail en plus s'équilibrent.`}
+                {isNegative
+                  ? `Vous avez ${fmtMinutesHM(Math.abs(totalNet))} de retard ce mois-ci.`
+                  : isPositive
+                    ? `Vous avez ${fmtMinutesHM(totalNet)} de travail en plus ce mois-ci.`
+                    : `Ce mois-ci : aucun retard, aucun travail en plus.`}
               </div>
               <div className="text-xs text-gray-600 mt-1">
+                {totalExtra > 0 ? `${fmtMinutesHM(totalExtra)} de travail en plus` : "0min de travail en plus"}
+                {totalDelay > 0 ? ` et ${fmtMinutesHM(totalDelay)} de retard` : totalExtra > 0 ? " et 0min de retard" : ""}
+              </div>
+              <div className="text-xs text-gray-500 mt-1">
                 Pointage: retard {pDelay} min{pExtra > 0 ? ` • avance ${pExtra} min` : ""}
-                {!monthDeltaUnsupported ? ` • Relais/travail en plus: retard ${rDelay} min${rExtra > 0 ? ` / extra ${rExtra} min` : ""}` : ""}
-                {hasDelay || hasExtra ? ` • Détail total: ${totalExtra} min de travail en plus et ${totalDelay} min de retard` : ""}
+                {!monthDeltaUnsupported ? ` • Relais / travail en plus manuel: retard ${rDelay} min${rExtra > 0 ? ` / extra ${rExtra} min` : ""}` : ""}
               </div>
             </div>
           );
@@ -2439,7 +2430,7 @@ return (
           monthDelta.extraMinutes > 0 ||
           monthDelta.delayMinutes > 0) && (
           <div className="card">
-            <div className="hdr mb-2">Retard / relais - mois en cours</div>
+            <div className="hdr mb-2">Retard / relais / travail en plus - mois en cours</div>
 
             {monthDeltaLoading && <div className="text-sm text-gray-600">Chargement...</div>}
 
@@ -2573,7 +2564,7 @@ return (
                           Total net estimé : <span className="font-semibold">{netH.toFixed(2)} h</span>
                         </div>
                         <div className="text-xs text-gray-500">
-                          Total net = planning + retards/relais. C’est ce total qui correspond à l’affichage admin.
+                          Total net = planning + retards/relais/travail en plus. C’est ce total qui correspond à l’affichage admin.
                         </div>
                       </div>
                     );
