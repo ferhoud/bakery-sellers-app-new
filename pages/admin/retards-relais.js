@@ -153,12 +153,12 @@ function SellerPicker({ sellers, value, onChange, placeholder = "Choisir une ven
   );
 }
 
-export default function AdminRetardsRelaisPage({ initialSellers = [], initialDate = "" }) {
+export default function AdminRetardsRelaisPage({ initialSellers = [], initialDate = "", initialLateDate = "", initialExtraDate = "", initialExtraWorkRows = [], initialRecentExtraWorkRows = [] }) {
   const r = useRouter();
   const { session, profile, loading } = useAuth();
 
-  const [lateDate, setLateDate] = useState(initialDate || fmtISODate(new Date()));
-  const [extraDate, setExtraDate] = useState(initialDate || fmtISODate(new Date()));
+  const [lateDate, setLateDate] = useState(initialLateDate || initialDate || fmtISODate(new Date()));
+  const [extraDate, setExtraDate] = useState(initialExtraDate || initialDate || fmtISODate(new Date()));
 
   const sellers = useMemo(() => (Array.isArray(initialSellers) ? initialSellers : []), [initialSellers]);
   const sellersById = useMemo(() => new Map((sellers || []).map((s) => [s.user_id, s])), [sellers]);
@@ -171,11 +171,12 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
 
   const [pendingRows, setPendingRows] = useState([]);
   const [resolvedRows, setResolvedRows] = useState([]);
-  const [extraWorkRows, setExtraWorkRows] = useState([]);
+  const [extraWorkRows, setExtraWorkRows] = useState(Array.isArray(initialExtraWorkRows) ? initialExtraWorkRows : []);
   const [coveringByKey, setCoveringByKey] = useState({});
   const [resolvingKey, setResolvingKey] = useState("");
   const [extraWorkSaving, setExtraWorkSaving] = useState(false);
   const [extraWorkDeletingId, setExtraWorkDeletingId] = useState("");
+  const [recentExtraWorkRows, setRecentExtraWorkRows] = useState(Array.isArray(initialRecentExtraWorkRows) ? initialRecentExtraWorkRows : []);
   const [manualLateSaving, setManualLateSaving] = useState(false);
 
   const [manualLate, setManualLate] = useState({
@@ -199,11 +200,32 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
   useEffect(() => {
     if (!r.isReady) return;
     const qDate = typeof r.query?.date === "string" ? r.query.date : "";
-    if (/^\d{4}-\d{2}-\d{2}$/.test(qDate)) {
-      setLateDate(qDate);
-      setExtraDate(qDate);
-    }
+    const qLateDate = typeof r.query?.lateDate === "string" ? r.query.lateDate : "";
+    const qExtraDate = typeof r.query?.extraDate === "string" ? r.query.extraDate : "";
+    if (/^\d{4}-\d{2}-\d{2}$/.test(qLateDate)) setLateDate(qLateDate);
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(qDate)) setLateDate(qDate);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(qExtraDate)) setExtraDate(qExtraDate);
+    else if (/^\d{4}-\d{2}-\d{2}$/.test(qDate)) setExtraDate(qDate);
   }, [r.isReady, r.query]);
+
+  useEffect(() => {
+    setExtraWorkRows(Array.isArray(initialExtraWorkRows) ? initialExtraWorkRows : []);
+  }, [initialExtraWorkRows]);
+
+  useEffect(() => {
+    setRecentExtraWorkRows(Array.isArray(initialRecentExtraWorkRows) ? initialRecentExtraWorkRows : []);
+  }, [initialRecentExtraWorkRows]);
+
+  const refreshExtraWorkView = useCallback(
+    async (nextExtraDate = extraDate, nextLateDate = lateDate) => {
+      const query = {
+        ...(nextLateDate ? { lateDate: nextLateDate } : {}),
+        ...(nextExtraDate ? { extraDate: nextExtraDate } : {}),
+      };
+      await r.replace({ pathname: "/admin/retards-relais", query }, undefined, { shallow: false, scroll: false });
+    },
+    [r, extraDate, lateDate]
+  );
 
   useEffect(() => {
     if (loading) return;
@@ -381,14 +403,15 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
           p_created_by: session?.user?.id || null,
         });
         if (error) throw error;
-        await Promise.all([loadPendingRows(), loadResolvedRows(), loadExtraWorkRows()]);
+        await Promise.all([loadPendingRows(), loadResolvedRows()]);
+        await refreshExtraWorkView(extraDate, lateDate);
       } catch (e) {
         alert(e?.message || "Impossible d'enregistrer la décision.");
       } finally {
         setResolvingKey("");
       }
     },
-    [coveringByKey, loadExtraWorkRows, loadPendingRows, loadResolvedRows, session]
+    [coveringByKey, extraDate, lateDate, refreshExtraWorkView, loadPendingRows, loadResolvedRows, session]
   );
 
   const saveManualLate = useCallback(async () => {
@@ -433,13 +456,14 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
       });
       if (error) throw error;
       setManualLate((prev) => ({ ...prev, actual_arrival_time: "", notes: "" }));
-      await Promise.all([loadPendingRows(), loadResolvedRows(), loadExtraWorkRows()]);
+      await Promise.all([loadPendingRows(), loadResolvedRows()]);
+        await refreshExtraWorkView(extraDate, lateDate);
     } catch (e) {
       alert(e?.message || "Impossible d'enregistrer le retard / relai.");
     } finally {
       setManualLateSaving(false);
     }
-  }, [lateDate, loadExtraWorkRows, loadPendingRows, loadResolvedRows, manualLate, manualLateSaving, session]);
+  }, [extraDate, lateDate, refreshExtraWorkView, loadPendingRows, loadResolvedRows, manualLate, manualLateSaving, session]);
 
   const saveExtraWork = useCallback(async () => {
     if (extraWorkSaving) return;
@@ -468,13 +492,13 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
       });
       if (error) throw error;
       setExtraWorkForm((prev) => ({ ...prev, notes: "" }));
-      await loadExtraWorkRows();
+      await refreshExtraWorkView(extraDate, lateDate);
     } catch (e) {
       alert(e?.message || "Impossible d'enregistrer le travail en plus.");
     } finally {
       setExtraWorkSaving(false);
     }
-  }, [extraDate, extraWorkForm, extraWorkSaving, loadExtraWorkRows, session]);
+  }, [extraDate, extraWorkForm, extraWorkSaving, lateDate, refreshExtraWorkView, session]);
 
   const deleteExtraWork = useCallback(
     async (id) => {
@@ -483,7 +507,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
       try {
         const { error } = await supabase.rpc("admin_delete_extra_work_entry", { p_id: id });
         if (error) throw error;
-        await loadExtraWorkRows();
+        await refreshExtraWorkView(extraDate, lateDate);
       } catch (e) {
         alert(e?.message || "Impossible de supprimer l'entrée.");
       } finally {
@@ -538,7 +562,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
                 <div>
                   <div className="text-sm mb-1">Date retard / relai</div>
-                  <input className="input" type="date" value={lateDate} onChange={(e) => setLateDate(e.target.value)} />
+                  <input className="input" type="date" value={lateDate} onChange={async (e) => { const v = e.target.value; setLateDate(v); await refreshExtraWorkView(extraDate, v); }} />
                 </div>
                 <div className="text-sm text-gray-600">
                   {lateDayLoading ? "Chargement des vendeuses du jour…" : `Vendeuses concernées ce jour: ${lateWorkedSellers.length}`}
@@ -619,11 +643,11 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
                 </div>
                 <div>
                   <div className="text-sm mb-1">Heure prévue</div>
-                  <input className="input" value={manualLate.planned_start_time} onChange={(e) => setManualLate((prev) => ({ ...prev, planned_start_time: e.target.value }))} />
+                  <input className="input" type="time" step="60" value={manualLate.planned_start_time} onChange={(e) => setManualLate((prev) => ({ ...prev, planned_start_time: e.target.value }))} />
                 </div>
                 <div>
                   <div className="text-sm mb-1">Heure réelle d'arrivée</div>
-                  <input className="input" placeholder="14:10" value={manualLate.actual_arrival_time} onChange={(e) => setManualLate((prev) => ({ ...prev, actual_arrival_time: e.target.value }))} />
+                  <input className="input" type="time" step="60" value={manualLate.actual_arrival_time} onChange={(e) => setManualLate((prev) => ({ ...prev, actual_arrival_time: e.target.value }))} />
                 </div>
                 <div>
                   <div className="text-sm mb-1">Couverture ?</div>
@@ -699,7 +723,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
                 <div>
                   <div className="text-sm mb-1">Date travail en plus</div>
-                  <input className="input" type="date" value={extraDate} onChange={(e) => setExtraDate(e.target.value)} />
+                  <input className="input" type="date" value={extraDate} onChange={async (e) => { const v = e.target.value; setExtraDate(v); await refreshExtraWorkView(v, lateDate); }} />
                 </div>
                 <div className="text-sm text-gray-600">
                   {extraDayLoading ? "Chargement des vendeuses du jour…" : `Vendeuses concernées ce jour: ${extraWorkedSellers.length}`}
@@ -738,11 +762,11 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
                 </div>
                 <div>
                   <div className="text-sm mb-1">Début</div>
-                  <input className="input" value={extraWorkForm.start_time} onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, start_time: e.target.value }))} placeholder="12:30" />
+                  <input className="input" type="time" step="60" value={extraWorkForm.start_time} onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, start_time: e.target.value }))} />
                 </div>
                 <div>
                   <div className="text-sm mb-1">Fin</div>
-                  <input className="input" value={extraWorkForm.end_time} onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, end_time: e.target.value }))} placeholder="13:30" />
+                  <input className="input" type="time" step="60" value={extraWorkForm.end_time} onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, end_time: e.target.value }))} />
                 </div>
                 <div className="md:col-span-2">
                   <div className="text-sm mb-1">Motif</div>
@@ -798,12 +822,19 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
 
 export async function getServerSideProps(ctx) {
   const qDate = typeof ctx?.query?.date === "string" ? ctx.query.date : "";
-  const initialDate = /^\d{4}-\d{2}-\d{2}$/.test(qDate) ? qDate : new Date().toISOString().slice(0, 10);
+  const qLateDate = typeof ctx?.query?.lateDate === "string" ? ctx.query.lateDate : "";
+  const qExtraDate = typeof ctx?.query?.extraDate === "string" ? ctx.query.extraDate : "";
+  const fallbackDate = new Date().toISOString().slice(0, 10);
+  const initialDate = /^\d{4}-\d{2}-\d{2}$/.test(qDate) ? qDate : fallbackDate;
+  const initialLateDate = /^\d{4}-\d{2}-\d{2}$/.test(qLateDate) ? qLateDate : initialDate;
+  const initialExtraDate = /^\d{4}-\d{2}-\d{2}$/.test(qExtraDate) ? qExtraDate : initialDate;
 
   const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "";
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE || process.env.SERVICE_ROLE_KEY || "";
 
   let initialSellers = [];
+  let initialExtraWorkRows = [];
+  let initialRecentExtraWorkRows = [];
 
   if (url && serviceKey) {
     try {
@@ -846,13 +877,35 @@ export async function getServerSideProps(ctx) {
         }))
         .filter((r) => r.user_id && r.full_name)
         .sort((a, b) => String(a.full_name).localeCompare(String(b.full_name), "fr", { sensitivity: "base" }));
+
+      try {
+        const { data: extraRows, error: extraErr } = await admin
+          .from("extra_work_entries")
+          .select("id, work_date, seller_id, start_time, end_time, minutes, kind, reason, notes, linked_resolution_id, created_at")
+          .eq("work_date", initialExtraDate)
+          .order("start_time", { ascending: true });
+        if (!extraErr && Array.isArray(extraRows)) initialExtraWorkRows = extraRows;
+      } catch {}
+
+      try {
+        const { data: recentRows, error: recentErr } = await admin
+          .from("extra_work_entries")
+          .select("id, work_date, seller_id, start_time, end_time, minutes, kind, reason, notes, linked_resolution_id, created_at")
+          .order("created_at", { ascending: false })
+          .limit(12);
+        if (!recentErr && Array.isArray(recentRows)) initialRecentExtraWorkRows = recentRows;
+      } catch {}
     } catch {}
   }
 
   return {
     props: {
       initialDate,
+      initialLateDate,
+      initialExtraDate,
       initialSellers,
+      initialExtraWorkRows,
+      initialRecentExtraWorkRows,
     },
   };
 }
