@@ -2081,6 +2081,9 @@ useEffect(() => {
           <button className="btn" onClick={() => r.push("/leaves")}>
             Congés
           </button>
+          <button className="btn" onClick={() => r.push("/work-history")}>
+            Historique
+          </button>
           <button className="btn" onClick={hardLogout}>
             Se déconnecter
           </button>

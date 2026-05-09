@@ -168,6 +168,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
   const [extraDayShiftRows, setExtraDayShiftRows] = useState([]);
   const [lateDayLoading, setLateDayLoading] = useState(false);
   const [extraDayLoading, setExtraDayLoading] = useState(false);
+  const [extraAllowOffPlanningSeller, setExtraAllowOffPlanningSeller] = useState(false);
 
   const [pendingRows, setPendingRows] = useState([]);
   const [resolvedRows, setResolvedRows] = useState([]);
@@ -247,6 +248,9 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
 
   const lateWorkedSellers = useMemo(() => mapRowsToSellers(lateDayShiftRows), [lateDayShiftRows, mapRowsToSellers]);
   const extraWorkedSellers = useMemo(() => mapRowsToSellers(extraDayShiftRows), [extraDayShiftRows, mapRowsToSellers]);
+  const extraSellerOptions = useMemo(() => {
+    return extraAllowOffPlanningSeller ? sellers : extraWorkedSellers;
+  }, [extraAllowOffPlanningSeller, sellers, extraWorkedSellers]);
   const lateSellerOptions = useMemo(() => {
     const evening = mapRowsToSellers(lateDayShiftRows.filter((row) => row.shift_code === "EVENING"));
     return evening.length ? evening : lateWorkedSellers;
@@ -301,10 +305,10 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
   }, [coveringSellerOptions, manualLate.coverage_status]);
 
   useEffect(() => {
-    if (!extraWorkForm.seller_id || !extraWorkedSellers.some((s) => s.user_id === extraWorkForm.seller_id)) {
-      setExtraWorkForm((prev) => ({ ...prev, seller_id: extraWorkedSellers[0]?.user_id || "" }));
+    if (!extraWorkForm.seller_id || !extraSellerOptions.some((s) => s.user_id === extraWorkForm.seller_id)) {
+      setExtraWorkForm((prev) => ({ ...prev, seller_id: extraSellerOptions[0]?.user_id || "" }));
     }
-  }, [extraWorkedSellers]);
+  }, [extraSellerOptions, extraWorkForm.seller_id]);
 
   const loadPendingRows = useCallback(async () => {
     try {
@@ -716,7 +720,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
           <div className="card space-y-4">
             <div className="hdr">Travail en plus</div>
             <div className="text-sm text-gray-600">
-              Ce bloc sert uniquement au travail en plus manuel: arrivée plus tôt, couverture exceptionnelle, temps supplémentaire validé par l'admin.
+              Ce bloc sert uniquement au travail en plus manuel: arrivée plus tôt, couverture exceptionnelle, temps supplémentaire validé par l'admin. Tu peux aussi activer un mode renfort exceptionnel pour choisir une vendeuse hors planning.
             </div>
 
             <div className="border rounded-2xl p-4" style={{ borderColor: "#e5e7eb" }}>
@@ -726,17 +730,38 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
                   <input className="input" type="date" value={extraDate} onChange={async (e) => { const v = e.target.value; setExtraDate(v); await refreshExtraWorkView(v, lateDate); }} />
                 </div>
                 <div className="text-sm text-gray-600">
-                  {extraDayLoading ? "Chargement des vendeuses du jour…" : `Vendeuses concernées ce jour: ${extraWorkedSellers.length}`}
+                  {extraDayLoading
+                    ? "Chargement des vendeuses du jour…"
+                    : extraAllowOffPlanningSeller
+                    ? `Mode renfort exceptionnel activé · ${sellers.length} vendeuse(s) disponible(s)`
+                    : `Vendeuses concernées ce jour: ${extraWorkedSellers.length}`}
                 </div>
               </div>
-              {extraWorkedSellers.length > 0 ? (
+              <label className="mt-3 flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={extraAllowOffPlanningSeller}
+                  onChange={(e) => setExtraAllowOffPlanningSeller(e.target.checked)}
+                />
+                Renfort exceptionnel / vendeuse hors planning
+              </label>
+              <div className="text-xs text-gray-500">
+                Décoche pour limiter la liste aux vendeuses planifiées ce jour-là. Coche pour choisir n'importe quelle vendeuse active.
+              </div>
+              {extraAllowOffPlanningSeller ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {sellers.map((s) => (
+                    <Chip key={s.user_id} name={s.full_name} />
+                  ))}
+                </div>
+              ) : extraWorkedSellers.length > 0 ? (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {extraWorkedSellers.map((s) => (
                     <Chip key={s.user_id} name={s.full_name} />
                   ))}
                 </div>
               ) : (
-                <div className="mt-3 text-sm text-amber-700">Aucune vendeuse planifiée trouvée pour cette date.</div>
+                <div className="mt-3 text-sm text-amber-700">Aucune vendeuse planifiée trouvée pour cette date. Active le mode renfort exceptionnel pour choisir une vendeuse hors planning.</div>
               )}
             </div>
 
@@ -746,10 +771,10 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
                 <div>
                   <div className="text-sm mb-1">Vendeuse</div>
                   <SellerPicker
-                    sellers={extraWorkedSellers}
+                    sellers={extraSellerOptions}
                     value={extraWorkForm.seller_id}
                     onChange={(v) => setExtraWorkForm((prev) => ({ ...prev, seller_id: v }))}
-                    placeholder="Choisir la vendeuse"
+                    placeholder={extraAllowOffPlanningSeller ? "Choisir une vendeuse (même hors planning)" : "Choisir la vendeuse"}
                   />
                 </div>
                 <div>
