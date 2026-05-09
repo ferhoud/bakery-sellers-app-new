@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
 import { isAdminEmail } from "@/lib/admin";
 import { fmtISODate } from "@/lib/date";
+import { fetchShiftTypeVersionsClient, getShiftLabelForDate, getShiftStartHHMMForDate } from "@/lib/shift-type-config";
 
 const SELLER_COLOR_OVERRIDES = {
   antonia: "#e57373",
@@ -169,6 +170,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
   const [lateDayLoading, setLateDayLoading] = useState(false);
   const [extraDayLoading, setExtraDayLoading] = useState(false);
   const [extraAllowOffPlanningSeller, setExtraAllowOffPlanningSeller] = useState(false);
+  const [shiftTypeRows, setShiftTypeRows] = useState([]);
 
   const [pendingRows, setPendingRows] = useState([]);
   const [resolvedRows, setResolvedRows] = useState([]);
@@ -238,6 +240,27 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
     if (profile?.role !== "admin") r.replace("/app");
   }, [loading, profile, r, session]);
 
+  const loadShiftTypes = useCallback(async () => {
+    const { data } = await fetchShiftTypeVersionsClient(supabase);
+    setShiftTypeRows(Array.isArray(data) ? data : []);
+  }, []);
+
+  useEffect(() => {
+    loadShiftTypes();
+  }, [loadShiftTypes]);
+
+  useEffect(() => {
+    const ch = supabase
+      .channel("shift_types_rt_retards_relais")
+      .on("postgres_changes", { event: "*", schema: "public", table: "shift_type_versions" }, () => {
+        loadShiftTypes().catch(() => {});
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [loadShiftTypes]);
+
   const mapRowsToSellers = useCallback(
     (rows) =>
       uniqueIds(rows.map((row) => row?.seller_id))
@@ -255,6 +278,8 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
     const evening = mapRowsToSellers(lateDayShiftRows.filter((row) => row.shift_code === "EVENING"));
     return evening.length ? evening : lateWorkedSellers;
   }, [lateDayShiftRows, lateWorkedSellers, mapRowsToSellers]);
+  const effectiveEveningLabel = useMemo(() => getShiftLabelForDate(shiftTypeRows, lateDate, "EVENING") || "Soir (13h30-20h30)", [shiftTypeRows, lateDate]);
+  const effectiveEveningStart = useMemo(() => getShiftStartHHMMForDate(shiftTypeRows, lateDate, "EVENING") || "13:30", [shiftTypeRows, lateDate]);
   const coveringSellerOptions = useMemo(() => {
     const cover = mapRowsToSellers(lateDayShiftRows.filter((row) => row.shift_code === "MORNING" || row.shift_code === "MIDDAY"));
     return cover.length ? cover : lateWorkedSellers;
@@ -309,6 +334,10 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
       setExtraWorkForm((prev) => ({ ...prev, seller_id: extraSellerOptions[0]?.user_id || "" }));
     }
   }, [extraSellerOptions, extraWorkForm.seller_id]);
+
+  useEffect(() => {
+    setManualLate((prev) => ({ ...prev, planned_start_time: effectiveEveningStart || prev.planned_start_time || "13:30" }));
+  }, [effectiveEveningStart]);
 
   const loadPendingRows = useCallback(async () => {
     try {
@@ -390,12 +419,12 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
           p_work_date: row.work_date,
           p_late_seller_id: row.late_seller_id,
           p_shift_code: row.shift_code || "EVENING",
-          p_planned_start_time: row.planned_start_time || "13:30:00",
+          p_planned_start_time: row.planned_start_time || `${effectiveEveningStart}:00`,
           p_actual_arrival_time: row.actual_arrival_time,
           p_late_minutes: row.late_minutes,
           p_coverage_status: mode,
           p_covering_seller_id: mode === "covered" ? coveringSellerId : null,
-          p_coverage_start_time: mode === "covered" ? row.planned_start_time || "13:30:00" : null,
+          p_coverage_start_time: mode === "covered" ? row.planned_start_time || `${effectiveEveningStart}:00` : null,
           p_coverage_end_time: mode === "covered" ? row.actual_arrival_time : null,
           p_reason: mode === "covered" ? "Couverture validée" : mode === "dismissed" ? "Ignoré par l'admin" : "Pas de couverture",
           p_notes:
@@ -415,13 +444,13 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
         setResolvingKey("");
       }
     },
-    [coveringByKey, extraDate, lateDate, refreshExtraWorkView, loadPendingRows, loadResolvedRows, session]
+    [coveringByKey, extraDate, lateDate, effectiveEveningStart, refreshExtraWorkView, loadPendingRows, loadResolvedRows, session]
   );
 
   const saveManualLate = useCallback(async () => {
     if (manualLateSaving) return;
     const lateSellerId = manualLate.late_seller_id || "";
-    const planned = manualLate.planned_start_time || "13:30";
+    const planned = manualLate.planned_start_time || effectiveEveningStart || "13:30";
     const actual = manualLate.actual_arrival_time || "";
     const status = manualLate.coverage_status || "not_covered";
     const coveringSellerId = manualLate.covering_seller_id || "";
@@ -467,7 +496,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
     } finally {
       setManualLateSaving(false);
     }
-  }, [extraDate, lateDate, refreshExtraWorkView, loadPendingRows, loadResolvedRows, manualLate, manualLateSaving, session]);
+  }, [extraDate, lateDate, effectiveEveningStart, refreshExtraWorkView, loadPendingRows, loadResolvedRows, manualLate, manualLateSaving, session]);
 
   const saveExtraWork = useCallback(async () => {
     if (extraWorkSaving) return;
@@ -559,7 +588,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
           <div className="card space-y-4">
             <div className="hdr">Retard / relai</div>
             <div className="text-sm text-gray-600">
-              Ce bloc sert aux retards du shift <span className="font-medium">13h30</span>. La date est indépendante du bloc travail en plus.
+              Ce bloc sert aux retards du shift <span className="font-medium">{effectiveEveningLabel}</span>. La date est indépendante du bloc travail en plus.
             </div>
 
             <div className="border rounded-2xl p-4" style={{ borderColor: "#e5e7eb" }}>
@@ -601,11 +630,11 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
                           <span className="text-sm text-gray-700">
                             retard de <span className="font-medium text-red-700">{fmtDelta(row.late_minutes)}</span>
                           </span>
-                          <span className="text-sm text-gray-500">· prévue 13h30 · arrivée {String(row.actual_arrival_time || "").slice(0, 5)}</span>
+                          <span className="text-sm text-gray-500">· prévue {String(row.planned_start_time || `${effectiveEveningStart}:00`).slice(0, 5)} · arrivée {String(row.actual_arrival_time || "").slice(0, 5)}</span>
                         </div>
 
                         <div className="mt-3">
-                          <div className="text-sm mb-1">Qui a couvert entre 13h30 et l'arrivée réelle ?</div>
+                          <div className="text-sm mb-1">Qui a couvert entre {effectiveEveningStart} et l'arrivée réelle ?</div>
                           <SellerPicker
                             sellers={coveringSellerOptions}
                             value={selectedCover}
@@ -647,7 +676,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
                 </div>
                 <div>
                   <div className="text-sm mb-1">Heure prévue</div>
-                  <input className="input" type="time" step="60" value={manualLate.planned_start_time} onChange={(e) => setManualLate((prev) => ({ ...prev, planned_start_time: e.target.value }))} />
+                  <input className="input" type="time" step="60" value={manualLate.planned_start_time || effectiveEveningStart} onChange={(e) => setManualLate((prev) => ({ ...prev, planned_start_time: e.target.value }))} />
                 </div>
                 <div>
                   <div className="text-sm mb-1">Heure réelle d'arrivée</div>
@@ -799,7 +828,7 @@ export default function AdminRetardsRelaisPage({ initialSellers = [], initialDat
                 </div>
                 <div className="md:col-span-2">
                   <div className="text-sm mb-1">Note</div>
-                  <input className="input" value={extraWorkForm.notes} onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Ex: venue à 12h34 au lieu de 13h30" />
+                  <input className="input" value={extraWorkForm.notes} onChange={(e) => setExtraWorkForm((prev) => ({ ...prev, notes: e.target.value }))} placeholder={`Ex: venue à 12h34 au lieu de ${effectiveEveningStart}`} />
                 </div>
               </div>
               <div className="mt-3">

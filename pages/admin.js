@@ -20,6 +20,7 @@ import { useAuth } from "@/lib/useAuth";
 import { isAdminEmail } from "@/lib/admin";
 import WeekNav from "../components/WeekNav";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "../lib/date";
+import { fetchShiftTypeVersionsClient, getShiftDurationHoursForDate, getShiftLabelForDate, resolveEffectiveShiftMap } from "@/lib/shift-type-config";
 
 /* ---------- CONSTANTES / UTILS GLOBAUX (SANS HOOKS) ---------- */
 
@@ -272,6 +273,7 @@ export default function AdminPage() {
   const [refreshKey, setRefreshKey] = useState(0); // recalcul totaux mois
   const today = new Date();
   const todayIso = fmtISODate(today);
+  const [shiftTypeRows, setShiftTypeRows] = useState([]);
 
   // Refs pour contrôler les reloads
   const reloadInFlight = useRef(false);
@@ -373,6 +375,16 @@ export default function AdminPage() {
     },
     [sellersById]
   );
+
+  const loadShiftTypeVersions = useCallback(async () => {
+    try {
+      const { data } = await fetchShiftTypeVersionsClient(supabase);
+      setShiftTypeRows(Array.isArray(data) ? data : []);
+    } catch (e) {
+      console.warn("loadShiftTypeVersions error:", e?.message || e);
+      setShiftTypeRows([]);
+    }
+  }, []);
 
   /* ======= VALIDATION HEURES MENSUELLES (badge + accès rapide) ======= */
   const [mhPendingCount, setMhPendingCount] = useState(null); // admin_status=pending (mois sélectionné)
@@ -1255,6 +1267,7 @@ const deleteHandover = useCallback(
         loadAbsencesToday?.(),
         loadReplacements?.(),
         loadLeavesUnified?.(),
+        loadShiftTypeVersions?.(),
         loadMonthAbsences?.(),
         loadMonthUpcomingAbsences?.(),
         loadMonthAcceptedRepl?.(),
@@ -1274,6 +1287,7 @@ const deleteHandover = useCallback(
     loadAbsencesToday,
     loadReplacements,
     loadLeavesUnified,
+    loadShiftTypeVersions,
     loadMonthAbsences,
     loadMonthUpcomingAbsences,
     loadMonthAcceptedRepl,
@@ -1397,14 +1411,14 @@ const deleteHandover = useCallback(
   useEffect(() => {
     let isMounted = true;
     const run = async () => {
-      await Promise.all([loadSellers(), loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])), loadWeekHandovers()]);
+      await Promise.all([loadSellers(), loadWeekAssignments(fmtISODate(days[0]), fmtISODate(days[6])), loadWeekHandovers(), loadShiftTypeVersions()]);
       if (isMounted) setRefreshKey((k) => k + 1);
     };
     run();
     return () => {
       isMounted = false;
     };
-  }, [days, loadSellers, loadWeekAssignments, loadWeekHandovers]);
+  }, [days, loadSellers, loadWeekAssignments, loadWeekHandovers, loadShiftTypeVersions]);
 
 
   // Badge bouton "Pointage" : vendeuses planifiées non pointées (alerte après 60 min)
@@ -1790,6 +1804,10 @@ const deleteHandover = useCallback(
                           <a className="btn">🏖️ Congés</a>
                         </Link>
 
+                        <Link href="/admin/shift-types" legacyBehavior>
+                          <a className="btn">🕒 Plages horaires</a>
+                        </Link>
+
                         <Link href="/admin/retards-relais" legacyBehavior>
                           <a className="btn">⏱️ Retards / relais</a>
                         </Link>
@@ -1976,7 +1994,7 @@ const deleteHandover = useCallback(
                   
         </div>
 
-        <TodayColorBlocks today={today} todayIso={todayIso} assign={assign} nameFromId={nameFromId} />
+        <TodayColorBlocks today={today} todayIso={todayIso} assign={assign} nameFromId={nameFromId} shiftTypeRows={shiftTypeRows} />
 
         <div className="card">
           <div className="hdr mb-4">Planning de la semaine</div>
@@ -2000,6 +2018,7 @@ const deleteHandover = useCallback(
               const sunday = isSunday(d);
               const highlight = isSameISO(d, todayIso);
               const currentAbs = absencesByDate[iso] || [];
+              const effectiveMap = resolveEffectiveShiftMap(shiftTypeRows, iso);
 
               // defaults depuis le planning
               const morningId = assign[`${iso}|MORNING`] || "";
@@ -2128,7 +2147,7 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                   </div>
 
                   <ShiftRow
-                    label="Matin (6h30-13h30)"
+                    label={effectiveMap.MORNING?.display_label || "Matin (6h30-13h30)"}
                     iso={iso}
                     code="MORNING"
                     value={assign[`${iso}|MORNING`] || ""}
@@ -2139,7 +2158,7 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
 
                   {!sunday ? (
                     <ShiftRow
-                      label="Midi (6h30-13h30)"
+                      label={effectiveMap.MIDDAY?.display_label || "Midi (6h30-13h30)"}
                       iso={iso}
                       code="MIDDAY"
                       value={assign[`${iso}|MIDDAY`] || ""}
@@ -2152,7 +2171,7 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                       <div className="text-sm">Midi - deux postes</div>
                       <div className="grid grid-cols-2 gap-2">
                         <div>
-                          <div className="text-xs mb-1">6h30-13h30</div>
+                          <div className="text-xs mb-1">{effectiveMap.MIDDAY?.display_label || "Midi (6h30-13h30)"}</div>
                           <select
                             className="select"
                             value={assign[`${iso}|MIDDAY`] || ""}
@@ -2170,7 +2189,7 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                           </div>
                         </div>
                         <div>
-                          <div className="text-xs mb-1">9h-13h30</div>
+                          <div className="text-xs mb-1">{effectiveMap.SUNDAY_EXTRA?.display_label || "Dimanche 9h-13h30"}</div>
                           <select
                             className="select"
                             value={assign[`${iso}|SUNDAY_EXTRA`] || ""}
@@ -2192,7 +2211,7 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
                   )}
 
                   <ShiftRow
-                    label="Soir (13h30-20h30)"
+                    label={effectiveMap.EVENING?.display_label || "Soir (13h30-20h30)"}
                     iso={iso}
                     code="EVENING"
                     value={assign[`${iso}|EVENING`] || ""}
@@ -2243,6 +2262,7 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
           refreshKey={refreshKey}
           monthAbsences={monthAbsences}
           monthUpcomingAbsences={monthUpcomingAbsences}
+          shiftTypeRows={shiftTypeRows}
         />
 
         <div className="card">
@@ -2376,14 +2396,14 @@ function ShiftSelect({ dateStr, value, onChange }) {
   );
 }
 
-function TodayColorBlocks({ today, todayIso, assign, nameFromId }) {
+function TodayColorBlocks({ today, todayIso, assign, nameFromId, shiftTypeRows = [] }) {
   const codes = ["MORNING", "MIDDAY", ...(isSunday(today) ? ["SUNDAY_EXTRA"] : []), "EVENING"];
   return (
     <div className="card">
       <div className="hdr mb-2">Planning du jour</div>
       <div className={`grid ${isSunday(today) ? "md:grid-cols-4" : "md:grid-cols-3"} gap-3`}>
         {codes.map((code) => {
-          const label = SHIFT_LABELS[code];
+          const label = getShiftLabelForDate(shiftTypeRows, todayIso, code) || SHIFT_LABELS[code];
           const sellerId = assign[`${todayIso}|${code}`];
           const name = nameFromId(sellerId);
           const assigned = !!sellerId;
@@ -2423,7 +2443,7 @@ function ShiftRow({ label, iso, code, value, onChange, sellers, chipName }) {
   );
 }
 
-function TotalsGrid({ sellers, monthFrom, monthTo, monthLabel, refreshKey, monthAbsences = [], monthUpcomingAbsences = [] }) {
+function TotalsGrid({ sellers, monthFrom, monthTo, monthLabel, refreshKey, monthAbsences = [], monthUpcomingAbsences = [], shiftTypeRows = [] }) {
   const [weekTotals, setWeekTotals] = useState({});
   const [monthTotals, setMonthTotals] = useState({});
   const [annualLeaveDays, setAnnualLeaveDays] = useState({});
@@ -2435,7 +2455,7 @@ function TotalsGrid({ sellers, monthFrom, monthTo, monthLabel, refreshKey, month
   function aggregateFromRows(rows, sellersList) {
     const dict = Object.fromEntries((sellersList || []).map((s) => [s.user_id, 0]));
     (rows || []).forEach((r) => {
-      const h = SHIFT_HOURS[r.shift_code] ?? 0;
+      const h = getShiftDurationHoursForDate(shiftTypeRows, r.date, r.shift_code) ?? (SHIFT_HOURS[r.shift_code] ?? 0);
       if (r.seller_id) dict[r.seller_id] = (dict[r.seller_id] || 0) + h;
     });
     return dict;
@@ -2657,7 +2677,7 @@ function applyHandovers(dict, handovers) {
     return () => {
       cancelled = true;
     };
-  }, [sellers, refreshKey, todayIso]);
+  }, [sellers, refreshKey, todayIso, shiftTypeRows]);
 
   // Heures mois — jusqu’à AUJOURD’HUI si mois courant, sinon jusqu’à fin du mois sélectionné
   useEffect(() => {
@@ -2683,7 +2703,7 @@ function applyHandovers(dict, handovers) {
     return () => {
       cancelled = true;
     };
-  }, [sellers, monthFrom, monthTo, refreshKey, todayIso]);
+  }, [sellers, monthFrom, monthTo, refreshKey, todayIso, shiftTypeRows]);
 
   // Jours de congé pris sur l'année en cours (approved, jusqu’à aujourd'hui inclus)
   useEffect(() => {

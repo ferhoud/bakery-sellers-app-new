@@ -6,6 +6,7 @@ import { useRouter } from "next/router";
 import { supabase } from "../lib/supabaseClient";
 import WeekNav from "../components/WeekNav";
 import { startOfWeek, fmtISODate } from "../lib/date";
+import { DEFAULT_SHIFT_TYPE_MAP, formatRange } from "../lib/shift-type-config";
 
 function isStandalone() {
   try {
@@ -43,8 +44,18 @@ const SHIFT_TEXT = {
   MORNING: { title: "Matin", time: "6h30–13h30" },
   MIDDAY: { title: "Midi", time: "6h30–13h30" },
   EVENING: { title: "Soir", time: "13h30–20h30" },
-  SUNDAY_EXTRA: { title: "9h–13h30", time: "" },
+  SUNDAY_EXTRA: { title: "Dimanche", time: "9h–13h30" },
 };
+
+function titleForCode(code, meta) {
+  return String(meta?.base_name || SHIFT_TEXT?.[code]?.title || code || "").trim();
+}
+function timeForCode(code, meta) {
+  if (meta?.start_time && meta?.end_time) {
+    return formatRange(meta.start_time, meta.end_time).replace("-", "–");
+  }
+  return String(SHIFT_TEXT?.[code]?.time || "").trim();
+}
 
 const COLOR_OVERRIDES = {
   Antonia: "#e57373",
@@ -331,6 +342,9 @@ export default function SupervisorPage() {
   const assignments = payload?.assignments || {};
   const weekDates = payload?.dates || [];
   const dayRow = assignments[focusDate] || {};
+  const shiftMetaByDate = payload?.shift_meta || {};
+  const getShiftMeta = (iso, code) =>
+    shiftMetaByDate?.[iso]?.[code] || DEFAULT_SHIFT_TYPE_MAP?.[code] || null;
 
   const teamNamesById =
     team?.namesById || team?.names_by_id || team?.names || team?.nameById || {};
@@ -625,7 +639,7 @@ export default function SupervisorPage() {
                   return (
                     <div key={code} style={name ? cardStyle(bg) : emptyCardStyle()}>
                       <div style={{ fontSize: 14, opacity: name ? 1 : 0.8 }}>
-                        {SHIFT_TEXT[code].title} ({SHIFT_TEXT[code].time})
+                        {titleForCode(code, getShiftMeta(focusDate, code))} ({timeForCode(code, getShiftMeta(focusDate, code))})
                       </div>
                       <div style={{ marginTop: 8, fontSize: 18, fontWeight: 800 }}>{name || "—"}</div>
                     </div>
@@ -727,10 +741,8 @@ export default function SupervisorPage() {
 
                         const bg = pickColor(name);
 
-                        const topLine =
-                          code === "SUNDAY_EXTRA"
-                            ? "9h-13h30"
-                            : `${SHIFT_TEXT[code].title} (${SHIFT_TEXT[code].time})`;
+                        const meta = getShiftMeta(d, code);
+                        const topLine = `${titleForCode(code, meta)} (${timeForCode(code, meta)})`;
 
                         return (
                           <div key={code} style={{ ...cardStyle(bg), padding: 14, minHeight: 0, marginTop: 10 }}>

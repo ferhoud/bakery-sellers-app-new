@@ -7,6 +7,7 @@ import { useAuth } from "@/lib/useAuth";
 import WeekNav from "@/components/WeekNav";
 import { notifyAdminsNewAbsence } from "@/lib/pushNotify";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
+import { fetchShiftTypeVersionsClient, getShiftLabelForDate, getShiftStartHHMMForDate } from "@/lib/shift-type-config";
 
 /* Libellés + créneau dimanche */
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
@@ -75,7 +76,7 @@ function lastDayOfMonth(d) {
 function betweenIso(iso, start, end) {
   return iso >= start && iso <= end;
 }
-function labelForShift(code) {
+function fallbackLabelForShift(code) {
   switch (code) {
     case "MORNING":
       return "Matin (6h30-13h30)";
@@ -88,6 +89,13 @@ function labelForShift(code) {
     default:
       return code || "—";
   }
+}
+
+function shiftCodeFromBoundary(code) {
+  const sc = String(code || "").toUpperCase();
+  if (sc === "MORNING_START") return "MORNING";
+  if (sc === "EVENING_START") return "EVENING";
+  return sc;
 }
 
 function fmtMinutesHM(mins) {
@@ -326,6 +334,7 @@ const [isPlanner, setIsPlanner] = useState(false);
   const [editPlanning, setEditPlanning] = useState(false);
 
   const [names, setNames] = useState({}); // { user_id: full_name }
+  const [shiftTypeRows, setShiftTypeRows] = useState([]);
   const [assign, setAssign] = useState({}); // { "YYYY-MM-DD|CODE": { seller_id, full_name } }
   const [todayPlan, setTodayPlan] = useState({}); // { CODE: { seller_id, full_name } }
 
@@ -480,6 +489,11 @@ useEffect(() => {
     profileFallback?.full_name ||
     session?.user?.user_metadata?.full_name ||
     (userEmail ? userEmail.split("@")[0] : "—");
+
+  const canPlannerEditDate = useCallback(
+    (iso) => Boolean(isPlanner && String(iso || "") > todayIso),
+    [isPlanner, todayIso]
+  );
 
   // ----------------------------
   // Redirects (APRÈS hooks)
@@ -659,6 +673,37 @@ useEffect(() => {
     loadSellerNames();
   }, [loadSellerNames]);
 
+  const loadShiftTypes = useCallback(async () => {
+    const { data } = await fetchShiftTypeVersionsClient(supabase);
+    setShiftTypeRows(Array.isArray(data) ? data : []);
+  }, []);
+
+  useEffect(() => {
+    loadShiftTypes();
+  }, [loadShiftTypes]);
+
+  useEffect(() => {
+    const ch = supabase
+      .channel("shift_types_rt_app")
+      .on("postgres_changes", { event: "*", schema: "public", table: "shift_type_versions" }, () => {
+        loadShiftTypes().catch(() => {});
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [loadShiftTypes]);
+
+  const getShiftLabel = useCallback((dateIso, code) => {
+    const shiftCode = shiftCodeFromBoundary(code);
+    return getShiftLabelForDate(shiftTypeRows, dateIso, shiftCode) || fallbackLabelForShift(shiftCode);
+  }, [shiftTypeRows]);
+
+  const getShiftStartHHMM = useCallback((dateIso, code) => {
+    const shiftCode = shiftCodeFromBoundary(code);
+    return getShiftStartHHMMForDate(shiftTypeRows, dateIso, shiftCode);
+  }, [shiftTypeRows]);
+
   const sellerOptions = useMemo(() => {
     const entries = Object.entries(names || {}).map(([id, full_name]) => ({
       user_id: id,
@@ -820,18 +865,18 @@ useEffect(() => {
   const CHECKIN_OPEN_BEFORE_MIN = 30; // 30 min avant l'heure prévue (évite de demander un code trop tôt)
   const CHECKIN_HIDE_AFTER_MIN = 120; // 2h après l'heure prévue (après, on masque le code => oubli ≠ retard)
 
-  const plannedMinutesFromShift = (shiftCode) => {
-    const sc = String(shiftCode || "").toUpperCase();
-    if (sc === "EVENING") return 13 * 60 + 30; // 13:30
-    if (sc === "SUNDAY_EXTRA") return 9 * 60;  // 09:00
-    // MORNING + MIDDAY => même arrivée 06:30
-    return 6 * 60 + 30;
+  const plannedMinutesFromShift = (shiftCode, dateIso = todayIso) => {
+    const start = getShiftStartHHMM(dateIso, shiftCode);
+    const parts = String(start || "").split(":");
+    const hh = Number(parts[0] || 0);
+    const mm = Number(parts[1] || 0);
+    return hh * 60 + mm;
   };
 
   const nowMinLocal = useMemo(() => (clockNow.getHours() * 60 + clockNow.getMinutes()), [clockNow]);
 
   const getCheckinPhase = (shiftCode) => {
-    const planned = plannedMinutesFromShift(shiftCode);
+    const planned = plannedMinutesFromShift(shiftCode, todayIso);
     const start = planned - CHECKIN_OPEN_BEFORE_MIN;
     const end = planned + CHECKIN_HIDE_AFTER_MIN;
     if (nowMinLocal < start) return { phase: "before", planned, start, end };
@@ -1207,6 +1252,10 @@ if (!/^\d{6}$/.test(code6)) {
   const saveShift = useCallback(
     async (iso, code, seller_id) => {
       if (!isPlanner) return;
+      if (!canPlannerEditDate(iso)) {
+        alert("Modification réservée à l’admin pour aujourd’hui et les jours passés.");
+        return;
+      }
 
       const key = `${iso}|${code}`;
       const resolvedName = seller_id ? names?.[seller_id] || null : null;
@@ -1228,7 +1277,7 @@ if (!/^\d{6}$/.test(code6)) {
       await loadWeekPlanning();
       await loadTodayPlan();
     },
-    [isPlanner, names, loadWeekPlanning, loadTodayPlan]
+    [isPlanner, canPlannerEditDate, names, loadWeekPlanning, loadTodayPlan]
   );
 
   // Absence demande
@@ -2081,9 +2130,6 @@ useEffect(() => {
           <button className="btn" onClick={() => r.push("/leaves")}>
             Congés
           </button>
-          <button className="btn" onClick={() => r.push("/work-history")}>
-            Historique
-          </button>
           <button className="btn" onClick={hardLogout}>
             Se déconnecter
           </button>
@@ -2736,7 +2782,7 @@ return (
                 >
                   <div className="text-sm">
                     <div className="font-semibold" style={{ color: "#166534" }}>
-                      {frDate(it.date)} · {labelForShift(it.shift_code)}
+                      {frDate(it.date)} · {getShiftLabel(it.date, it.shift_code)}
                     </div>
                     <div style={{ opacity: 0.9 }}>
                       Absence de <b>{it.absent_name || "—"}</b>
@@ -2793,10 +2839,10 @@ return (
                   className="rounded-2xl p-3"
                   style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}
                 >
-                  <div className="text-sm">{SHIFT_LABELS[code] || code}</div>
+                  <div className="text-sm">{getShiftLabel(todayIso, code)}</div>
                   <div className="mt-1 text-sm">{shownName}</div>
 
-                  {isPlanner && editPlanning && (
+                  {isPlanner && editPlanning && canPlannerEditDate(todayIso) && (
                     <div className="mt-3">
                       <select
                         className="input"
@@ -2810,6 +2856,11 @@ return (
                           </option>
                         ))}
                       </select>
+                    </div>
+                  )}
+                  {isPlanner && editPlanning && !canPlannerEditDate(todayIso) && (
+                    <div className="mt-3 text-xs" style={{ color: "#6b7280" }}>
+                      Modification réservée à l’admin pour aujourd’hui et les jours passés.
                     </div>
                   )}
                 </div>
@@ -2841,7 +2892,7 @@ return (
                     {" "}
                     (
                     <span className="text-xs px-2 py-1 rounded-full" style={{ background: "#f3f4f6" }}>
-                      {labelForShift(absentToday.acceptedShift)}
+                      {getShiftLabel(todayIso, absentToday.acceptedShift)}
                     </span>
                     )
                   </>
@@ -2898,10 +2949,10 @@ return (
                       className="rounded-2xl p-3"
                       style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}
                     >
-                      <div className="text-sm font-medium">{SHIFT_LABELS[code] || code}</div>
+                      <div className="text-sm font-medium">{getShiftLabel(iso, code)}</div>
                       <div className="mt-1 text-sm">{shownName}</div>
 
-                      {isPlanner && editPlanning && (
+                      {isPlanner && editPlanning && canPlannerEditDate(iso) && (
                         <div className="mt-3">
                           <select
                             className="input"
@@ -2915,6 +2966,11 @@ return (
                               </option>
                             ))}
                           </select>
+                        </div>
+                      )}
+                      {isPlanner && editPlanning && !canPlannerEditDate(iso) && (
+                        <div className="mt-3 text-xs" style={{ color: "#6b7280" }}>
+                          Modification réservée à l’admin pour aujourd’hui et les jours passés.
                         </div>
                       )}
                     </div>

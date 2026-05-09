@@ -4,9 +4,9 @@ import { useRouter } from "next/router";
 import { supabase } from "@/lib/supabaseClient";
 import { useAuth } from "@/lib/useAuth";
 import { startOfWeek, addDays, fmtISODate, SHIFT_LABELS as BASE_LABELS } from "@/lib/date";
+import { fetchShiftTypeVersionsClient, getShiftDurationHoursForDate, getShiftLabelForDate } from "@/lib/shift-type-config";
 
 const SHIFT_LABELS = { ...BASE_LABELS, SUNDAY_EXTRA: "9h-13h30" };
-const SHIFT_HOURS = { MORNING: 7, MIDDAY: 7, EVENING: 7, SUNDAY_EXTRA: 4.5 };
 const SELLER_COLOR_OVERRIDES = {
   antonia: "#e57373",
   olivia: "#64b5f6",
@@ -73,6 +73,7 @@ export default function WorkHistoryPage() {
   const [assign, setAssign] = useState({});
   const [loadingRows, setLoadingRows] = useState(false);
   const [loadErr, setLoadErr] = useState("");
+  const [shiftTypeRows, setShiftTypeRows] = useState([]);
 
   useEffect(() => {
     let alive = true;
@@ -237,6 +238,27 @@ export default function WorkHistoryPage() {
     loadMonthPlanning();
   }, [loadMonthPlanning]);
 
+  const loadShiftTypes = useCallback(async () => {
+    const { data } = await fetchShiftTypeVersionsClient(supabase);
+    setShiftTypeRows(Array.isArray(data) ? data : []);
+  }, []);
+
+  useEffect(() => {
+    loadShiftTypes();
+  }, [loadShiftTypes]);
+
+  useEffect(() => {
+    const ch = supabase
+      .channel("shift_types_rt_work_history")
+      .on("postgres_changes", { event: "*", schema: "public", table: "shift_type_versions" }, () => {
+        loadShiftTypes().catch(() => {});
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [loadShiftTypes]);
+
   const totalHours = useMemo(() => {
     let total = 0;
     Object.entries(assign || {}).forEach(([key, rec]) => {
@@ -245,10 +267,10 @@ export default function WorkHistoryPage() {
       if (iso < monthFrom || iso > monthTo) return;
       if (iso > todayIso) return;
       if ((rec?.seller_id || "") !== userId) return;
-      total += Number(SHIFT_HOURS[code] || 0) || 0;
+      total += Number(getShiftDurationHoursForDate(shiftTypeRows, iso, code) || 0) || 0;
     });
     return total;
-  }, [assign, monthFrom, monthTo, todayIso, userId]);
+  }, [assign, monthFrom, monthTo, todayIso, userId, shiftTypeRows]);
 
   const sellerColor = useMemo(() => colorForSeller(userId, displayName), [userId, displayName]);
 
@@ -380,7 +402,7 @@ export default function WorkHistoryPage() {
                         className="rounded-2xl p-3"
                         style={{ backgroundColor: bg, color: fg, border: `1px solid ${border}` }}
                       >
-                        <div className="text-sm font-medium">{SHIFT_LABELS[code] || code}</div>
+                        <div className="text-sm font-medium">{getShiftLabelForDate(shiftTypeRows, iso, code) || SHIFT_LABELS[code] || code}</div>
                         <div className="mt-1 text-sm">{mine ? displayName : "—"}</div>
                       </div>
                     );

@@ -5,6 +5,7 @@
 //
 import { createClient } from "@supabase/supabase-js";
 import { isAdminEmail } from "@/lib/admin";
+import { SHIFT_TYPE_CODES, resolveEffectiveShiftMap } from "@/lib/shift-type-config";
 
 function json(res, status, body) {
   res.status(status).json(body);
@@ -117,6 +118,37 @@ export default async function handler(req, res) {
 
     if (shErr) return json(res, 500, { ok: false, error: shErr.message });
 
+    let shiftTypeRows = [];
+    try {
+      const { data: stv, error: stErr } = await admin
+        .from("shift_type_versions")
+        .select("*")
+        .order("shift_code", { ascending: true })
+        .order("effective_from", { ascending: false });
+      if (!stErr && Array.isArray(stv)) shiftTypeRows = stv;
+    } catch (_) {}
+
+    const shift_meta = {};
+    for (const d of dates) {
+      const resolved = resolveEffectiveShiftMap(shiftTypeRows, d);
+      shift_meta[d] = {};
+      for (const code of SHIFT_TYPE_CODES) {
+        const cfg = resolved?.[code];
+        shift_meta[d][code] = cfg
+          ? {
+              shift_code: cfg.shift_code,
+              base_name: cfg.base_name,
+              start_time: cfg.start_time,
+              end_time: cfg.end_time,
+              effective_from: cfg.effective_from,
+              active: cfg.active !== false,
+              duration_hours: Number(cfg.duration_hours || 0) || 0,
+              display_label: cfg.display_label || "",
+            }
+          : null;
+      }
+    }
+
     const { data: absRows, error: abErr } = await admin
       .from("absences")
       .select("seller_id, date, status, reason")
@@ -189,6 +221,7 @@ export default async function handler(req, res) {
       sunday,
       dates,
       absences,
+      shift_meta,
 
       // Champs historiques (compat)
       week_start: monday,
