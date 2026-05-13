@@ -196,6 +196,25 @@ const RejectBtn = ({ onClick, disabled = false, children = "Refuser" }) => (
 function shiftHumanLabel(code) {
   return SHIFT_LABELS[code] || code || "-";
 }
+function fmtMinutesShort(mins) {
+  const n = Math.round(Number(mins || 0) || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 min";
+  const h = Math.floor(n / 60);
+  const m = n % 60;
+  if (h <= 0) return `${m} min`;
+  if (m === 0) return `${h}h`;
+  return `${h}h${String(m).padStart(2, "0")}`;
+}
+function checkinTimeLabel(iso) {
+  if (!iso) return "--:--";
+  try {
+    const d = new Date(String(iso));
+    if (Number.isNaN(d.getTime())) return "--:--";
+    return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "--:--";
+  }
+}
 
 /* ---------- PAGE PRINCIPALE (TOUS LES HOOKS ICI) ---------- */
 export default function AdminPage() {
@@ -1424,8 +1443,15 @@ const deleteHandover = useCallback(
   // Badge bouton "Pointage" : vendeuses planifiées non pointées (alerte après 60 min)
   const [missingCheckinsCount, setMissingCheckinsCount] = useState(0);
 
+  // Retard pointage confirmé du soir : l'admin choisit qui a couvert, puis on ajoute ces minutes en travail en plus.
+  const [coverageAlerts, setCoverageAlerts] = useState([]);
+  const [coverageChoices, setCoverageChoices] = useState({});
+  const [coverageBusy, setCoverageBusy] = useState({});
+  const [coverageErr, setCoverageErr] = useState("");
+
   // Notifications UI (évite de spammer)
   const lastMissingCheckinsNotifiedRef = useRef({ count: 0, ts: 0 });
+  const lastCoverageNotifiedRef = useRef({ ids: "", ts: 0 });
 
   const loadMissingCheckinsCount = useCallback(async () => {
     // Compte "Pointage" = uniquement les pointages manquants NON ACK (Marquer vu)
@@ -1502,6 +1528,128 @@ const deleteHandover = useCallback(
     }
   }, []);
 
+  const coverageDismissKey = useCallback((day) => `dismissed_late_coverage_${day || todayIso}`, [todayIso]);
+
+  const getDismissedCoverageIds = useCallback(
+    (day) => {
+      if (typeof window === "undefined") return new Set();
+      try {
+        const raw = window.localStorage?.getItem(coverageDismissKey(day)) || "[]";
+        const arr = JSON.parse(raw);
+        return new Set(Array.isArray(arr) ? arr.map(String) : []);
+      } catch {
+        return new Set();
+      }
+    },
+    [coverageDismissKey]
+  );
+
+  const loadCoverageAlerts = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      if (!token) {
+        setCoverageAlerts([]);
+        return;
+      }
+
+      const qs = new URLSearchParams({ day: todayIso });
+      const r = await fetch(`/api/admin/checkins/coverage-alerts?${qs.toString()}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      if (!r.ok) {
+        // Route pas encore déployée ou erreur ponctuelle: on ne bloque pas l'admin.
+        setCoverageAlerts([]);
+        return;
+      }
+
+      const j = await r.json().catch(() => ({}));
+      const items = Array.isArray(j?.items) ? j.items : [];
+      const dismissed = getDismissedCoverageIds(todayIso);
+      const filtered = items.filter((it) => !dismissed.has(String(it?.id || it?.checkin_id || "")));
+
+      setCoverageAlerts(filtered);
+      setCoverageErr("");
+      setCoverageChoices((prev) => {
+        const next = { ...(prev || {}) };
+        for (const it of filtered) {
+          const id = String(it?.id || it?.checkin_id || "");
+          if (!id || next[id]) continue;
+          const first = Array.isArray(it?.candidates) ? it.candidates[0] : null;
+          if (first?.seller_id) next[id] = first.seller_id;
+        }
+        return next;
+      });
+    } catch {
+      setCoverageAlerts([]);
+    }
+  }, [getDismissedCoverageIds, todayIso]);
+
+  const dismissCoverageAlert = useCallback(
+    (alertId, day) => {
+      const id = String(alertId || "");
+      if (!id) return;
+      try {
+        const key = coverageDismissKey(day || todayIso);
+        const raw = window.localStorage?.getItem(key) || "[]";
+        const arr = JSON.parse(raw);
+        const set = new Set(Array.isArray(arr) ? arr.map(String) : []);
+        set.add(id);
+        window.localStorage?.setItem(key, JSON.stringify(Array.from(set).slice(-80)));
+      } catch {}
+      setCoverageAlerts((prev) => (prev || []).filter((it) => String(it?.id || it?.checkin_id || "") !== id));
+    },
+    [coverageDismissKey, todayIso]
+  );
+
+  const validateCoverageTransfer = useCallback(
+    async (item) => {
+      const id = String(item?.id || item?.checkin_id || "");
+      if (!id) return;
+
+      const selected = coverageChoices[id] || item?.candidates?.[0]?.seller_id || "";
+      if (!selected) {
+        setCoverageErr("Choisis la vendeuse qui a couvert avant de valider.");
+        return;
+      }
+      if (selected === item?.seller_id) {
+        setCoverageErr("La vendeuse en retard ne peut pas se couvrir elle-même.");
+        return;
+      }
+
+      setCoverageBusy((prev) => ({ ...(prev || {}), [id]: true }));
+      setCoverageErr("");
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token;
+        if (!token) throw new Error("Session admin manquante.");
+
+        const r = await fetch("/api/admin/checkins/coverage-alerts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            checkin_id: id,
+            covered_by_seller_id: selected,
+            minutes: item?.late_minutes,
+          }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j?.ok === false) throw new Error(j?.error || `Erreur API (${r.status})`);
+
+        setCoverageAlerts((prev) => (prev || []).filter((it) => String(it?.id || it?.checkin_id || "") !== id));
+        setRefreshKey((k) => k + 1);
+        await loadCoverageAlerts();
+      } catch (e) {
+        setCoverageErr(e?.message || "Impossible de valider le transfert.");
+      } finally {
+        setCoverageBusy((prev) => ({ ...(prev || {}), [id]: false }));
+      }
+    },
+    [coverageChoices, loadCoverageAlerts]
+  );
+
   useEffect(() => {
     // ✅ Toujours tenter, même si la variable `session` n'est pas encore prête.
     // L'API est protégée: sans token => count = 0, sans casser l'admin.
@@ -1510,15 +1658,27 @@ const deleteHandover = useCallback(
     return () => clearInterval(id);
   }, [loadMissingCheckinsCount]);
 
+  useEffect(() => {
+    loadCoverageAlerts();
+    // Vérification courte en secours du Realtime : l'alerte doit remonter vite pendant que l'admin est ouvert.
+    const id = setInterval(loadCoverageAlerts, 10 * 1000);
+    return () => clearInterval(id);
+  }, [loadCoverageAlerts]);
 
   // Rafraîchir immédiatement quand on revient sur l'onglet (évite badge qui reste "bloqué")
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    const onFocus = () => loadMissingCheckinsCount();
+    const onFocus = () => {
+      loadMissingCheckinsCount();
+      loadCoverageAlerts();
+    };
     const onVis = () => {
       try {
-        if (document.visibilityState === "visible") loadMissingCheckinsCount();
+        if (document.visibilityState === "visible") {
+          loadMissingCheckinsCount();
+          loadCoverageAlerts();
+        }
       } catch {}
     };
 
@@ -1528,7 +1688,7 @@ const deleteHandover = useCallback(
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [loadMissingCheckinsCount]);
+  }, [loadMissingCheckinsCount, loadCoverageAlerts]);
 
   // Sync instant badge si /admin/checkins "Marquer vu" (autre onglet / autre fenêtre)
   useEffect(() => {
@@ -1620,6 +1780,81 @@ const deleteHandover = useCallback(
       cancelled = true;
     };
   }, [missingCheckinsCount]);
+
+  // Notification pour les retards confirmés: "Qui a couvert ?"
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!coverageAlerts || coverageAlerts.length <= 0) return;
+
+    const ids = coverageAlerts.map((it) => String(it?.id || it?.checkin_id || "")).filter(Boolean).sort().join(",");
+    const now = Date.now();
+    const last = lastCoverageNotifiedRef.current || { ids: "", ts: 0 };
+    const shouldNotify = ids !== last.ids || now - (last.ts || 0) > 20 * 60 * 1000;
+    if (!shouldNotify) return;
+
+    lastCoverageNotifiedRef.current = { ids, ts: now };
+
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!("Notification" in window) || Notification.permission !== "granted") return;
+        const first = coverageAlerts[0];
+        const who = first?.seller_name || "Une vendeuse";
+        const at = checkinTimeLabel(first?.confirmed_at);
+        const body = `${who} a pointé à ${at} avec ${fmtMinutesShort(first?.late_minutes)} de retard. Qui a couvert ?`;
+        const title = "⏱️ Retard pointage";
+
+        if ("serviceWorker" in navigator) {
+          try {
+            let reg = await navigator.serviceWorker.getRegistration();
+            if (!reg) {
+              try {
+                reg = await navigator.serviceWorker.ready;
+              } catch {
+                reg = null;
+              }
+            }
+            if (!cancelled && reg && typeof reg.showNotification === "function") {
+              await reg.showNotification(title, {
+                body,
+                tag: "admin-late-coverage",
+                renotify: true,
+                requireInteraction: true,
+                icon: "/icons/icon-192.png",
+                badge: "/icons/icon-192.png",
+                data: { url: "/admin" },
+              });
+              return;
+            }
+          } catch {}
+        }
+
+        if (!cancelled) {
+          try {
+            new Notification(title, { body, tag: "admin-late-coverage", requireInteraction: true });
+          } catch {}
+        }
+      } catch {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [coverageAlerts]);
+
+  useEffect(() => {
+    const ch = supabase
+      .channel("daily_checkins_late_coverage_admin")
+      .on("postgres_changes", { event: "*", schema: "public", table: "daily_checkins" }, () => {
+        loadCoverageAlerts();
+        setRefreshKey((k) => k + 1);
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [loadCoverageAlerts]);
 
 
   /* ---------- RENDER ---------- */
@@ -1847,6 +2082,18 @@ const deleteHandover = useCallback(
               .
             </div>
           </div>
+        ) : null}
+
+        {coverageAlerts.length > 0 ? (
+          <CoverageAlertsPanel
+            items={coverageAlerts}
+            choices={coverageChoices}
+            busy={coverageBusy}
+            error={coverageErr}
+            onChoice={(id, sellerId) => setCoverageChoices((prev) => ({ ...(prev || {}), [String(id)]: sellerId }))}
+            onValidate={validateCoverageTransfer}
+            onDismiss={dismissCoverageAlert}
+          />
         ) : null}
 
 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -2375,6 +2622,104 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
 }
 
 /* ---------- SOUS-COMPOSANTS ---------- */
+
+function CoverageAlertsPanel({ items, choices, busy, error, onChoice, onValidate, onDismiss }) {
+  return (
+    <div
+      className="card"
+      style={{
+        borderColor: "#fed7aa",
+        background: "linear-gradient(135deg, #fff7ed 0%, #ffffff 70%)",
+        boxShadow: "0 10px 30px rgba(234, 88, 12, 0.10)",
+      }}
+    >
+      <div className="hdr mb-2" style={{ color: "#9a3412" }}>
+        ⏱️ Retard pointage à traiter
+      </div>
+      <div className="text-sm" style={{ color: "#7c2d12", marginBottom: 10 }}>
+        Choisis la vendeuse qui a couvert. Le retard reste compté pour la vendeuse arrivée en retard, et l'application ajoute automatiquement ce temps en travail en plus à celle qui a couvert.
+      </div>
+
+      {error ? (
+        <div className="text-sm" style={{ color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
+          {error}
+        </div>
+      ) : null}
+
+      <div className="space-y-3">
+        {(items || []).map((it) => {
+          const id = String(it?.id || it?.checkin_id || "");
+          const selected = choices?.[id] || it?.candidates?.[0]?.seller_id || "";
+          const isBusy = !!busy?.[id];
+          const candidates = Array.isArray(it?.candidates) ? it.candidates : [];
+          return (
+            <div key={id} className="border rounded-2xl p-3" style={{ background: "#fff", borderColor: "#fdba74" }}>
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+                <div>
+                  <div className="font-semibold" style={{ color: "#111827" }}>
+                    {it?.seller_name || "Vendeuse"} a pointé à {checkinTimeLabel(it?.confirmed_at)}
+                  </div>
+                  <div className="text-sm" style={{ color: "#7c2d12", marginTop: 3 }}>
+                    Retard détecté : <b>{fmtMinutesShort(it?.late_minutes)}</b> · Créneau : {shiftHumanLabel(it?.shift_code)} · {frDate(it?.day)}
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                  <select
+                    className="select"
+                    value={selected}
+                    onChange={(e) => onChoice?.(id, e.target.value)}
+                    disabled={isBusy || candidates.length === 0}
+                    style={{ minWidth: 220 }}
+                  >
+                    <option value="">Qui a couvert ?</option>
+                    {candidates.map((c) => (
+                      <option key={c.seller_id} value={c.seller_id}>
+                        {c.full_name || c.seller_name || "Vendeuse"} {c.shift_code ? `(${shiftHumanLabel(c.shift_code)})` : ""}
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={isBusy || !selected}
+                    onClick={() => onValidate?.(it)}
+                    style={{
+                      background: isBusy || !selected ? "#9ca3af" : "#16a34a",
+                      borderColor: "transparent",
+                      color: "#fff",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {isBusy ? "Validation…" : `Valider +${fmtMinutesShort(it?.late_minutes)}`}
+                  </button>
+
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={isBusy}
+                    onClick={() => onDismiss?.(id, it?.day)}
+                    style={{ whiteSpace: "nowrap" }}
+                    title="Masquer cette alerte sur cet appareil sans modifier les heures"
+                  >
+                    Plus tard
+                  </button>
+                </div>
+              </div>
+
+              {candidates.length === 0 ? (
+                <div className="text-sm" style={{ color: "#b91c1c", marginTop: 8 }}>
+                  Aucune vendeuse du matin trouvée dans le planning de ce jour. Tu peux encore corriger depuis “Retards / relais”.
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function ShiftSelect({ dateStr, value, onChange }) {
   const sunday = isSunday(new Date(dateStr));

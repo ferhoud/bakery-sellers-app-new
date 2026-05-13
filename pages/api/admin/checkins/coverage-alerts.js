@@ -264,6 +264,9 @@ async function handleGet(req, res, admin) {
     .from("daily_checkins")
     .select("id, day, seller_id, shift_code, confirmed_at, late_minutes, early_minutes, updated_at, created_at")
     .eq("day", day)
+    // Couverture métier uniquement pour l'arrivée de l'après-midi :
+    // la vendeuse du matin reste éventuellement plus longtemps.
+    .eq("shift_code", "EVENING")
     .not("confirmed_at", "is", null)
     .gt("late_minutes", 0)
     .order("confirmed_at", { ascending: false });
@@ -382,6 +385,10 @@ async function handlePost(req, res, admin, user) {
   if (ckErr) return json(res, 500, { ok: false, error: ckErr.message });
   if (!ck?.id) return json(res, 404, { ok: false, error: "CHECKIN_NOT_FOUND" });
   if (!ck.confirmed_at) return json(res, 400, { ok: false, error: "CHECKIN_NOT_CONFIRMED" });
+  // Sécurité serveur : on ne traite la couverture automatique que pour le pointage du soir.
+  if (String(ck.shift_code || "").toUpperCase() !== "EVENING") {
+    return json(res, 400, { ok: false, error: "COVERAGE_ONLY_FOR_EVENING" });
+  }
   if (covererId === ck.seller_id) return json(res, 400, { ok: false, error: "SAME_SELLER" });
 
   const currentLate = Number(ck.late_minutes || 0) || 0;
