@@ -9,6 +9,7 @@
 // Le pointage manuel en retard du soir nourrit ensuite automatiquement
 // /api/admin/checkins/coverage-alerts, qui demandera "qui a couvert ?".
 import { createClient } from "@supabase/supabase-js";
+import { createHash } from "crypto";
 import { isAdminEmail } from "@/lib/admin";
 
 const ALERT_AFTER_MINUTES = 60;
@@ -141,6 +142,22 @@ function plannedMinutesFromShift(shiftCode) {
 
 function shiftAlertId(day, sellerId, shiftCode) {
   return `${day || ""}:${sellerId || ""}:${String(shiftCode || "").toUpperCase()}`;
+}
+
+function manualAdminCodeHash(day, sellerId, shiftCode, actualTime, confirmedAt) {
+  // daily_checkins.code_hash est NOT NULL dans la base actuelle.
+  // Pour une régularisation admin, il n’y a pas de code vendeur à vérifier :
+  // on enregistre donc une empreinte technique stable, non réutilisable.
+  const raw = [
+    "ADMIN_MANUAL_CHECKIN",
+    String(day || ""),
+    String(sellerId || ""),
+    String(shiftCode || ""),
+    String(actualTime || ""),
+    String(confirmedAt || ""),
+    String(Date.now()),
+  ].join(":");
+  return createHash("sha256").update(raw).digest("hex");
 }
 
 async function requireAdmin(req) {
@@ -368,13 +385,19 @@ async function manualCheckin(admin, body) {
     early_minutes: earlyMinutes,
   };
 
+  const insertPayload = {
+    ...payload,
+    // Obligatoire sur les nouvelles lignes daily_checkins dans la base actuelle.
+    code_hash: manualAdminCodeHash(day, sellerId, shiftCode, actualTime, confirmedAt),
+  };
+
   let row = null;
   if (existing?.id) {
     const { data, error } = await admin.from("daily_checkins").update(payload).eq("id", existing.id).select("*").maybeSingle();
     if (error) return { error: { status: 500, message: error.message || "CHECKIN_UPDATE_FAILED" } };
     row = data || null;
   } else {
-    const { data, error } = await admin.from("daily_checkins").insert(payload).select("*").maybeSingle();
+    const { data, error } = await admin.from("daily_checkins").insert(insertPayload).select("*").maybeSingle();
     if (error) return { error: { status: 500, message: error.message || "CHECKIN_INSERT_FAILED" } };
     row = data || null;
   }
