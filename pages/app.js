@@ -1,4 +1,4 @@
-﻿/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable react/no-unescaped-entities */
 
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { useRouter } from "next/router";
@@ -366,6 +366,7 @@ const [isPlanner, setIsPlanner] = useState(false);
   const [teamEvents, setTeamEvents] = useState({ absences: [], leaves: [] });
   const [teamEventsLoading, setTeamEventsLoading] = useState(false);
   const [teamEventsErr, setTeamEventsErr] = useState("");
+  const [teamEventsExpanded, setTeamEventsExpanded] = useState(false);
 
   // Pointage (checkins) — côté vendeuse
   const [checkinsUnsupported, setCheckinsUnsupported] = useState(false);
@@ -430,59 +431,6 @@ useEffect(() => {
       return { minutes: 0, unsupported: false, error: e };
     }
   }, [userId]);
-
-  // Bloc "Validation des heures" : réduit du 05 au 27 pour alléger la page,
-  // ouvert par défaut du 28 au 04 (mais toujours ouvrable manuellement).
-  const defaultMonthlyOpen = useMemo(() => {
-    try {
-      const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Paris", day: "2-digit" }).formatToParts(new Date());
-      const d = parseInt(parts.find((p) => p.type === "day")?.value || "0", 10);
-      return d >= 28 || d <= 4;
-    } catch {
-      const d = new Date().getDate();
-      return d >= 28 || d <= 4;
-    }
-  }, []);
-  const [monthlyPanelOpen, setMonthlyPanelOpen] = useState(defaultMonthlyOpen);
-
-
-
-  // Validation mensuelle (si RPC existent)
-  const monthStartPrev = useMemo(() => {
-    const n = new Date();
-    const firstThis = new Date(n.getFullYear(), n.getMonth(), 1);
-    const prev = new Date(firstThis);
-    prev.setMonth(prev.getMonth() - 1);
-    return fmtISODate(prev);
-  }, []);
-  const monthLabel = useMemo(() => {
-    const d = new Date(monthStartPrev + "T00:00:00");
-    return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
-  }, [monthStartPrev]);
-
-
-  const monthEndPrev = useMemo(() => {
-    try {
-      const d = new Date(monthStartPrev + "T00:00:00");
-      return fmtISODate(lastDayOfMonth(d));
-    } catch {
-      return monthStartPrev;
-    }
-  }, [monthStartPrev]);
-
-  // Retards / relais pour le mois à valider (mois précédent)
-  const [prevDelta, setPrevDelta] = useState({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
-  const [prevDeltaLoading, setPrevDeltaLoading] = useState(false);
-  const [prevDeltaErr, setPrevDeltaErr] = useState("");
-  const [prevDeltaUnsupported, setPrevDeltaUnsupported] = useState(false);
-
-  const [monthlyRow, setMonthlyRow] = useState(null);
-  const [monthlyLoading, setMonthlyLoading] = useState(false);
-  const [monthlyErr, setMonthlyErr] = useState("");
-  const [corrHours, setCorrHours] = useState("");
-  const [corrNote, setCorrNote] = useState("");
-  const [monthlyFlash, setMonthlyFlash] = useState("");
-  const [monthlyUnsupported, setMonthlyUnsupported] = useState(false);
 
   const displayName =
     hookProfile?.full_name ||
@@ -1772,294 +1720,6 @@ useEffect(() => {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [loadMyMonthDelta]);
-  // Retards / relais pour le mois à valider (mois précédent)
-  const loadPrevMonthDelta = useCallback(async () => {
-    if (!userId || role === "admin") return;
-    setPrevDeltaErr("");
-    setPrevDeltaLoading(true);
-
-    try {
-      let relayExtra = 0;
-      let relayDelay = 0;
-      let relayNet = 0;
-      let relayUnsupported = false;
-
-      const { data: rpcData, error: rpcErr } = await supabase.rpc("seller_handover_month_summary", {
-        p_month_start: monthStartPrev,
-      });
-
-      if (!rpcErr && rpcData != null) {
-        const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
-        relayExtra = Number(row?.extra_minutes ?? row?.extraMinutes ?? 0) || 0;
-        relayDelay = Number(row?.delay_minutes ?? row?.delayMinutes ?? 0) || 0;
-        relayNet = Number(row?.net_minutes ?? row?.netMinutes ?? (relayExtra - relayDelay) ?? 0) || 0;
-      } else {
-        const msg = String(rpcErr?.message || "");
-        const codeE = String(rpcErr?.code || "");
-        const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
-
-        if (missingFn) {
-          const { data: rows, error: e2 } = await supabase
-            .from("shift_handover_adjustments")
-            .select("*")
-            .gte("date", monthStartPrev)
-            .lte("date", monthEndPrev)
-            .or(`staying_seller_id.eq.${userId},evening_seller_id.eq.${userId},seller_id.eq.${userId},to_seller_id.eq.${userId},from_seller_id.eq.${userId}`);
-
-          if (e2) {
-            const m2 = String(e2?.message || "");
-            const c2 = String(e2?.code || "");
-            const forbidden =
-              m2.toLowerCase().includes("permission") ||
-              m2.toLowerCase().includes("rls") ||
-              m2.toLowerCase().includes("not allowed");
-            const missingTbl = c2 === "42P01" || m2.toLowerCase().includes("does not exist");
-            const missingCol = c2 === "42703" || m2.toLowerCase().includes("column");
-
-            if (forbidden || missingTbl || missingCol) {
-              relayUnsupported = true;
-            } else {
-              throw e2;
-            }
-          } else {
-            (rows || []).forEach((row) => {
-              const raw = row?.delta_minutes ?? row?.delta ?? row?.minutes ?? row?.minute_delta ?? row?.delta_min ?? row?.deltaMinutes ?? null;
-              const base = Number(raw);
-              if (!Number.isFinite(base) || base === 0) return;
-
-              let signed = null;
-              if (row?.seller_id && row.seller_id === userId) signed = base;
-              if (signed == null) {
-                if (row?.staying_seller_id && row.staying_seller_id === userId) signed = Math.abs(base);
-                else if (row?.evening_seller_id && row.evening_seller_id === userId) signed = -Math.abs(base);
-              }
-              if (signed == null) {
-                if (row?.to_seller_id && row.to_seller_id === userId) signed = Math.abs(base);
-                else if (row?.from_seller_id && row.from_seller_id === userId) signed = -Math.abs(base);
-              }
-              if (signed == null) return;
-
-              relayNet += signed;
-              if (signed >= 0) relayExtra += signed;
-              else relayDelay += -signed;
-            });
-          }
-        } else if (rpcErr) {
-          throw rpcErr;
-        }
-      }
-
-      const extraWork = await loadExtraWorkMinutesRange(monthStartPrev, monthEndPrev);
-      if (extraWork?.error) throw extraWork.error;
-
-      setPrevDelta({
-        extraMinutes: Math.round(relayExtra + (Number(extraWork?.minutes || 0) || 0)),
-        delayMinutes: Math.round(relayDelay),
-        netMinutes: Math.round(relayNet + (Number(extraWork?.minutes || 0) || 0)),
-      });
-      setPrevDeltaUnsupported(Boolean(relayUnsupported && extraWork?.unsupported));
-    } catch (e) {
-      setPrevDeltaErr(e?.message || "Impossible de charger les retards/relais/travail en plus du mois.");
-    } finally {
-      setPrevDeltaLoading(false);
-    }
-  }, [userId, role, monthStartPrev, monthEndPrev, loadExtraWorkMinutesRange]);
-
-  useEffect(() => {
-    if (!monthlyPanelOpen) return;
-    loadPrevMonthDelta();
-  }, [loadPrevMonthDelta, monthlyPanelOpen]);
-
-
-  // Validation mensuelle (si RPC existent)
-  const ensureMonthlyRow = useCallback(async () => {
-  // ✅ On ne crée/charge jamais d'attestation mensuelle pour un admin/non-seller
-  if (!userId || monthlyUnsupported || role === "admin") return;
-
-    setMonthlyErr("");
-    setMonthlyLoading(true);
-    try {
-      const { data, error } = await supabase.rpc("ensure_monthly_hours_row", { p_month_start: monthStartPrev });
-      if (error) {
-        const msg = String(error?.message || "");
-        const codeE = String(error?.code || "");
-        const missingFn = codeE === "42883" || msg.toLowerCase().includes("does not exist");
-        if (missingFn) {
-          setMonthlyUnsupported(true);
-          setMonthlyRow(null);
-          return;
-        }
-        throw error;
-      }
-      setMonthlyRow(data || null);
-      if (data?.seller_status === "disputed") setCorrHours(String(data?.seller_correction_hours ?? ""));
-      if (data?.seller_comment) setCorrNote(data.seller_comment);
-    } catch (e) {
-      setMonthlyErr(e?.message || "Impossible de charger la validation mensuelle.");
-    } finally {
-      setMonthlyLoading(false);
-    }
-  }, [userId, monthStartPrev, monthlyUnsupported, role]);
-
-  useEffect(() => {
-    if (!monthlyPanelOpen) return;
-    ensureMonthlyRow();
-  }, [ensureMonthlyRow, monthlyPanelOpen]);
-
-
-  // Recharge simple (utile pour rafraîchir quand l'admin valide/refuse)
-  const fetchMonthlyRow = useCallback(async () => {
-    if (!userId || monthlyUnsupported || role === "admin") return null;
-    try {
-      const { data, error } = await supabase
-        .from("monthly_hours_attestations")
-        .select("*")
-        .eq("seller_id", userId)
-        .eq("month_start", monthStartPrev)
-        .maybeSingle();
-      if (error) throw error;
-      if (data) {
-        setMonthlyRow(data || null);
-        if (data?.seller_status === "disputed") setCorrHours(String(data?.seller_correction_hours ?? ""));
-        if (data?.seller_comment) setCorrNote(String(data?.seller_comment || ""));
-      }
-      return data || null;
-    } catch (e) {
-      return null;
-    }
-  }, [userId, monthStartPrev, monthlyUnsupported, role]);
-
-  // Auto-refresh pendant l'attente de décision admin (évite Ctrl+F5)
-  useEffect(() => {
-    if (!monthlyPanelOpen) return;
-    if (!userId || role === "admin" || monthlyUnsupported) return;
-    if (!monthlyRow) return;
-
-    const awaiting =
-      monthlyRow.admin_status === "pending" &&
-      (monthlyRow.seller_status === "accepted" || monthlyRow.seller_status === "disputed");
-
-    if (!awaiting) return;
-
-    const t = setInterval(() => {
-      fetchMonthlyRow().catch(() => {});
-    }, 15000);
-
-    return () => clearInterval(t);
-  }, [monthlyPanelOpen, userId, role, monthlyUnsupported, monthlyRow, fetchMonthlyRow]);
-
-  // Soumission mensuelle (vendeuse) : on utilise la RPC si elle fonctionne,
-  // mais on a un fallback direct en UPDATE pour éviter le cas "admin_status=rejected"
-  // qui faisait un UPDATE 0 ligne sans erreur visible.
-  const directUpdateMonthlyRow = useCallback(
-    async ({ mode, corrected, comment }) => {
-      const nowIso = new Date().toISOString();
-
-      const patch = {
-        // Quand la vendeuse (re)valide ou corrige, on remet le dossier "à traiter" côté admin.
-        admin_status: "pending",
-        seller_confirmed_at: nowIso,
-      };
-
-      if (mode === "accept") {
-        patch.seller_status = "accepted";
-        patch.seller_correction_hours = null;
-        patch.seller_comment = null;
-      } else if (mode === "correct") {
-        patch.seller_status = "disputed";
-        patch.seller_correction_hours = corrected;
-        patch.seller_comment = comment || null;
-      } else {
-        throw new Error("Mode mensuel invalide");
-      }
-
-      // Si on a un id, c’est le plus précis. Sinon, on cible seller_id + month_start.
-      let q = supabase.from("monthly_hours_attestations").update(patch);
-
-      if (monthlyRow?.id != null) q = q.eq("id", monthlyRow.id);
-      else q = q.eq("seller_id", userId).eq("month_start", monthStartPrev);
-
-      const { data, error } = await q.select("*").maybeSingle();
-      if (error) throw error;
-
-      setMonthlyRow(data || null);
-      return data || null;
-    },
-    [userId, monthStartPrev, monthlyRow]
-  );
-
-  const sellerAcceptMonthly = useCallback(async () => {
-    if (!userId || monthlyUnsupported) return;
-    setMonthlyErr("");
-    setMonthlyFlash("");
-
-    // 1) tente la RPC (si elle gère déjà tout)
-    const { data, error } = await supabase.rpc("seller_monthly_hours_submit", {
-      p_month_start: monthStartPrev,
-      p_mode: "accept",
-      p_corrected: null,
-      p_comment: null,
-    });
-
-    if (!error && data?.seller_status === "accepted") {
-      setMonthlyRow(data || null);
-      setMonthlyFlash("✅ Validation envoyée à l’admin.");
-      fetchMonthlyRow().catch(() => {});
-      setTimeout(() => setMonthlyFlash(""), 5000);
-      return;
-    }
-
-    // 2) fallback: UPDATE direct (utile si admin_status était 'rejected')
-    try {
-      await directUpdateMonthlyRow({ mode: "accept", corrected: null, comment: null });
-      setMonthlyFlash("✅ Validation envoyée à l’admin.");
-      fetchMonthlyRow().catch(() => {});
-      setTimeout(() => setMonthlyFlash(""), 5000);
-    } catch (e) {
-      setMonthlyErr(error?.message || e?.message || "Échec de validation");
-    }
-  }, [userId, monthStartPrev, monthlyUnsupported, directUpdateMonthlyRow, fetchMonthlyRow]);
-
-  const sellerCorrectMonthly = useCallback(async () => {
-    if (!userId || monthlyUnsupported) return;
-    setMonthlyErr("");
-    setMonthlyFlash("");
-
-    const val = Number(String(corrHours || "").replace(",", "."));
-    if (!Number.isFinite(val) || val <= 0) {
-      setMonthlyErr("Indique un total d'heures valide (ex: 151.5).");
-      return;
-    }
-
-    const comment = (corrNote || "").trim() || null;
-
-    // 1) tente la RPC
-    const { data, error } = await supabase.rpc("seller_monthly_hours_submit", {
-      p_month_start: monthStartPrev,
-      p_mode: "correct",
-      p_corrected: val,
-      p_comment: comment,
-    });
-
-    if (!error && data?.seller_status === "disputed") {
-      setMonthlyRow(data || null);
-      setMonthlyFlash("✅ Correction envoyée à l’admin.");
-      fetchMonthlyRow().catch(() => {});
-      setTimeout(() => setMonthlyFlash(""), 5000);
-      return;
-    }
-
-    // 2) fallback: UPDATE direct (utile si admin_status était 'rejected')
-    try {
-      await directUpdateMonthlyRow({ mode: "correct", corrected: val, comment });
-      setMonthlyFlash("✅ Correction envoyée à l’admin.");
-      fetchMonthlyRow().catch(() => {});
-      setTimeout(() => setMonthlyFlash(""), 5000);
-    } catch (e) {
-      setMonthlyErr(error?.message || e?.message || "Échec d'envoi de correction");
-    }
-  }, [userId, monthStartPrev, corrHours, corrNote, monthlyUnsupported, directUpdateMonthlyRow, fetchMonthlyRow]);
-
   const absentToday = useMemo(() => {
     const entry = (myMonthUpcomingAbs || []).find((a) => a.date === todayIso);
     if (!entry) return null;
@@ -2081,10 +1741,75 @@ useEffect(() => {
   const showLoading = !authChecked || !plannerChecked || !apiRoleChecked;
   const showNeedAuth = !userId && authChecked;
 
-  const teamAbsList = Array.isArray(teamEvents?.absences) ? teamEvents.absences : [];
-  const teamLeavesList = Array.isArray(teamEvents?.leaves) ? teamEvents.leaves : [];
-  const teamEventsCount = teamAbsList.length + teamLeavesList.length;
-  const teamBlink = teamEventsCount > 0 && !teamEventsLoading && !teamEventsErr;
+  const teamEventItems = useMemo(() => {
+    const abs = Array.isArray(teamEvents?.absences) ? teamEvents.absences : [];
+    const lvs = Array.isArray(teamEvents?.leaves) ? teamEvents.leaves : [];
+    const today = todayIso;
+    const items = [];
+
+    const whoName = (sellerId) => (names?.[sellerId] || "").trim() || (sellerId || "").slice(0, 8);
+    const statusLabel = (st) => (st === "approved" ? "validé" : st === "pending" ? "en attente" : (st || ""));
+
+    abs.forEach((a) => {
+      const d = String(a?.date || "");
+      if (!d || d < today) return;
+      const who = whoName(a.seller_id);
+      const st = statusLabel(a.status);
+      items.push({
+        key: `abs-${a.seller_id}-${d}`,
+        sortDate: d,
+        sortType: 0,
+        sortWho: who,
+        isCurrent: d === today,
+        text: d === today
+          ? `• ${who} : absence${st ? ` (${st})` : ""} aujourd’hui`
+          : `• ${who} : absence${st ? ` (${st})` : ""} le ${frDate(d)}`,
+      });
+    });
+
+    lvs.forEach((l) => {
+      const s = String(l?.start_date || "");
+      const e = String(l?.end_date || "");
+      if (!s || !e || e < today) return;
+
+      const who = whoName(l.seller_id);
+      const st = statusLabel(l.status);
+      const ongoing = s <= today && today <= e;
+      const dSort = ongoing ? today : s;
+
+      items.push({
+        key: `lv-${l.seller_id}-${s}-${e}`,
+        sortDate: dSort,
+        sortType: 1,
+        sortWho: who,
+        isCurrent: ongoing,
+        text: ongoing
+          ? `• ${who} : congé${st ? ` (${st})` : ""} en cours jusqu’au ${frDate(e)}`
+          : `• ${who} : congé${st ? ` (${st})` : ""} du ${frDate(s)} au ${frDate(e)}`,
+      });
+    });
+
+    items.sort((a, b) => {
+      const da = a.sortDate || "";
+      const db = b.sortDate || "";
+      if (da !== db) return da.localeCompare(db);
+      const ta = a.sortType ?? 0;
+      const tb = b.sortType ?? 0;
+      if (ta !== tb) return ta - tb;
+      return String(a.sortWho || "").localeCompare(String(b.sortWho || ""));
+    });
+
+    return items;
+  }, [teamEvents, todayIso, names]);
+
+  const currentTeamEventItems = useMemo(
+    () => teamEventItems.filter((it) => it.isCurrent),
+    [teamEventItems]
+  );
+
+  const teamEventsCount = teamEventItems.length;
+  const currentTeamEventsCount = currentTeamEventItems.length;
+  const teamBlink = currentTeamEventsCount > 0 && !teamEventsLoading && !teamEventsErr;
 
 
   if (showLoading) {
@@ -2129,6 +1854,9 @@ useEffect(() => {
           )}
           <button className="btn" onClick={() => r.push("/leaves")}>
             Congés
+          </button>
+          <button className="btn" onClick={() => r.push("/work-history")}>
+            Historique
           </button>
           <button className="btn" onClick={hardLogout}>
             Se déconnecter
@@ -2200,14 +1928,32 @@ useEffect(() => {
           className={`card ${teamBlink ? "animate-pulse" : ""}`}
           style={teamBlink ? { border: "2px solid #ef4444", backgroundColor: "#fff1f2" } : undefined}
         >
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="hdr">Infos équipe{teamEventsCount > 0 ? ` (${teamEventsCount})` : ""}</div>
-              <div className="text-xs text-gray-500">Absences et congés à venir (affichés jusqu’à la date de fin)</div>
+              <div className="hdr">
+                Infos équipe{teamEventsCount > 0 ? ` (${teamEventsCount})` : ""}
+              </div>
+              <div className="text-xs text-gray-500">
+                {teamEventsExpanded
+                  ? "Absences et congés à venir"
+                  : currentTeamEventsCount > 0
+                    ? "Absences ou congés en cours aujourd’hui"
+                    : "Vue compacte : uniquement les absences ou congés en cours"}
+              </div>
             </div>
-            <button className="btn" onClick={loadTeamEvents} disabled={teamEventsLoading}>
-              {teamEventsLoading ? "Chargement..." : "Rafraîchir"}
-            </button>
+
+            <div className="flex items-center gap-2">
+              <button
+                className="btn"
+                onClick={() => setTeamEventsExpanded((v) => !v)}
+                disabled={teamEventsLoading || teamEventsCount === 0}
+              >
+                {teamEventsExpanded ? "Réduire" : "Afficher"}
+              </button>
+              <button className="btn" onClick={loadTeamEvents} disabled={teamEventsLoading}>
+                {teamEventsLoading ? "Chargement..." : "Rafraîchir"}
+              </button>
+            </div>
           </div>
 
           {teamEventsErr && (
@@ -2222,69 +1968,27 @@ useEffect(() => {
           {!teamEventsLoading && !teamEventsErr && (
             <div className="mt-3 text-sm">
               {(() => {
-                const abs = Array.isArray(teamEvents?.absences) ? teamEvents.absences : [];
-                const lvs = Array.isArray(teamEvents?.leaves) ? teamEvents.leaves : [];
+                const visibleItems = teamEventsExpanded ? teamEventItems : currentTeamEventItems;
 
-                const items = [];
-                const today = todayIso;
-
-                const whoName = (sellerId) => (names?.[sellerId] || "").trim() || (sellerId || "").slice(0, 8);
-                const statusLabel = (st) => (st === "approved" ? "validé" : st === "pending" ? "en attente" : (st || ""));
-
-                // Absences : date >= aujourd'hui (déjà filtré côté API, mais on re-filtre au cas où)
-                abs.forEach((a) => {
-                  const d = String(a?.date || "");
-                  if (!d || d < today) return;
-                  const who = whoName(a.seller_id);
-                  const st = statusLabel(a.status);
-                  items.push({
-                    key: `abs-${a.seller_id}-${d}`,
-                    sortDate: d,
-                    sortType: 0,
-                    sortWho: who,
-                    text: `• ${who} : absence${st ? ` (${st})` : ""} le ${frDate(d)}`,
-                  });
-                });
-
-                // Congés : end_date >= aujourd'hui (déjà filtré côté API)
-                lvs.forEach((l) => {
-                  const s = String(l?.start_date || "");
-                  const e = String(l?.end_date || "");
-                  if (!s || !e) return;
-                  if (e < today) return;
-
-                  const who = whoName(l.seller_id);
-                  const st = statusLabel(l.status);
-
-                  const ongoing = s <= today && today <= e;
-                  const dSort = ongoing ? today : s;
-
-                  items.push({
-                    key: `lv-${l.seller_id}-${s}-${e}`,
-                    sortDate: dSort,
-                    sortType: 1,
-                    sortWho: who,
-                    text: ongoing
-                      ? `• ${who} : congé${st ? ` (${st})` : ""} en cours jusqu’au ${frDate(e)}`
-                      : `• ${who} : congé${st ? ` (${st})` : ""} du ${frDate(s)} au ${frDate(e)}`,
-                  });
-                });
-
-                items.sort((a, b) => {
-                  const da = a.sortDate || "";
-                  const db = b.sortDate || "";
-                  if (da !== db) return da.localeCompare(db);
-                  const ta = a.sortType ?? 0;
-                  const tb = b.sortType ?? 0;
-                  if (ta !== tb) return ta - tb;
-                  return String(a.sortWho || "").localeCompare(String(b.sortWho || ""));
-                });
-
-                if (!items.length) {
-                  return <div className="text-gray-600">Aucune absence ou congé à venir.</div>;
+                if (!visibleItems.length) {
+                  return (
+                    <div className="text-gray-600">
+                      {teamEventsExpanded
+                        ? "Aucune absence ou congé à venir."
+                        : teamEventsCount > 0
+                          ? "Aucune absence ou congé en cours aujourd’hui. Clique sur « Afficher » pour voir les prochains événements."
+                          : "Aucune absence ou congé à venir."}
+                    </div>
+                  );
                 }
 
-                return <div className="space-y-1">{items.map((it) => <div key={it.key}>{it.text}</div>)}</div>;
+                return (
+                  <div className="space-y-1">
+                    {visibleItems.map((it) => (
+                      <div key={it.key}>{it.text}</div>
+                    ))}
+                  </div>
+                );
               })()}
             </div>
           )}
@@ -2516,227 +2220,6 @@ return (
           </div>
         )}
 
-
-      {role !== "admin" && !monthlyUnsupported && (
-
-        <div className="card">
-          <div className="hdr mb-2" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-            <div>Validation des heures - {capFirst(monthLabel)}</div>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => setMonthlyPanelOpen((v) => !v)}
-              style={{ padding: "6px 10px", fontSize: 12, borderRadius: 12 }}
-            >
-              {monthlyPanelOpen ? "Réduire" : "Afficher"}
-            </button>
-          </div>
-
-          {!monthlyPanelOpen ? (
-            <div className="text-sm text-gray-600">
-              <div style={{ fontWeight: 600, marginBottom: 4 }}>Bloc réduit</div>
-              <div className="text-xs text-gray-500">
-                {defaultMonthlyOpen
-                  ? "Cliquez sur “Afficher” pour voir le détail."
-                  : "Pour alléger la page, ce bloc s’ouvre automatiquement du 28 au 4. Vous pouvez aussi cliquer sur “Afficher” à tout moment."}
-              </div>
-            </div>
-          ) : (
-            <>
-
-          {monthlyFlash && (
-            <div
-              className="text-sm mb-2 border rounded-xl p-2"
-              style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}
-            >
-              {monthlyFlash}
-            </div>
-          )}
-
-          {monthlyErr && (
-            <div
-              className="text-sm mb-2 border rounded-xl p-2"
-              style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}
-            >
-              {monthlyErr}
-            </div>
-          )}
-
-          {monthlyRow?.admin_status === "pending" &&
-          monthlyRow?.seller_status === "pending" &&
-          monthlyRow?.admin_comment ? (
-            <div
-              className="text-sm mb-2 border rounded-xl p-2"
-              style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}
-            >
-              <b>Message admin :</b> {monthlyRow.admin_comment}
-            </div>
-          ) : null}
-
-
-          {monthlyLoading && <div className="text-sm text-gray-600">Chargement...</div>}
-
-          {!monthlyLoading && monthlyRow && (
-            <>
-              <div className="text-sm">
-                Total calculé sur le planning :{" "}
-                <span className="font-semibold">{Number(monthlyRow.computed_hours || 0).toFixed(2)} h</span>
-              </div>
-
-              <div className="mt-2">
-                {prevDeltaLoading ? (
-                  <div className="text-xs text-gray-600">Calcul des retards/relais du mois...</div>
-                ) : prevDeltaUnsupported ? (
-                  <div className="text-xs text-gray-500">Retards/relais non disponibles pour ce mois.</div>
-                ) : prevDeltaErr ? (
-                  <div className="text-xs text-red-600">{prevDeltaErr}</div>
-                ) : (
-                  (() => {
-                    const computed = Number(monthlyRow?.computed_hours || 0);
-                    const extraH = (Number(prevDelta?.extraMinutes || 0) || 0) / 60;
-                    const delayH = (Number(prevDelta?.delayMinutes || 0) || 0) / 60;
-                    const netH = computed + ((Number(prevDelta?.netMinutes || 0) || 0) / 60);
-
-                    return (
-                      <div className="space-y-1">
-                        <div className="text-xs text-gray-700">
-                          Retards / relais sur le mois :{" "}
-                          <span className="font-semibold" style={{ color: "#16a34a" }}>
-                            +{extraH.toFixed(2)} h
-                          </span>{" "}
-                          •{" "}
-                          <span className="font-semibold" style={{ color: "#dc2626" }}>
-                            -{delayH.toFixed(2)} h
-                          </span>
-                        </div>
-                        <div className="text-sm">
-                          Total net estimé : <span className="font-semibold">{netH.toFixed(2)} h</span>
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          Total net = planning + retards/relais/travail en plus. C’est ce total qui correspond à l’affichage admin.
-                        </div>
-                      </div>
-                    );
-                  })()
-                )}
-              </div>
-
-
-              {(() => {
-                const computed = Number(monthlyRow?.computed_hours || 0);
-                const corrected =
-                  monthlyRow?.seller_correction_hours != null
-                    ? Number(monthlyRow.seller_correction_hours)
-                    : null;
-                const final =
-                  monthlyRow?.final_hours != null
-                    ? Number(monthlyRow.final_hours)
-                    : computed;
-
-                // ✅ Décision admin = approuvé
-                if (monthlyRow?.admin_status === "approved") {
-                  const what = monthlyRow?.seller_status === "disputed" ? "correction" : "validation";
-                  return (
-                    <div
-                      className="text-sm mt-3 border rounded-xl p-2"
-                      style={{ backgroundColor: "#dcfce7", borderColor: "#86efac" }}
-                    >
-                      ✅ Votre {what} a été validée. Total heures = <b>{final.toFixed(2)} h</b>.
-                    </div>
-                  );
-                }
-
-                // ⏳ Correction envoyée (vendeuse), en attente admin
-                if (monthlyRow?.seller_status === "disputed") {
-                  return (
-                    <div
-                      className="text-sm mt-3 border rounded-xl p-2"
-                      style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}
-                    >
-                      ✅ Votre correction{" "}
-                      {corrected != null ? (
-                        <>
-                          (<b>{corrected.toFixed(2)} h</b>)
-                        </>
-                      ) : null}{" "}
-                      est envoyée et elle est en attente de confirmation par l’administrateur.
-                    </div>
-                  );
-                }
-
-                // ⏳ Validation envoyée (vendeuse), en attente admin
-                if (monthlyRow?.seller_status === "accepted") {
-                  return (
-                    <div
-                      className="text-sm mt-3 border rounded-xl p-2"
-                      style={{ backgroundColor: "#ecfeff", borderColor: "#67e8f9" }}
-                    >
-                      ✅ Votre validation est envoyée et elle est en attente de confirmation par l’administrateur.
-                    </div>
-                  );
-                }
-
-                // ⚠️ Cas "rejected" (ancien état) : on affiche un message
-                if (monthlyRow?.admin_status === "rejected") {
-                  return (
-                    <div
-                      className="text-sm mt-3 border rounded-xl p-2"
-                      style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}
-                    >
-                      ⚠️ L’administrateur a refusé. Merci de corriger à nouveau.
-                    </div>
-                  );
-                }
-
-                return null;
-              })()}
-
-              {monthlyRow.seller_status === "pending" && (
-                <div className="mt-3 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                    <button
-                      className="btn"
-                      onClick={sellerAcceptMonthly}
-                      style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}
-                    >
-                      Valider
-                    </button>
-                    <div className="text-xs text-gray-500">
-                      Si tu as échangé des créneaux sans que le planning ait été mis à jour, tu peux corriger ton total.
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    <input
-                      className="input"
-                      value={corrHours}
-                      onChange={(e) => setCorrHours(e.target.value)}
-                      placeholder="Heures corrigées (ex: 151.5)"
-                      inputMode="decimal"
-                    />
-                    <input
-                      className="input"
-                      value={corrNote}
-                      onChange={(e) => setCorrNote(e.target.value)}
-                      placeholder="Commentaire (optionnel)"
-                    />
-                    <button
-                      className="btn"
-                      onClick={sellerCorrectMonthly}
-                      style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
-                    >
-                      Envoyer correction
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-            </>
-          )}
-
-        </div>
-      )}
 
       {role !== "admin" && Array.isArray(openRepls) && openRepls.length > 0 && (
         <div
