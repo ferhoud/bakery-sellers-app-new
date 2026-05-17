@@ -4,6 +4,10 @@
     {
       "path": "/api/cron/monthly-hours",
       "schedule": "7 3 * * *"
+    },
+    {
+      "path": "/api/cron/missing-checkin-push",
+      "schedule": "*/5 * * * *"
     }
   ]
 }
