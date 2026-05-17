@@ -329,20 +329,59 @@ export default function WorkHistoryPage() {
     const partialErrors = [];
 
     try {
-      const { data: checkins, error: checkinsErr } = await supabase
-        .from("daily_checkins")
-        .select("day, late_minutes, early_minutes, confirmed_at")
-        .eq("seller_id", userId)
-        .gte("day", selectedMonthStartIso)
-        .lte("day", selectedMonthEndIso)
-        .order("day", { ascending: true });
+      // Les retards / avances du pointage sont lus côté serveur.
+      // C'est plus fiable que de dépendre d'une lecture directe de daily_checkins
+      // depuis le navigateur, qui peut être limitée par les règles RLS.
+      let checkinRows = [];
+      let checkinLoaded = false;
 
-      if (checkinsErr) {
-        setDailyCheckinRows([]);
-        partialErrors.push("Les détails de pointage ne sont pas disponibles.");
-      } else {
-        setDailyCheckinRows(Array.isArray(checkins) ? checkins : []);
+      try {
+        const { data: authData } = await supabase.auth.getSession();
+        const token = authData?.session?.access_token || session?.access_token || null;
+
+        if (token) {
+          const resp = await fetch(
+            `/api/checkins/month-details?from=${encodeURIComponent(selectedMonthStartIso)}&to=${encodeURIComponent(selectedMonthEndIso)}`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+
+          const j = await resp.json().catch(() => ({}));
+
+          if (resp.ok && j?.ok !== false) {
+            checkinRows = Array.isArray(j?.items) ? j.items : [];
+            checkinLoaded = true;
+          } else if (resp.status !== 404) {
+            partialErrors.push(
+              String(j?.error || "Les détails de pointage ne sont pas disponibles.")
+            );
+          }
+        }
+      } catch (_) {
+        // Fallback ci-dessous.
       }
+
+      // Fallback prudent si l'API n'est pas encore déployée ou absente localement.
+      if (!checkinLoaded) {
+        const { data: checkins, error: checkinsErr } = await supabase
+          .from("daily_checkins")
+          .select("day, late_minutes, early_minutes, confirmed_at")
+          .eq("seller_id", userId)
+          .gte("day", selectedMonthStartIso)
+          .lte("day", selectedMonthEndIso)
+          .not("confirmed_at", "is", null)
+          .order("day", { ascending: true });
+
+        if (checkinsErr) {
+          checkinRows = [];
+          if (!partialErrors.some((x) => String(x || "").includes("pointage"))) {
+            partialErrors.push("Les détails de pointage ne sont pas disponibles.");
+          }
+        } else {
+          checkinRows = Array.isArray(checkins) ? checkins : [];
+        }
+      }
+
+      setDailyCheckinRows(checkinRows);
 
       // Les minutes de couverture liées aux retards du soir sont stockées en travail en plus.
       // On garde un fallback prudent si la colonne kind n'est pas accessible dans un ancien schéma.
@@ -395,8 +434,7 @@ export default function WorkHistoryPage() {
     } finally {
       setShiftDetailsLoading(false);
     }
-  }, [userId, selectedMonthStartIso, selectedMonthEndIso]);
-
+  }, [userId, session?.access_token, selectedMonthStartIso, selectedMonthEndIso]);
   useEffect(() => {
     loadHistory();
     loadShiftDetails();
