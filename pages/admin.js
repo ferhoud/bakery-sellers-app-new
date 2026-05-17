@@ -1440,8 +1440,13 @@ const deleteHandover = useCallback(
   }, [days, loadSellers, loadWeekAssignments, loadWeekHandovers, loadShiftTypeVersions]);
 
 
-  // Badge bouton "Pointage" : vendeuses planifiées non pointées (alerte après 60 min)
+  // Pointages manquants : alerte admin + résolution (absente ou heure réelle d'arrivée)
   const [missingCheckinsCount, setMissingCheckinsCount] = useState(0);
+  const [missingCheckinAlerts, setMissingCheckinAlerts] = useState([]);
+  const [missingCheckinModes, setMissingCheckinModes] = useState({});
+  const [missingCheckinTimes, setMissingCheckinTimes] = useState({});
+  const [missingCheckinBusy, setMissingCheckinBusy] = useState({});
+  const [missingCheckinErr, setMissingCheckinErr] = useState("");
 
   // Retard pointage confirmé du soir : l'admin choisit qui a couvert, puis on ajoute ces minutes en travail en plus.
   const [coverageAlerts, setCoverageAlerts] = useState([]);
@@ -1450,43 +1455,30 @@ const deleteHandover = useCallback(
   const [coverageErr, setCoverageErr] = useState("");
 
   // Notifications UI (évite de spammer)
-  const lastMissingCheckinsNotifiedRef = useRef({ count: 0, ts: 0 });
+  const lastMissingCheckinsNotifiedRef = useRef({ ids: "", ts: 0 });
   const lastCoverageNotifiedRef = useRef({ ids: "", ts: 0 });
 
   const loadMissingCheckinsCount = useCallback(async () => {
-    // Compte "Pointage" = uniquement les pointages manquants NON ACK (Marquer vu)
-    // + on arrête de notifier/afficher après 2h (sinon ça spamme inutilement)
-    function parisTodayISO() {
-      try {
-        const parts = new Intl.DateTimeFormat("en-CA", {
-          timeZone: "Europe/Paris",
-          year: "numeric",
-          month: "2-digit",
-          day: "2-digit",
-        }).formatToParts(new Date());
-        const y = parts.find((p) => p.type === "year")?.value;
-        const m = parts.find((p) => p.type === "month")?.value;
-        const d = parts.find((p) => p.type === "day")?.value;
-        return `${y}-${m}-${d}`;
-      } catch {
-        return "";
-      }
-    }
-
+    // Nouveau flux : on charge les alertes actionnables, pas seulement un compteur.
+    // Une alerte reste visible jusqu'à ce qu'elle soit traitée (absence ou pointage manuel).
     try {
       const { data } = await supabase.auth.getSession();
       const token = data?.session?.access_token;
       if (!token) {
+        setMissingCheckinAlerts([]);
         setMissingCheckinsCount(0);
         return;
       }
 
-      const r = await fetch("/api/admin/checkins/missing", {
+      const qs = new URLSearchParams({ day: todayIso });
+      const r = await fetch(`/api/admin/checkins/missing-resolution?${qs.toString()}`, {
         headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
       });
 
       if (!r.ok) {
-        // Si l'API n'existe pas encore sur un env, on ne casse pas l'admin
+        // Si la route n'est pas encore déployée sur un environnement, on ne casse pas l'admin.
+        setMissingCheckinAlerts([]);
         setMissingCheckinsCount(0);
         return;
       }
@@ -1494,39 +1486,24 @@ const deleteHandover = useCallback(
       const j = await r.json().catch(() => ({}));
       const items = Array.isArray(j?.items) ? j.items : [];
 
-      // ACK local (Marquer vu) stocké par /admin/checkins
-      let seen = new Set();
-      let day = "";
-      try {
-        day = (items[0]?.day || "") || parisTodayISO();
-      } catch {
-        day = parisTodayISO();
-      }
+      setMissingCheckinAlerts(items);
+      setMissingCheckinsCount(items.length);
+      setMissingCheckinErr("");
 
-      if (typeof window !== "undefined" && day) {
-        try {
-          const raw = window.localStorage?.getItem(`seen_missing_checkins_${day}`) || "[]";
-          const arr = JSON.parse(raw);
-          if (Array.isArray(arr)) seen = new Set(arr);
-        } catch {}
-      }
-
-      // Règle: on ignore après 2h (120 min) pour éviter badge/notifications "fantômes"
-      const filtered = items.filter((it) => {
-        const k = `${it.day || day}:${it.seller_id}:${it.shift_code}`;
-        if (seen.has(k)) return false;
-
-        const mins = Number(it?.minutes_since_start ?? it?.minutes_since ?? 0);
-        if (Number.isFinite(mins) && mins >= 120) return false;
-
-        return true;
+      setMissingCheckinTimes((prev) => {
+        const next = { ...(prev || {}) };
+        for (const it of items) {
+          const id = String(it?.id || it?.alert_id || "");
+          if (!id || next[id]) continue;
+          next[id] = String(it?.planned_time || "");
+        }
+        return next;
       });
-
-      setMissingCheckinsCount(filtered.length);
     } catch {
+      setMissingCheckinAlerts([]);
       setMissingCheckinsCount(0);
     }
-  }, []);
+  }, [todayIso]);
 
   const coverageDismissKey = useCallback((day) => `dismissed_late_coverage_${day || todayIso}`, [todayIso]);
 
@@ -1650,6 +1627,139 @@ const deleteHandover = useCallback(
     [coverageChoices, loadCoverageAlerts]
   );
 
+  const missingCheckinAlertId = useCallback(
+    (item) => String(item?.id || item?.alert_id || `${item?.day || todayIso}:${item?.seller_id || ""}:${item?.shift_code || ""}`),
+    [todayIso]
+  );
+
+  const openMissingCheckinManualMode = useCallback(
+    (item) => {
+      const id = missingCheckinAlertId(item);
+      if (!id) return;
+      setMissingCheckinModes((prev) => ({ ...(prev || {}), [id]: "manual" }));
+      setMissingCheckinTimes((prev) => ({
+        ...(prev || {}),
+        [id]: String(prev?.[id] || item?.planned_time || ""),
+      }));
+      setMissingCheckinErr("");
+    },
+    [missingCheckinAlertId]
+  );
+
+  const closeMissingCheckinManualMode = useCallback(
+    (item) => {
+      const id = missingCheckinAlertId(item);
+      if (!id) return;
+      setMissingCheckinModes((prev) => ({ ...(prev || {}), [id]: "" }));
+      setMissingCheckinErr("");
+    },
+    [missingCheckinAlertId]
+  );
+
+  const markMissingCheckinAbsent = useCallback(
+    async (item) => {
+      const id = missingCheckinAlertId(item);
+      if (!id) return;
+
+      setMissingCheckinBusy((prev) => ({ ...(prev || {}), [id]: true }));
+      setMissingCheckinErr("");
+
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token;
+        if (!token) throw new Error("Session admin manquante.");
+
+        const r = await fetch("/api/admin/checkins/missing-resolution", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            action: "absent",
+            day: item?.day || todayIso,
+            seller_id: item?.seller_id,
+            shift_code: item?.shift_code,
+          }),
+        });
+
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j?.ok === false) throw new Error(j?.error || `Erreur API (${r.status})`);
+
+        setMissingCheckinAlerts((prev) => (prev || []).filter((it) => missingCheckinAlertId(it) !== id));
+        setMissingCheckinsCount((n) => Math.max(0, Number(n || 0) - 1));
+        setRefreshKey((k) => k + 1);
+
+        await Promise.all([
+          loadMissingCheckinsCount(),
+          loadWeekAbsences(),
+          loadAbsencesToday(),
+          loadMonthAbsences(),
+          loadMonthUpcomingAbsences(),
+        ]);
+      } catch (e) {
+        setMissingCheckinErr(e?.message || "Impossible de marquer cette vendeuse absente.");
+      } finally {
+        setMissingCheckinBusy((prev) => ({ ...(prev || {}), [id]: false }));
+      }
+    },
+    [
+      missingCheckinAlertId,
+      todayIso,
+      loadMissingCheckinsCount,
+      loadWeekAbsences,
+      loadAbsencesToday,
+      loadMonthAbsences,
+      loadMonthUpcomingAbsences,
+    ]
+  );
+
+  const validateMissingCheckinManualTime = useCallback(
+    async (item) => {
+      const id = missingCheckinAlertId(item);
+      if (!id) return;
+
+      const actualTime = String(missingCheckinTimes?.[id] || "").trim();
+      if (!/^\d{2}:\d{2}$/.test(actualTime)) {
+        setMissingCheckinErr("Choisis l'heure réelle d'arrivée avant d'enregistrer.");
+        return;
+      }
+
+      setMissingCheckinBusy((prev) => ({ ...(prev || {}), [id]: true }));
+      setMissingCheckinErr("");
+
+      try {
+        const { data } = await supabase.auth.getSession();
+        const token = data?.session?.access_token;
+        if (!token) throw new Error("Session admin manquante.");
+
+        const r = await fetch("/api/admin/checkins/missing-resolution", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            action: "manual_checkin",
+            day: item?.day || todayIso,
+            seller_id: item?.seller_id,
+            shift_code: item?.shift_code,
+            actual_time: actualTime,
+          }),
+        });
+
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok || j?.ok === false) throw new Error(j?.error || `Erreur API (${r.status})`);
+
+        setMissingCheckinAlerts((prev) => (prev || []).filter((it) => missingCheckinAlertId(it) !== id));
+        setMissingCheckinsCount((n) => Math.max(0, Number(n || 0) - 1));
+        setMissingCheckinModes((prev) => ({ ...(prev || {}), [id]: "" }));
+        setRefreshKey((k) => k + 1);
+
+        await Promise.all([loadMissingCheckinsCount(), loadCoverageAlerts()]);
+      } catch (e) {
+        setMissingCheckinErr(e?.message || "Impossible d'enregistrer l'heure réelle d'arrivée.");
+      } finally {
+        setMissingCheckinBusy((prev) => ({ ...(prev || {}), [id]: false }));
+      }
+    },
+    [missingCheckinAlertId, missingCheckinTimes, todayIso, loadMissingCheckinsCount, loadCoverageAlerts]
+  );
+
   useEffect(() => {
     // ✅ Toujours tenter, même si la variable `session` n'est pas encore prête.
     // L'API est protégée: sans token => count = 0, sans casser l'admin.
@@ -1713,17 +1823,24 @@ const deleteHandover = useCallback(
   // Priorité au service worker / PWA (téléphone), puis fallback Notification navigateur.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const n = Number(missingCheckinsCount || 0);
-    if (n <= 0) return;
+    if (!missingCheckinAlerts || missingCheckinAlerts.length <= 0) return;
+
+    const ids = missingCheckinAlerts
+      .map((it) => String(it?.id || it?.alert_id || ""))
+      .filter(Boolean)
+      .sort()
+      .join(",");
+
+    if (!ids) return;
 
     const now = Date.now();
-    const last = lastMissingCheckinsNotifiedRef.current || { count: 0, ts: 0 };
+    const last = lastMissingCheckinsNotifiedRef.current || { ids: "", ts: 0 };
 
-    // Notifier si le nombre augmente, ou toutes les 30 min si ça persiste
-    const shouldNotify = n > (last.count || 0) || now - (last.ts || 0) > 30 * 60 * 1000;
+    // Notifier pour une nouvelle alerte, ou relancer toutes les 30 min tant qu'elle n'est pas traitée.
+    const shouldNotify = ids !== last.ids || now - (last.ts || 0) > 30 * 60 * 1000;
     if (!shouldNotify) return;
 
-    lastMissingCheckinsNotifiedRef.current = { count: n, ts: now };
+    lastMissingCheckinsNotifiedRef.current = { ids, ts: now };
 
     let cancelled = false;
 
@@ -1731,8 +1848,15 @@ const deleteHandover = useCallback(
       try {
         if (!("Notification" in window) || Notification.permission !== "granted") return;
 
+        const first = missingCheckinAlerts[0] || {};
+        const n = missingCheckinAlerts.length;
+        const who = first?.seller_name || "Une vendeuse";
+        const shift = shiftHumanLabel(first?.shift_code);
         const title = "⏱️ Pointage manquant";
-        const body = `${n} pointage(s) manquant(s). Ouvre “Pointage” pour traiter.`;
+        const body =
+          n === 1
+            ? `${who} n’a pas pointé pour le créneau ${shift}. Est-elle absente ?`
+            : `${n} pointages manquants à traiter. Ouvre l’admin pour indiquer absence ou heure réelle d’arrivée.`;
 
         // 1) Service worker / PWA en priorité: meilleure remontée sur téléphone
         if ("serviceWorker" in navigator) {
@@ -1749,12 +1873,12 @@ const deleteHandover = useCallback(
             if (!cancelled && reg && typeof reg.showNotification === "function") {
               await reg.showNotification(title, {
                 body,
-                tag: "admin-missing-checkins",
+                tag: "admin-missing-checkins-resolution",
                 renotify: true,
-                requireInteraction: false,
+                requireInteraction: true,
                 icon: "/icons/icon-192.png",
                 badge: "/icons/icon-192.png",
-                data: { url: "/admin/checkins" },
+                data: { url: "/admin" },
               });
               return;
             }
@@ -1766,7 +1890,7 @@ const deleteHandover = useCallback(
         // 2) Fallback navigateur classique
         if (!cancelled) {
           try {
-            new Notification(title, { body, tag: "admin-missing-checkins" });
+            new Notification(title, { body, tag: "admin-missing-checkins-resolution" });
           } catch {
             // silence
           }
@@ -1779,7 +1903,7 @@ const deleteHandover = useCallback(
     return () => {
       cancelled = true;
     };
-  }, [missingCheckinsCount]);
+  }, [missingCheckinAlerts]);
 
   // Notification pour les retards confirmés: "Qui a couvert ?"
   useEffect(() => {
@@ -2072,16 +2196,31 @@ const deleteHandover = useCallback(
             }}
           >
             <div className="text-sm" style={{ fontWeight: 800, color: "#991b1b" }}>
-              ⚠️ {missingCheckinsCount} pointage(s) manquant(s)
+              ⚠️ {missingCheckinsCount} pointage(s) manquant(s) à traiter
             </div>
             <div className="text-sm" style={{ marginTop: 4, color: "#7f1d1d" }}>
-              Tu peux les traiter depuis{" "}
+              Réponds juste en dessous : absence confirmée ou heure réelle d'arrivée. La page{" "}
               <Link href="/admin/checkins" legacyBehavior>
                 <a style={{ textDecoration: "underline", fontWeight: 800 }}>Pointage</a>
-              </Link>
-              .
+              </Link>{" "}
+              reste disponible pour le suivi général.
             </div>
           </div>
+        ) : null}
+
+        {missingCheckinAlerts.length > 0 ? (
+          <MissingCheckinAlertsPanel
+            items={missingCheckinAlerts}
+            modes={missingCheckinModes}
+            times={missingCheckinTimes}
+            busy={missingCheckinBusy}
+            error={missingCheckinErr}
+            onMarkAbsent={markMissingCheckinAbsent}
+            onOpenManual={openMissingCheckinManualMode}
+            onCloseManual={closeMissingCheckinManualMode}
+            onTimeChange={(id, value) => setMissingCheckinTimes((prev) => ({ ...(prev || {}), [String(id)]: value }))}
+            onValidateManual={validateMissingCheckinManualTime}
+          />
         ) : null}
 
         {coverageAlerts.length > 0 ? (
@@ -2622,6 +2761,146 @@ const arrivedEveningName = arrivedEveningId ? (nameFromId(arrivedEveningId) || "
 }
 
 /* ---------- SOUS-COMPOSANTS ---------- */
+
+function MissingCheckinAlertsPanel({
+  items,
+  modes,
+  times,
+  busy,
+  error,
+  onMarkAbsent,
+  onOpenManual,
+  onCloseManual,
+  onTimeChange,
+  onValidateManual,
+}) {
+  return (
+    <div
+      className="card"
+      style={{
+        borderColor: "#fecaca",
+        background: "linear-gradient(135deg, #fff1f2 0%, #ffffff 72%)",
+        boxShadow: "0 10px 30px rgba(220, 38, 38, 0.10)",
+      }}
+    >
+      <div className="hdr mb-2" style={{ color: "#991b1b" }}>
+        🚨 Pointage manquant à traiter
+      </div>
+      <div className="text-sm" style={{ color: "#7f1d1d", marginBottom: 10 }}>
+        Une vendeuse planifiée n’a pas pointé. Indique si elle est absente ou sa vraie heure d’arrivée. L’application calculera le retard réel, même si tu régularises plusieurs heures plus tard.
+      </div>
+
+      {error ? (
+        <div className="text-sm" style={{ color: "#b91c1c", fontWeight: 700, marginBottom: 10 }}>
+          {error}
+        </div>
+      ) : null}
+
+      <div className="space-y-3">
+        {(items || []).map((it) => {
+          const id = String(it?.id || it?.alert_id || "");
+          const isBusy = !!busy?.[id];
+          const manualMode = modes?.[id] === "manual";
+          const selectedTime = String(times?.[id] || it?.planned_time || "");
+          const shift = shiftHumanLabel(it?.shift_code);
+          const since = Number(it?.minutes_since_start || 0) || 0;
+
+          return (
+            <div key={id} className="border rounded-2xl p-3" style={{ background: "#fff", borderColor: "#fca5a5" }}>
+              <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-3">
+                <div>
+                  <div className="font-semibold" style={{ color: "#111827" }}>
+                    {it?.seller_name || "Vendeuse"} n’a pas pointé pour le créneau {shift}
+                  </div>
+                  <div className="text-sm" style={{ color: "#7f1d1d", marginTop: 3 }}>
+                    Prévu à <b>{it?.planned_time || "--:--"}</b> · {frDate(it?.day)} · alerte ouverte depuis {fmtMinutesShort(since)}
+                  </div>
+                </div>
+
+                {!manualMode ? (
+                  <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={isBusy}
+                      onClick={() => onMarkAbsent?.(it)}
+                      style={{
+                        background: isBusy ? "#9ca3af" : "#dc2626",
+                        borderColor: "transparent",
+                        color: "#fff",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {isBusy ? "Traitement…" : "Oui, absente"}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={isBusy}
+                      onClick={() => onOpenManual?.(it)}
+                      style={{
+                        background: "#fff",
+                        borderColor: "#fca5a5",
+                        color: "#991b1b",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      Non, elle était présente
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                    <label className="text-sm" style={{ color: "#7f1d1d", fontWeight: 700 }}>
+                      Arrivée réelle
+                    </label>
+                    <input
+                      type="time"
+                      className="input"
+                      value={selectedTime}
+                      onChange={(e) => onTimeChange?.(id, e.target.value)}
+                      disabled={isBusy}
+                      style={{ minWidth: 132 }}
+                    />
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={isBusy || !selectedTime}
+                      onClick={() => onValidateManual?.(it)}
+                      style={{
+                        background: isBusy || !selectedTime ? "#9ca3af" : "#16a34a",
+                        borderColor: "transparent",
+                        color: "#fff",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {isBusy ? "Enregistrement…" : "Enregistrer l’heure"}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={isBusy}
+                      onClick={() => onCloseManual?.(it)}
+                      style={{ whiteSpace: "nowrap" }}
+                    >
+                      Retour
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {manualMode ? (
+                <div className="text-xs" style={{ color: "#7f1d1d", marginTop: 8 }}>
+                  Exemple : si le créneau commence à 13:30 et que tu indiques 13:33, le retard enregistré sera exactement de 3 min.
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 function CoverageAlertsPanel({ items, choices, busy, error, onChoice, onValidate, onDismiss }) {
   return (
