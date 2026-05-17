@@ -262,6 +262,14 @@ export default function WorkHistoryPage() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyErr, setHistoryErr] = useState("");
 
+  // Détails quotidiens affichés directement dans chaque créneau historique
+  // - daily_checkins : avance / retard de pointage
+  // - extra_work_entries(kind=coverage) : minutes de couverture attribuées par l'admin
+  const [dailyCheckinRows, setDailyCheckinRows] = useState([]);
+  const [coverageRows, setCoverageRows] = useState([]);
+  const [shiftDetailsLoading, setShiftDetailsLoading] = useState(false);
+  const [shiftDetailsErr, setShiftDetailsErr] = useState("");
+
   const loadHistory = useCallback(async () => {
     if (!userId) return;
     setHistoryErr("");
@@ -312,9 +320,87 @@ export default function WorkHistoryPage() {
     }
   }, [userId, selectedMonthStartIso, selectedMonthEndIso]);
 
+  const loadShiftDetails = useCallback(async () => {
+    if (!userId) return;
+
+    setShiftDetailsErr("");
+    setShiftDetailsLoading(true);
+
+    const partialErrors = [];
+
+    try {
+      const { data: checkins, error: checkinsErr } = await supabase
+        .from("daily_checkins")
+        .select("day, late_minutes, early_minutes, confirmed_at")
+        .eq("seller_id", userId)
+        .gte("day", selectedMonthStartIso)
+        .lte("day", selectedMonthEndIso)
+        .order("day", { ascending: true });
+
+      if (checkinsErr) {
+        setDailyCheckinRows([]);
+        partialErrors.push("Les détails de pointage ne sont pas disponibles.");
+      } else {
+        setDailyCheckinRows(Array.isArray(checkins) ? checkins : []);
+      }
+
+      // Les minutes de couverture liées aux retards du soir sont stockées en travail en plus.
+      // On garde un fallback prudent si la colonne kind n'est pas accessible dans un ancien schéma.
+      let extraRows = [];
+      const { data: coverageData, error: coverageErr } = await supabase
+        .from("extra_work_entries")
+        .select("work_date, minutes, kind, reason")
+        .eq("seller_id", userId)
+        .gte("work_date", selectedMonthStartIso)
+        .lte("work_date", selectedMonthEndIso)
+        .order("work_date", { ascending: true });
+
+      if (!coverageErr) {
+        extraRows = Array.isArray(coverageData) ? coverageData : [];
+      } else {
+        const msg = String(coverageErr?.message || "").toLowerCase();
+        const code = String(coverageErr?.code || "");
+        const missingKind = code === "42703" || msg.includes("kind");
+
+        if (missingKind) {
+          const { data: fallbackRows, error: fallbackErr } = await supabase
+            .from("extra_work_entries")
+            .select("work_date, minutes, reason")
+            .eq("seller_id", userId)
+            .gte("work_date", selectedMonthStartIso)
+            .lte("work_date", selectedMonthEndIso)
+            .order("work_date", { ascending: true });
+
+          if (!fallbackErr) {
+            extraRows = Array.isArray(fallbackRows)
+              ? fallbackRows.map((row) => ({ ...row, kind: null }))
+              : [];
+          } else {
+            partialErrors.push("Les minutes de couverture ne sont pas disponibles.");
+          }
+        } else {
+          partialErrors.push("Les minutes de couverture ne sont pas disponibles.");
+        }
+      }
+
+      setCoverageRows(extraRows);
+
+      if (partialErrors.length > 0) {
+        setShiftDetailsErr(partialErrors.join(" "));
+      }
+    } catch (e) {
+      setDailyCheckinRows([]);
+      setCoverageRows([]);
+      setShiftDetailsErr(e?.message || "Impossible de charger les détails de pointage et de couverture.");
+    } finally {
+      setShiftDetailsLoading(false);
+    }
+  }, [userId, selectedMonthStartIso, selectedMonthEndIso]);
+
   useEffect(() => {
     loadHistory();
-  }, [loadHistory]);
+    loadShiftDetails();
+  }, [loadHistory, loadShiftDetails]);
 
   useEffect(() => {
     if (!userId) return;
@@ -340,6 +426,37 @@ export default function WorkHistoryPage() {
     });
     return map;
   }, [historyRows]);
+
+  const checkinInfoByDate = useMemo(() => {
+    const map = {};
+    (dailyCheckinRows || []).forEach((row) => {
+      const day = String(row?.day || "");
+      if (!day) return;
+      const lateMinutes = Math.max(0, Math.round(Number(row?.late_minutes || 0) || 0));
+      const earlyMinutes = Math.max(0, Math.round(Number(row?.early_minutes || 0) || 0));
+      if (!lateMinutes && !earlyMinutes) return;
+      map[day] = {
+        lateMinutes,
+        earlyMinutes,
+        confirmedAt: row?.confirmed_at || null,
+      };
+    });
+    return map;
+  }, [dailyCheckinRows]);
+
+  const coverageMinutesByDate = useMemo(() => {
+    const map = {};
+    (coverageRows || []).forEach((row) => {
+      const day = String(row?.work_date || "");
+      if (!day) return;
+      const kind = String(row?.kind || "").trim().toLowerCase();
+      if (kind !== "coverage") return;
+      const minutes = Math.max(0, Math.round(Number(row?.minutes || 0) || 0));
+      if (!minutes) return;
+      map[day] = (map[day] || 0) + minutes;
+    });
+    return map;
+  }, [coverageRows]);
 
   const monthRowsAlreadyPassed = useMemo(
     () => (historyRows || []).filter((row) => String(row?.date || "") <= todayIso),
@@ -776,8 +893,15 @@ export default function WorkHistoryPage() {
                 onChange={(e) => setSelectedMonth(e.target.value || monthInputValue(new Date()))}
               />
             </label>
-            <button className="btn" onClick={loadHistory} disabled={historyLoading}>
-              {historyLoading ? "Actualisation..." : "Rafraîchir"}
+            <button
+              className="btn"
+              onClick={() => {
+                loadHistory();
+                loadShiftDetails();
+              }}
+              disabled={historyLoading || shiftDetailsLoading}
+            >
+              {historyLoading || shiftDetailsLoading ? "Actualisation..." : "Rafraîchir"}
             </button>
           </div>
         </div>
@@ -788,6 +912,15 @@ export default function WorkHistoryPage() {
             style={{ backgroundColor: "#fef2f2", borderColor: "#fecaca" }}
           >
             ⚠️ {historyErr}
+          </div>
+        )}
+
+        {shiftDetailsErr && (
+          <div
+            className="text-sm mt-4 border rounded-xl p-3"
+            style={{ backgroundColor: "#fff7ed", borderColor: "#fdba74" }}
+          >
+            ⚠️ {shiftDetailsErr}
           </div>
         )}
 
@@ -852,6 +985,8 @@ export default function WorkHistoryPage() {
                 .filter(Boolean);
               const fallbackRows = rows.filter((row) => !orderedCodes.includes(row.shift_code));
               const dayRows = [...orderedRows, ...fallbackRows];
+              const dayCheckin = checkinInfoByDate?.[iso] || null;
+              const dayCoverageMinutes = Number(coverageMinutesByDate?.[iso] || 0) || 0;
 
               return (
                 <div
@@ -880,7 +1015,38 @@ export default function WorkHistoryPage() {
                             color: "#fff",
                           }}
                         >
-                          {getShiftLabel(row.date, row.shift_code)}
+                          <div>{getShiftLabel(row.date, row.shift_code)}</div>
+
+                          {(dayCheckin?.earlyMinutes > 0 || dayCheckin?.lateMinutes > 0 || dayCoverageMinutes > 0) && (
+                            <div className="mt-2 space-y-1">
+                              {dayCheckin?.earlyMinutes > 0 && (
+                                <div
+                                  className="rounded-lg px-2 py-1 text-[11px] font-semibold"
+                                  style={{ backgroundColor: "#dcfce7", color: "#166534" }}
+                                >
+                                  +{fmtMinutesHM(dayCheckin.earlyMinutes)} travail en plus
+                                </div>
+                              )}
+
+                              {dayCheckin?.lateMinutes > 0 && (
+                                <div
+                                  className="rounded-lg px-2 py-1 text-[11px] font-semibold"
+                                  style={{ backgroundColor: "#fee2e2", color: "#991b1b" }}
+                                >
+                                  -{fmtMinutesHM(dayCheckin.lateMinutes)} retard pointage
+                                </div>
+                              )}
+
+                              {dayCoverageMinutes > 0 && (
+                                <div
+                                  className="rounded-lg px-2 py-1 text-[11px] font-semibold"
+                                  style={{ backgroundColor: "#dcfce7", color: "#166534" }}
+                                >
+                                  +{fmtMinutesHM(dayCoverageMinutes)} couverture
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ))
                     )}
