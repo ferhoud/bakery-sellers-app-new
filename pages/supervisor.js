@@ -386,6 +386,7 @@ export default function SupervisorPage() {
         day,
         start: day,
         end: day,
+        isCurrent: day === tISO,
         sort: `${day} 0`,
         sellerId,
         name,
@@ -408,6 +409,7 @@ export default function SupervisorPage() {
           day: start,
           start,
           end,
+          isCurrent: start === tISO,
           sort: `${start} 1`,
           sellerId,
           name,
@@ -425,6 +427,7 @@ export default function SupervisorPage() {
           day: start || end,
           start,
           end,
+          isCurrent: !!start && !!end && start <= tISO && end >= tISO,
           sort: `${(start || end)} 1`,
           sellerId,
           name,
@@ -745,7 +748,28 @@ export default function SupervisorPage() {
                         background: "#fff",
                       }}
                     >
-                      {it.label}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                        <div>{it.label}</div>
+                        {it?.isCurrent ? (
+                          <span
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              padding: "4px 10px",
+                              borderRadius: 999,
+                              background: "#16a34a",
+                              color: "#fff",
+                              fontSize: 12,
+                              fontWeight: 800,
+                              whiteSpace: "nowrap",
+                              flexShrink: 0,
+                            }}
+                          >
+                            En cours
+                          </span>
+                        ) : null}
+                      </div>
                     </div>
                   ))}
 
