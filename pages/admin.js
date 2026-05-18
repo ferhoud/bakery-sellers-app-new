@@ -2916,7 +2916,7 @@ function CoverageAlertsPanel({ items, choices, busy, error, onChoice, onValidate
         ⏱️ Retard pointage à traiter
       </div>
       <div className="text-sm" style={{ color: "#7c2d12", marginBottom: 10 }}>
-        Choisis la vendeuse qui a couvert. Le retard reste compté pour la vendeuse arrivée en retard, et l'application ajoute automatiquement ce temps en travail en plus à celle qui a couvert.
+        Choisis la vendeuse qui a couvert. Le retard reste compté pour la vendeuse arrivée en retard, et l'application ajoute automatiquement ce temps en travail en plus à celle qui a couvert. Si aucune couverture n’est à attribuer, clique sur « Pas de couverture ».
       </div>
 
       {error ? (
@@ -2980,9 +2980,9 @@ function CoverageAlertsPanel({ items, choices, busy, error, onChoice, onValidate
                     disabled={isBusy}
                     onClick={() => onDismiss?.(id, it?.day)}
                     style={{ whiteSpace: "nowrap" }}
-                    title="Masquer cette alerte sur cet appareil sans modifier les heures"
+                    title="Masquer cette alerte sans attribuer de couverture"
                   >
-                    Plus tard
+                    Pas de couverture
                   </button>
                 </div>
               </div>

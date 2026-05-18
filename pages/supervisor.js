@@ -27,6 +27,12 @@ function localISODate(d = new Date()) {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+function addDaysISO(iso, days) {
+  const d = new Date(`${iso}T12:00:00`);
+  d.setDate(d.getDate() + Number(days || 0));
+  return localISODate(d);
+}
+
 function frDateFromISO(iso) {
   const s = (iso || "").toString();
   const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -184,6 +190,7 @@ export default function SupervisorPage() {
   const [teamLoading, setTeamLoading] = useState(false);
   const [teamErr, setTeamErr] = useState("");
   const [team, setTeam] = useState(null);
+  const [teamExpanded, setTeamExpanded] = useState(false);
 
   const [isWide, setIsWide] = useState(false);
   useEffect(() => {
@@ -376,6 +383,9 @@ export default function SupervisorPage() {
         "";
       items.push({
         kind: "absence",
+        day,
+        start: day,
+        end: day,
         sort: `${day} 0`,
         sellerId,
         name,
@@ -395,6 +405,9 @@ export default function SupervisorPage() {
       if (start && end && start === end) {
         items.push({
           kind: "leave",
+          day: start,
+          start,
+          end,
           sort: `${start} 1`,
           sellerId,
           name,
@@ -409,6 +422,9 @@ export default function SupervisorPage() {
             : "—";
         items.push({
           kind: "leave",
+          day: start || end,
+          start,
+          end,
           sort: `${(start || end)} 1`,
           sellerId,
           name,
@@ -430,6 +446,29 @@ export default function SupervisorPage() {
     uniq.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : a.label.localeCompare(b.label)));
     return uniq;
   }, [team, todayISO, teamNamesById]);
+
+  const tomorrowISO = useMemo(() => addDaysISO(todayISO, 1), [todayISO]);
+
+  const urgentTeamItems = useMemo(() => {
+    return (teamItems || []).filter((it) => {
+      if (it?.kind === "absence") {
+        return it.day === todayISO || it.day === tomorrowISO;
+      }
+
+      if (it?.kind === "leave") {
+        const start = String(it?.start || "");
+        const end = String(it?.end || "");
+        const isOngoing = !!start && !!end && start <= todayISO && end >= todayISO;
+        const startsTomorrow = start === tomorrowISO;
+        return isOngoing || startsTomorrow;
+      }
+
+      return false;
+    });
+  }, [teamItems, todayISO, tomorrowISO]);
+
+  const hiddenTeamItemsCount = Math.max(0, (teamItems?.length || 0) - (urgentTeamItems?.length || 0));
+  const displayedTeamItems = teamExpanded ? teamItems : urgentTeamItems;
 
 
   function openLogout() {
@@ -650,8 +689,22 @@ export default function SupervisorPage() {
 
             <div style={{ height: 14 }} />
 
-            <div className={`card ${!teamLoading && !teamErr && teamItems.length > 0 ? "team-info-alert" : ""}`}>
-              <div className="hdr">Infos équipe</div>
+            <div className={`card ${!teamLoading && !teamErr && urgentTeamItems.length > 0 ? "team-info-alert" : ""}`}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <div className="hdr">Infos équipe</div>
+
+                {!teamLoading && !teamErr && teamItems.length > 0 ? (
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={() => setTeamExpanded((v) => !v)}
+                    style={{ padding: "8px 12px" }}
+                  >
+                    {teamExpanded ? "Réduire" : hiddenTeamItemsCount > 0 ? `Afficher (${hiddenTeamItemsCount})` : "Afficher"}
+                  </button>
+                ) : null}
+              </div>
+
               <div style={{ height: 10 }} />
 
               {teamLoading ? (
@@ -669,11 +722,22 @@ export default function SupervisorPage() {
                 </div>
               ) : teamItems.length === 0 ? (
                 <div style={{ opacity: 0.7 }}>Aucune absence ou congé à venir.</div>
+              ) : displayedTeamItems.length === 0 ? (
+                <div style={{ display: "grid", gap: 8 }}>
+                  <div style={{ opacity: 0.72 }}>
+                    Aucun congé ou absence en cours, ni prévu pour demain.
+                  </div>
+                  {!teamExpanded && hiddenTeamItemsCount > 0 ? (
+                    <div style={{ fontSize: 12, opacity: 0.62 }}>
+                      {hiddenTeamItemsCount} autre{hiddenTeamItemsCount > 1 ? "s" : ""} info{hiddenTeamItemsCount > 1 ? "s" : ""} plus lointaine{hiddenTeamItemsCount > 1 ? "s" : ""} masquée{hiddenTeamItemsCount > 1 ? "s" : ""}.
+                    </div>
+                  ) : null}
+                </div>
               ) : (
                 <div style={{ display: "grid", gap: 8 }}>
-                  {teamItems.slice(0, 30).map((it, idx) => (
+                  {displayedTeamItems.slice(0, 30).map((it, idx) => (
                     <div
-                      key={idx}
+                      key={`${it.kind}-${it.sellerId}-${it.sort}-${idx}`}
                       style={{
                         padding: "10px 12px",
                         borderRadius: 14,
@@ -684,7 +748,14 @@ export default function SupervisorPage() {
                       {it.label}
                     </div>
                   ))}
-                  {teamItems.length > 30 ? (
+
+                  {!teamExpanded && hiddenTeamItemsCount > 0 ? (
+                    <div style={{ fontSize: 12, opacity: 0.62 }}>
+                      {hiddenTeamItemsCount} autre{hiddenTeamItemsCount > 1 ? "s" : ""} info{hiddenTeamItemsCount > 1 ? "s" : ""} plus lointaine{hiddenTeamItemsCount > 1 ? "s" : ""} masquée{hiddenTeamItemsCount > 1 ? "s" : ""}.
+                    </div>
+                  ) : null}
+
+                  {teamExpanded && teamItems.length > 30 ? (
                     <div style={{ fontSize: 12, opacity: 0.6 }}>
                       +{teamItems.length - 30} autres infos…
                     </div>
