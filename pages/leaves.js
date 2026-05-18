@@ -67,7 +67,7 @@ function numFmt(x) {
 function statusLabel(s) {
   const x = String(s || "").toLowerCase();
   if (x === "approved") return "Approuvé";
-  if (x === "refused") return "Refusé";
+  if (x === "rejected" || x === "refused") return "Refusé";
   if (x === "cancelled") return "Annulé";
   return "En attente";
 }
@@ -75,7 +75,7 @@ function statusLabel(s) {
 function statusBg(s) {
   const x = String(s || "").toLowerCase();
   if (x === "approved") return "#16a34a";
-  if (x === "refused") return "#dc2626";
+  if (x === "rejected" || x === "refused") return "#dc2626";
   if (x === "cancelled") return "#6b7280";
   return "#f59e0b";
 }
@@ -532,6 +532,127 @@ export default function LeavesPage() {
     }
   }, [userId, startDate, endDate, reason, todayIso, loadMyLeaves, handleAuthResponse]);
 
+  // ----------------------------
+  // Actions vendeuse sur une demande "En attente"
+  // ----------------------------
+  const [leaveActionMsg, setLeaveActionMsg] = useState("");
+  const [leaveActionBusy, setLeaveActionBusy] = useState({});
+  const [editingLeaveId, setEditingLeaveId] = useState("");
+  const [editLeaveForm, setEditLeaveForm] = useState({
+    start_date: "",
+    end_date: "",
+    reason: "",
+  });
+
+  const openPendingLeaveEdit = useCallback((leave) => {
+    if (!leave?.id) return;
+    setLeaveActionMsg("");
+    setEditingLeaveId(String(leave.id));
+    setEditLeaveForm({
+      start_date: String(leave.start_date || todayIso),
+      end_date: String(leave.end_date || leave.start_date || todayIso),
+      reason: String(leave.reason || ""),
+    });
+  }, [todayIso]);
+
+  const closePendingLeaveEdit = useCallback(() => {
+    setEditingLeaveId("");
+    setEditLeaveForm({ start_date: "", end_date: "", reason: "" });
+  }, []);
+
+  const cancelPendingLeave = useCallback(async (leave) => {
+    const id = String(leave?.id || "");
+    if (!id) return;
+
+    if (typeof window !== "undefined") {
+      const ok = window.confirm("Annuler cette demande de congé en attente ?");
+      if (!ok) return;
+    }
+
+    setLeaveActionMsg("");
+    setLeaveActionBusy((prev) => ({ ...(prev || {}), [id]: true }));
+
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token || "";
+
+      const resp = await fetch("/api/leaves/cancel", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ id }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (await handleAuthResponse(resp, j)) return;
+      if (!resp.ok || j?.ok === false) throw new Error(j?.error || "Impossible d'annuler cette demande.");
+
+      setLeaveActionMsg("✅ Demande de congé annulée.");
+      if (editingLeaveId === id) closePendingLeaveEdit();
+      await loadMyLeaves();
+    } catch (e) {
+      setLeaveActionMsg(`❌ ${e?.message || "Impossible d'annuler cette demande."}`);
+    } finally {
+      setLeaveActionBusy((prev) => ({ ...(prev || {}), [id]: false }));
+    }
+  }, [editingLeaveId, closePendingLeaveEdit, loadMyLeaves, handleAuthResponse]);
+
+  const savePendingLeaveEdit = useCallback(async (leave) => {
+    const id = String(leave?.id || "");
+    if (!id) return;
+
+    const start_date = String(editLeaveForm?.start_date || "").trim();
+    const end_date = String(editLeaveForm?.end_date || "").trim();
+    const reasonValue = String(editLeaveForm?.reason || "").slice(0, 200);
+
+    if (!start_date || !end_date) {
+      setLeaveActionMsg("Choisis une date de début et une date de fin.");
+      return;
+    }
+    if (end_date < start_date) {
+      setLeaveActionMsg("La date de fin doit être après ou égale à la date de début.");
+      return;
+    }
+    if (start_date < todayIso) {
+      setLeaveActionMsg("La demande modifiée doit commencer aujourd'hui ou plus tard.");
+      return;
+    }
+
+    setLeaveActionMsg("");
+    setLeaveActionBusy((prev) => ({ ...(prev || {}), [id]: true }));
+
+    try {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess?.session?.access_token || "";
+
+      const resp = await fetch("/api/leaves/update", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          id,
+          start_date,
+          end_date,
+          reason: reasonValue || null,
+        }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (await handleAuthResponse(resp, j)) return;
+      if (!resp.ok || j?.ok === false) throw new Error(j?.error || "Impossible de modifier cette demande.");
+
+      setLeaveActionMsg("✅ Demande de congé modifiée.");
+      closePendingLeaveEdit();
+      await loadMyLeaves();
+    } catch (e) {
+      setLeaveActionMsg(`❌ ${e?.message || "Impossible de modifier cette demande."}`);
+    } finally {
+      setLeaveActionBusy((prev) => ({ ...(prev || {}), [id]: false }));
+    }
+  }, [editLeaveForm, todayIso, closePendingLeaveEdit, loadMyLeaves, handleAuthResponse]);
+
   // Résumé année en cours (jours calendaires, comme avant)
   const nowYear = new Date().getFullYear();
   const breakdown = useMemo(() => computeYearMonthBreakdown(approved, nowYear), [approved, nowYear]);
@@ -811,6 +932,7 @@ export default function LeavesPage() {
             </div>
 
             {loadErr && <div className="text-sm text-red-600 mb-2">{loadErr}</div>}
+            {leaveActionMsg ? <div className="text-sm mb-2">{leaveActionMsg}</div> : null}
 
             {leaves.length === 0 ? (
               <div className="text-sm text-gray-600">Aucune demande de congé pour l'instant.</div>
@@ -818,18 +940,123 @@ export default function LeavesPage() {
               <ul className="space-y-2">
                 {leaves.map((l) => {
                   const days = daysInclusive(l.start_date, l.end_date);
+                  const status = String(l.status || "").toLowerCase();
+                  const isPending = status === "pending";
+                  const isEditing = editingLeaveId === String(l.id);
+                  const isBusy = !!leaveActionBusy?.[String(l.id)];
+
                   return (
-                    <li key={l.id} className="flex items-center justify-between border rounded-2xl p-3">
-                      <div className="text-sm">
-                        <div className="font-medium">
-                          Du {fmtFr(l.start_date)} au {fmtFr(l.end_date)}{" "}
-                          <span className="text-gray-600">({days} jour{days > 1 ? "s" : ""})</span>
+                    <li key={l.id} className="border rounded-2xl p-3">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div className="text-sm">
+                          <div className="font-medium">
+                            Du {fmtFr(l.start_date)} au {fmtFr(l.end_date)}{" "}
+                            <span className="text-gray-600">({days} jour{days > 1 ? "s" : ""})</span>
+                          </div>
+                          {l.reason ? <div className="text-gray-600">Motif : {l.reason}</div> : null}
                         </div>
-                        {l.reason ? <div className="text-gray-600">Motif : {l.reason}</div> : null}
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: statusBg(l.status) }}>
+                            {statusLabel(l.status)}
+                          </span>
+
+                          {isPending ? (
+                            <>
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={() => openPendingLeaveEdit(l)}
+                                disabled={isBusy}
+                                style={{ padding: "7px 10px" }}
+                              >
+                                Modifier
+                              </button>
+                              <button
+                                type="button"
+                                className="btn"
+                                onClick={() => cancelPendingLeave(l)}
+                                disabled={isBusy}
+                                style={{
+                                  padding: "7px 10px",
+                                  backgroundColor: "#dc2626",
+                                  color: "#fff",
+                                  borderColor: "transparent",
+                                }}
+                              >
+                                {isBusy ? "Traitement..." : "Annuler"}
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
                       </div>
-                      <span className="text-xs px-2 py-1 rounded-full text-white" style={{ backgroundColor: statusBg(l.status) }}>
-                        {statusLabel(l.status)}
-                      </span>
+
+                      {isPending && isEditing ? (
+                        <div className="mt-3 border rounded-2xl p-3 bg-gray-50">
+                          <div className="grid md:grid-cols-3 gap-3 items-end">
+                            <div>
+                              <div className="text-sm mb-1">Début</div>
+                              <input
+                                type="date"
+                                className="input"
+                                value={editLeaveForm.start_date}
+                                min={todayIso}
+                                onChange={(e) =>
+                                  setEditLeaveForm((x) => ({
+                                    ...(x || {}),
+                                    start_date: e.target.value,
+                                    end_date:
+                                      String((x || {}).end_date || "") < e.target.value
+                                        ? e.target.value
+                                        : (x || {}).end_date,
+                                  }))
+                                }
+                              />
+                            </div>
+
+                            <div>
+                              <div className="text-sm mb-1">Fin</div>
+                              <input
+                                type="date"
+                                className="input"
+                                value={editLeaveForm.end_date}
+                                min={editLeaveForm.start_date || todayIso}
+                                onChange={(e) => setEditLeaveForm((x) => ({ ...(x || {}), end_date: e.target.value }))}
+                              />
+                            </div>
+
+                            <div className="md:col-span-3">
+                              <div className="text-sm mb-1">Motif (optionnel)</div>
+                              <input
+                                type="text"
+                                className="input"
+                                placeholder="ex: vacances"
+                                value={editLeaveForm.reason}
+                                onChange={(e) => setEditLeaveForm((x) => ({ ...(x || {}), reason: e.target.value }))}
+                              />
+                            </div>
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              className="btn"
+                              onClick={() => savePendingLeaveEdit(l)}
+                              disabled={isBusy}
+                              style={{
+                                backgroundColor: "#16a34a",
+                                color: "#fff",
+                                borderColor: "transparent",
+                              }}
+                            >
+                              {isBusy ? "Enregistrement..." : "Enregistrer la modification"}
+                            </button>
+                            <button type="button" className="btn" onClick={closePendingLeaveEdit} disabled={isBusy}>
+                              Fermer
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
                     </li>
                   );
                 })}
