@@ -125,6 +125,7 @@ export default function AdminPayslipsPage() {
   const [err, setErr] = useState("");
   const [imports, setImports] = useState([]);
   const [importsLoading, setImportsLoading] = useState(false);
+  const [autoProcessStep, setAutoProcessStep] = useState("");
 
   const [analysisByBatch, setAnalysisByBatch] = useState({});
   const [analysisBusyByBatch, setAnalysisBusyByBatch] = useState({});
@@ -183,6 +184,7 @@ export default function AdminPayslipsPage() {
   const onSubmit = useCallback(async () => {
     setMsg("");
     setErr("");
+    setAutoProcessStep("");
 
     const monthIso = payrollMonthIso(month);
     if (!monthIso) {
@@ -238,15 +240,73 @@ export default function AdminPayslipsPage() {
         throw new Error(j?.error || `Erreur API (${resp.status})`);
       }
 
-      if (j?.row?.id) {
-        setImports((prev) => {
-          const current = Array.isArray(prev) ? prev : [];
-          const withoutSame = current.filter((x) => String(x?.id || "") !== String(j.row.id));
-          return [j.row, ...withoutSame];
-        });
+      const batchId = String(j?.row?.id || "").trim();
+      if (!batchId) {
+        throw new Error("Import enregistré, mais identifiant du lot introuvable.");
       }
 
-      setMsg("✅ PDF global importé. Tu peux maintenant lancer l’analyse automatique ci-dessous.");
+      setImports((prev) => {
+        const current = Array.isArray(prev) ? prev : [];
+        const withoutSame = current.filter((x) => String(x?.id || "") !== batchId);
+        return [j.row, ...withoutSame];
+      });
+
+      setAutoProcessStep("Analyse automatique du PDF en cours…");
+      setMsg("✅ PDF global importé. Analyse automatique en cours…");
+
+      const analyzeResp = await fetch("/api/admin/payslips/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ batch_id: batchId }),
+      });
+      const analyzeJson = await analyzeResp.json().catch(() => ({}));
+      if (!analyzeResp.ok || analyzeJson?.ok === false) {
+        throw new Error(
+          `PDF importé, mais l’analyse automatique a échoué : ${analyzeJson?.error || `Erreur API (${analyzeResp.status})`}`
+        );
+      }
+
+      setAnalysisByBatch((prev) => ({
+        ...(prev || {}),
+        [batchId]: Array.isArray(analyzeJson?.items) ? analyzeJson.items : [],
+      }));
+
+      setAutoProcessStep("Création des PDF individuels en cours…");
+      setMsg("✅ Analyse terminée. Création automatique des fiches individuelles…");
+
+      const splitResp = await fetch("/api/admin/payslips/split", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ batch_id: batchId }),
+      });
+      const splitJson = await splitResp.json().catch(() => ({}));
+      if (!splitResp.ok || splitJson?.ok === false) {
+        throw new Error(
+          `PDF analysé, mais la création des fiches individuelles a échoué : ${splitJson?.error || `Erreur API (${splitResp.status})`}`
+        );
+      }
+
+      if (Array.isArray(splitJson?.items)) {
+        setAnalysisByBatch((prev) => ({
+          ...(prev || {}),
+          [batchId]: splitJson.items,
+        }));
+      }
+
+      const created = Number(splitJson?.created_count || 0) || 0;
+      const skipped = Number(splitJson?.skipped_count || 0) || 0;
+      const analyzed = Array.isArray(analyzeJson?.items) ? analyzeJson.items.length : 0;
+
+      setMsg(
+        `✅ Import terminé automatiquement : ${analyzed} fiche${analyzed > 1 ? "s" : ""} analysée${analyzed > 1 ? "s" : ""}, ${created} PDF individuel${created > 1 ? "s" : ""} créé${created > 1 ? "s" : ""}${skipped ? `, ${skipped} déjà présent${skipped > 1 ? "s" : ""}` : ""}.`
+      );
+
       setFile(null);
       const input = document.getElementById("payslip-file-input");
       if (input) input.value = "";
@@ -255,6 +315,7 @@ export default function AdminPayslipsPage() {
       setErr(e?.message || "Import impossible.");
     } finally {
       setBusy(false);
+      setAutoProcessStep("");
     }
   }, [month, file, authToken, loadImports]);
 
@@ -445,7 +506,7 @@ export default function AdminPayslipsPage() {
         <div>
           <div className="hdr">Import fiches de paie</div>
           <div className="text-sm text-gray-600">
-            Étape 2 : analyser le PDF global, reconnaître les salariés et préparer les bulletins individuels.
+            Import intelligent : un seul clic suffit pour analyser le PDF global et créer automatiquement les bulletins individuels.
           </div>
         </div>
 
@@ -462,7 +523,7 @@ export default function AdminPayslipsPage() {
       <div className="card">
         <div className="hdr mb-2">Nouvel import mensuel</div>
         <div className="text-sm text-gray-600 mb-4">
-          Dépose le PDF global reçu du comptable. Une fois importé, lance l’analyse automatique dans le bloc « Derniers imports ».
+          Dépose le PDF global reçu du comptable. L’application l’importe, l’analyse et crée automatiquement les fiches individuelles. Les boutons manuels restent disponibles plus bas pour relancer un ancien lot.
         </div>
 
         <div className="grid md:grid-cols-2 gap-3 items-end">
@@ -498,6 +559,21 @@ export default function AdminPayslipsPage() {
 
         {err ? <div className="mt-3 text-sm text-red-600">{err}</div> : null}
         {msg ? <div className="mt-3 text-sm text-green-700">{msg}</div> : null}
+        {autoProcessStep ? (
+          <div
+            className="mt-3 text-sm"
+            style={{
+              padding: "10px 12px",
+              borderRadius: 14,
+              border: "1px solid #bfdbfe",
+              background: "#eff6ff",
+              color: "#1d4ed8",
+              fontWeight: 600,
+            }}
+          >
+            {autoProcessStep}
+          </div>
+        ) : null}
 
         <div className="mt-4">
           <button
