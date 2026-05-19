@@ -73,6 +73,37 @@ function statusBg(status) {
   return "#6b7280";
 }
 
+function matchStatusLabel(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "matched") return "Compte trouvé";
+  if (s === "needs_review") return "À vérifier";
+  if (s === "unmatched") return "Non rattaché";
+  return s || "En attente";
+}
+
+function matchStatusBg(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "matched") return "#16a34a";
+  if (s === "needs_review") return "#f59e0b";
+  if (s === "unmatched") return "#6b7280";
+  return "#64748b";
+}
+
+function fmtNum(v) {
+  if (v === null || v === undefined || v === "") return "—";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return Math.abs(n - Math.round(n)) < 1e-9 ? String(Math.round(n)) : n.toFixed(2);
+}
+
+function leaveBalanceSummary(balance) {
+  const b = balance || null;
+  if (!b) return "Non détecté";
+  const remN1 = fmtNum(b.cp_remaining_n1);
+  const remN = fmtNum(b.cp_remaining_n);
+  return `Solde N-1 : ${remN1} j · Solde N : ${remN} j`;
+}
+
 export default function AdminPayslipsPage() {
   const router = useRouter();
   const { session, profile, loading } = useAuth();
@@ -89,6 +120,10 @@ export default function AdminPayslipsPage() {
   const [err, setErr] = useState("");
   const [imports, setImports] = useState([]);
   const [importsLoading, setImportsLoading] = useState(false);
+
+  const [analysisByBatch, setAnalysisByBatch] = useState({});
+  const [analysisBusyByBatch, setAnalysisBusyByBatch] = useState({});
+  const [analysisErrByBatch, setAnalysisErrByBatch] = useState({});
 
   useEffect(() => {
     if (loading) return;
@@ -192,7 +227,7 @@ export default function AdminPayslipsPage() {
         throw new Error(j?.error || `Erreur API (${resp.status})`);
       }
 
-      setMsg("✅ PDF global importé. La base est prête pour la prochaine étape : reconnaissance des salariés et découpage automatique.");
+      setMsg("✅ PDF global importé. Tu peux maintenant lancer l’analyse automatique ci-dessous.");
       setFile(null);
       const input = document.getElementById("payslip-file-input");
       if (input) input.value = "";
@@ -204,8 +239,88 @@ export default function AdminPayslipsPage() {
     }
   }, [month, file, authToken, loadImports]);
 
+  const runAnalysis = useCallback(
+    async (batchId) => {
+      const id = String(batchId || "");
+      if (!id) return;
+
+      setAnalysisBusyByBatch((prev) => ({ ...(prev || {}), [id]: true }));
+      setAnalysisErrByBatch((prev) => ({ ...(prev || {}), [id]: "" }));
+
+      try {
+        const token = await authToken();
+        const resp = await fetch("/api/admin/payslips/analyze", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ batch_id: id }),
+        });
+
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || j?.ok === false) {
+          throw new Error(j?.error || `Erreur API (${resp.status})`);
+        }
+
+        setAnalysisByBatch((prev) => ({
+          ...(prev || {}),
+          [id]: Array.isArray(j?.items) ? j.items : [],
+        }));
+
+        await loadImports();
+      } catch (e) {
+        setAnalysisErrByBatch((prev) => ({
+          ...(prev || {}),
+          [id]: e?.message || "Analyse impossible.",
+        }));
+      } finally {
+        setAnalysisBusyByBatch((prev) => ({ ...(prev || {}), [id]: false }));
+      }
+    },
+    [authToken, loadImports]
+  );
+
+  const loadExistingAnalysis = useCallback(
+    async (batchId) => {
+      const id = String(batchId || "");
+      if (!id) return;
+
+      setAnalysisBusyByBatch((prev) => ({ ...(prev || {}), [id]: true }));
+      setAnalysisErrByBatch((prev) => ({ ...(prev || {}), [id]: "" }));
+
+      try {
+        const token = await authToken();
+        const qs = new URLSearchParams({ batch_id: id });
+        const resp = await fetch(`/api/admin/payslips/analyze?${qs.toString()}`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        });
+
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || j?.ok === false) {
+          throw new Error(j?.error || `Erreur API (${resp.status})`);
+        }
+
+        setAnalysisByBatch((prev) => ({
+          ...(prev || {}),
+          [id]: Array.isArray(j?.items) ? j.items : [],
+        }));
+      } catch (e) {
+        setAnalysisErrByBatch((prev) => ({
+          ...(prev || {}),
+          [id]: e?.message || "Impossible de charger l’analyse.",
+        }));
+      } finally {
+        setAnalysisBusyByBatch((prev) => ({ ...(prev || {}), [id]: false }));
+      }
+    },
+    [authToken]
+  );
+
   return (
-    <div className="p-4 max-w-5xl mx-auto space-y-5">
+    <div className="p-4 max-w-6xl mx-auto space-y-5">
       <Head>
         <title>Import fiches de paie</title>
         <meta name="robots" content="noindex,nofollow" />
@@ -215,7 +330,7 @@ export default function AdminPayslipsPage() {
         <div>
           <div className="hdr">Import fiches de paie</div>
           <div className="text-sm text-gray-600">
-            Étape 1 : déposer le PDF global reçu du comptable dans un stockage privé.
+            Étape 2 : analyser le PDF global, reconnaître les salariés et préparer les bulletins individuels.
           </div>
         </div>
 
@@ -232,8 +347,7 @@ export default function AdminPayslipsPage() {
       <div className="card">
         <div className="hdr mb-2">Nouvel import mensuel</div>
         <div className="text-sm text-gray-600 mb-4">
-          Pour l’instant, l’application conserve le PDF original en sécurité et enregistre le lot d’import.
-          Dans l’étape suivante, elle analysera le PDF, reconnaîtra les salariés et générera leurs bulletins individuels.
+          Dépose le PDF global reçu du comptable. Une fois importé, lance l’analyse automatique dans le bloc « Derniers imports ».
         </div>
 
         <div className="grid md:grid-cols-2 gap-3 items-end">
@@ -294,7 +408,7 @@ export default function AdminPayslipsPage() {
           <div>
             <div className="hdr">Derniers imports</div>
             <div className="text-xs text-gray-500">
-              Les futurs traitements de reconnaissance et de découpage partiront de cette liste.
+              Lance l’analyse sur le lot d’avril importé. L’application repère les pages, les noms et les compteurs de congés.
             </div>
           </div>
           <button type="button" className="btn" onClick={loadImports} disabled={importsLoading}>
@@ -307,27 +421,109 @@ export default function AdminPayslipsPage() {
         ) : imports.length === 0 ? (
           <div className="text-sm text-gray-600">Aucun PDF de paie importé pour le moment.</div>
         ) : (
-          <div className="space-y-2">
-            {imports.map((row) => (
-              <div key={row.id} className="border rounded-2xl p-3 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                <div className="text-sm">
-                  <div className="font-medium">{row.original_filename || "Bulletins de paie"}</div>
-                  <div className="text-gray-600">
-                    Mois : {String(row.payroll_month || "").slice(0, 7)} · Importé le {formatDateTime(row.created_at)}
-                  </div>
-                  <div className="text-xs text-gray-500">
-                    {humanBytes(row.original_file_size)} · {row.original_storage_path || "—"}
-                  </div>
-                </div>
+          <div className="space-y-3">
+            {imports.map((row) => {
+              const batchId = String(row.id || "");
+              const analysis = Array.isArray(analysisByBatch?.[batchId]) ? analysisByBatch[batchId] : null;
+              const analysisBusy = !!analysisBusyByBatch?.[batchId];
+              const analysisErr = String(analysisErrByBatch?.[batchId] || "");
 
-                <span
-                  className="text-xs px-2 py-1 rounded-full text-white self-start md:self-auto"
-                  style={{ backgroundColor: statusBg(row.status) }}
-                >
-                  {statusLabel(row.status)}
-                </span>
-              </div>
-            ))}
+              return (
+                <div key={row.id} className="border rounded-2xl p-3 space-y-3">
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <div className="text-sm">
+                      <div className="font-medium">{row.original_filename || "Bulletins de paie"}</div>
+                      <div className="text-gray-600">
+                        Mois : {String(row.payroll_month || "").slice(0, 7)} · Importé le {formatDateTime(row.created_at)}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {humanBytes(row.original_file_size)} · {row.original_storage_path || "—"}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className="text-xs px-2 py-1 rounded-full text-white self-start md:self-auto"
+                        style={{ backgroundColor: statusBg(row.status) }}
+                      >
+                        {statusLabel(row.status)}
+                      </span>
+
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => runAnalysis(batchId)}
+                        disabled={analysisBusy}
+                        style={{
+                          backgroundColor: analysisBusy ? "#9ca3af" : "#2563eb",
+                          color: "#fff",
+                          borderColor: "transparent",
+                        }}
+                      >
+                        {analysisBusy ? "Analyse..." : "Analyser le PDF"}
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => loadExistingAnalysis(batchId)}
+                        disabled={analysisBusy}
+                      >
+                        Voir l’analyse
+                      </button>
+                    </div>
+                  </div>
+
+                  {analysisErr ? <div className="text-sm text-red-600">{analysisErr}</div> : null}
+
+                  {analysis ? (
+                    <div className="border rounded-2xl p-3 bg-gray-50">
+                      <div className="font-medium text-sm mb-2">
+                        Résultat de l’analyse : {analysis.length} page{analysis.length > 1 ? "s" : ""} détectée{analysis.length > 1 ? "s" : ""}
+                      </div>
+
+                      {analysis.length === 0 ? (
+                        <div className="text-sm text-gray-600">Aucune fiche analysée pour ce lot.</div>
+                      ) : (
+                        <div className="space-y-2">
+                          {analysis.map((it) => (
+                            <div
+                              key={it.id || `${batchId}-${it.original_page_start}`}
+                              className="bg-white border rounded-2xl p-3 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3"
+                            >
+                              <div className="text-sm">
+                                <div className="font-medium">
+                                  Page {it.original_page_start || "?"} · {it.employee_display_name || "Nom non détecté"}
+                                </div>
+                                <div className="text-gray-600">
+                                  Compte proposé : {it.matched_profile_name || "Aucun compte existant détecté"}
+                                </div>
+                                <div className="text-xs text-gray-500">
+                                  {it.job_title ? `Emploi : ${it.job_title} · ` : ""}
+                                  {leaveBalanceSummary(it.extracted_leave_balance)}
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span
+                                  className="text-xs px-2 py-1 rounded-full text-white"
+                                  style={{ backgroundColor: matchStatusBg(it.match_status) }}
+                                >
+                                  {matchStatusLabel(it.match_status)}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  Confiance : {fmtNum(it.match_confidence)}%
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
