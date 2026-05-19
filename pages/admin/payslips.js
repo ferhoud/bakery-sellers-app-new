@@ -142,7 +142,7 @@ export default function AdminPayslipsPage() {
   }, []);
 
   const loadImports = useCallback(async () => {
-    if (!session || !isAdmin) return;
+    if (!session) return;
     setImportsLoading(true);
     setErr("");
     try {
@@ -225,6 +225,14 @@ export default function AdminPayslipsPage() {
       const j = await resp.json().catch(() => ({}));
       if (!resp.ok || j?.ok === false) {
         throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      if (j?.row?.id) {
+        setImports((prev) => {
+          const current = Array.isArray(prev) ? prev : [];
+          const withoutSame = current.filter((x) => String(x?.id || "") !== String(j.row.id));
+          return [j.row, ...withoutSame];
+        });
       }
 
       setMsg("✅ PDF global importé. Tu peux maintenant lancer l’analyse automatique ci-dessous.");
