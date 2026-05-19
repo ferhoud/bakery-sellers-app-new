@@ -196,7 +196,10 @@ export default async function handler(req, res) {
 
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : req.body || {};
     const sinceDate = String(body?.since_date || "").slice(0, 10);
-    const maxMessages = Math.min(Math.max(Number(body?.max_messages || 150) || 150, 1), 250);
+    // Le front historique envoyait encore 150. Côté serveur, on force maintenant
+    // un scan plus profond pour éviter de rater les mois plus anciens.
+    const requestedMaxMessages = Number(body?.max_messages || 600) || 600;
+    const maxMessages = Math.min(Math.max(requestedMaxMessages, 600), 1200);
 
     const accessToken = await loadConnectionWithAccessToken(auth.admin, auth.user.id);
 
@@ -204,20 +207,26 @@ export default async function handler(req, res) {
       ? ` after:${sinceDate.replace(/-/g, "/")}`
       : "";
 
-    const q = `has:attachment filename:pdf${gmailAfter}`;
+    const q =
+      `from:davy.azoulay@yahoo.fr ` +
+      `(subject:Paie OR subject:Paies) ` +
+      `has:attachment filename:pdf${gmailAfter}`;
     let url =
       "https://gmail.googleapis.com/gmail/v1/users/me/messages" +
-      `?maxResults=50&q=${encodeURIComponent(q)}`;
+      `?maxResults=100&q=${encodeURIComponent(q)}`;
 
     const messageRefs = [];
+    let pagesFetched = 0;
+
     while (url && messageRefs.length < maxMessages) {
       const page = await googleGet(accessToken, url);
+      pagesFetched += 1;
       const values = Array.isArray(page?.messages) ? page.messages : [];
       messageRefs.push(...values);
       const token = String(page?.nextPageToken || "").trim();
       url = token
         ? "https://gmail.googleapis.com/gmail/v1/users/me/messages" +
-          `?maxResults=50&q=${encodeURIComponent(q)}&pageToken=${encodeURIComponent(token)}`
+          `?maxResults=100&q=${encodeURIComponent(q)}&pageToken=${encodeURIComponent(token)}`
         : "";
       if (!values.length) break;
     }
@@ -246,8 +255,8 @@ export default async function handler(req, res) {
       for (const part of pdfParts) {
         const attachmentName = part.filename || "piece-jointe.pdf";
 
-        // Un mail peut avoir un objet "Paie" tout en contenant d'autres documents
-        // de sortie. On ne conserve ici que les PDF mensuels de paie.
+        // Un mail peut parler de "Paie" tout en contenant aussi des documents
+        // annexes. On garde ici seulement les PDF mensuels de paie.
         if (!isMonthlyPayslipAttachmentName(attachmentName)) {
           continue;
         }
@@ -277,6 +286,9 @@ export default async function handler(req, res) {
       summary: {
         messages_scanned: trimmed.length,
         pdf_candidates: candidates.length,
+        pages_fetched: pagesFetched,
+        scan_limit: maxMessages,
+        scan_truncated: Boolean(url && messageRefs.length >= maxMessages),
       },
       candidates,
     });
