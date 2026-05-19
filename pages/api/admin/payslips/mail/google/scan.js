@@ -197,7 +197,7 @@ export default async function handler(req, res) {
       ? ` after:${sinceDate.replace(/-/g, "/")}`
       : "";
 
-    const q = `has:attachment filename:pdf${gmailAfter}`;
+    const q = `from:davy.azoulay@yahoo.fr (subject:Paie OR subject:Paies) has:attachment filename:pdf${gmailAfter}`;
     let url =
       "https://gmail.googleapis.com/gmail/v1/users/me/messages" +
       `?maxResults=50&q=${encodeURIComponent(q)}`;
