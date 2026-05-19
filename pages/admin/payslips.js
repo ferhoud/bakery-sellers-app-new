@@ -104,6 +104,11 @@ function leaveBalanceSummary(balance) {
   return `Solde N-1 : ${remN1} j · Solde N : ${remN} j`;
 }
 
+
+function individualPdfLabel(storagePath) {
+  return storagePath ? "PDF individuel créé" : "PDF individuel à créer";
+}
+
 export default function AdminPayslipsPage() {
   const router = useRouter();
   const { session, profile, loading } = useAuth();
@@ -124,6 +129,10 @@ export default function AdminPayslipsPage() {
   const [analysisByBatch, setAnalysisByBatch] = useState({});
   const [analysisBusyByBatch, setAnalysisBusyByBatch] = useState({});
   const [analysisErrByBatch, setAnalysisErrByBatch] = useState({});
+
+  const [splitBusyByBatch, setSplitBusyByBatch] = useState({});
+  const [splitErrByBatch, setSplitErrByBatch] = useState({});
+  const [splitMsgByBatch, setSplitMsgByBatch] = useState({});
 
   useEffect(() => {
     if (loading) return;
@@ -327,6 +336,61 @@ export default function AdminPayslipsPage() {
     [authToken]
   );
 
+
+  const createIndividualPdfs = useCallback(
+    async (batchId) => {
+      const id = String(batchId || "");
+      if (!id) return;
+
+      setSplitBusyByBatch((prev) => ({ ...(prev || {}), [id]: true }));
+      setSplitErrByBatch((prev) => ({ ...(prev || {}), [id]: "" }));
+      setSplitMsgByBatch((prev) => ({ ...(prev || {}), [id]: "" }));
+
+      try {
+        const token = await authToken();
+        const resp = await fetch("/api/admin/payslips/split", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ batch_id: id }),
+        });
+
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || j?.ok === false) {
+          throw new Error(j?.error || `Erreur API (${resp.status})`);
+        }
+
+        const created = Number(j?.created_count || 0) || 0;
+        const skipped = Number(j?.skipped_count || 0) || 0;
+        setSplitMsgByBatch((prev) => ({
+          ...(prev || {}),
+          [id]: `✅ ${created} PDF individuel${created > 1 ? "s" : ""} créé${created > 1 ? "s" : ""}${skipped ? ` · ${skipped} déjà présent${skipped > 1 ? "s" : ""}` : ""}.`,
+        }));
+
+        if (Array.isArray(j?.items)) {
+          setAnalysisByBatch((prev) => ({
+            ...(prev || {}),
+            [id]: j.items,
+          }));
+        } else {
+          await loadExistingAnalysis(id);
+        }
+
+        await loadImports();
+      } catch (e) {
+        setSplitErrByBatch((prev) => ({
+          ...(prev || {}),
+          [id]: e?.message || "Découpage impossible.",
+        }));
+      } finally {
+        setSplitBusyByBatch((prev) => ({ ...(prev || {}), [id]: false }));
+      }
+    },
+    [authToken, loadExistingAnalysis, loadImports]
+  );
+
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-5">
       <Head>
@@ -435,6 +499,9 @@ export default function AdminPayslipsPage() {
               const analysis = Array.isArray(analysisByBatch?.[batchId]) ? analysisByBatch[batchId] : null;
               const analysisBusy = !!analysisBusyByBatch?.[batchId];
               const analysisErr = String(analysisErrByBatch?.[batchId] || "");
+              const splitBusy = !!splitBusyByBatch?.[batchId];
+              const splitErr = String(splitErrByBatch?.[batchId] || "");
+              const splitMsg = String(splitMsgByBatch?.[batchId] || "");
 
               return (
                 <div key={row.id} className="border rounded-2xl p-3 space-y-3">
@@ -475,14 +542,30 @@ export default function AdminPayslipsPage() {
                         type="button"
                         className="btn"
                         onClick={() => loadExistingAnalysis(batchId)}
-                        disabled={analysisBusy}
+                        disabled={analysisBusy || splitBusy}
                       >
                         Voir l’analyse
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => createIndividualPdfs(batchId)}
+                        disabled={analysisBusy || splitBusy}
+                        style={{
+                          backgroundColor: splitBusy ? "#9ca3af" : "#7c3aed",
+                          color: "#fff",
+                          borderColor: "transparent",
+                        }}
+                      >
+                        {splitBusy ? "Création..." : "Créer les PDF individuels"}
                       </button>
                     </div>
                   </div>
 
                   {analysisErr ? <div className="text-sm text-red-600">{analysisErr}</div> : null}
+                  {splitErr ? <div className="text-sm text-red-600">{splitErr}</div> : null}
+                  {splitMsg ? <div className="text-sm text-green-700">{splitMsg}</div> : null}
 
                   {analysis ? (
                     <div className="border rounded-2xl p-3 bg-gray-50">
@@ -509,6 +592,9 @@ export default function AdminPayslipsPage() {
                                 <div className="text-xs text-gray-500">
                                   {it.job_title ? `Emploi : ${it.job_title} · ` : ""}
                                   {leaveBalanceSummary(it.extracted_leave_balance)}
+                                </div>
+                                <div className="text-xs" style={{ color: it.storage_path ? "#15803d" : "#64748b" }}>
+                                  {individualPdfLabel(it.storage_path)}
                                 </div>
                               </div>
 
