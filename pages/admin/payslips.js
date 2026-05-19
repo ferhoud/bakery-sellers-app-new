@@ -122,6 +122,31 @@ function confidenceLabel(score) {
   return `${Math.round(n)}%`;
 }
 
+
+function leaveBalanceSyncStatusLabel(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "up_to_date") return "Déjà à jour";
+  if (s === "current_newer") return "Solde actuel plus récent";
+  if (s === "missing_balance") return "À créer";
+  if (s === "needs_update") return "À mettre à jour";
+  return "À vérifier";
+}
+
+function leaveBalanceSyncStatusStyle(status) {
+  const s = String(status || "").toLowerCase();
+  if (s === "up_to_date") return { backgroundColor: "#16a34a", color: "#fff" };
+  if (s === "current_newer") return { backgroundColor: "#6b7280", color: "#fff" };
+  if (s === "missing_balance") return { backgroundColor: "#2563eb", color: "#fff" };
+  if (s === "needs_update") return { backgroundColor: "#f59e0b", color: "#111827" };
+  return { backgroundColor: "#64748b", color: "#fff" };
+}
+
+function fmtLeaveBalanceCompact(balance) {
+  const b = balance || null;
+  if (!b) return "—";
+  return `N-1 ${fmtNum(b.cp_remaining_n1)} j · N ${fmtNum(b.cp_remaining_n)} j`;
+}
+
 export default function AdminPayslipsPage() {
   const router = useRouter();
   const { session, profile, loading } = useAuth();
@@ -156,6 +181,13 @@ export default function AdminPayslipsPage() {
   const [correctionErr, setCorrectionErr] = useState("");
   const [correctionMsg, setCorrectionMsg] = useState("");
   const [correctionPreview, setCorrectionPreview] = useState(null);
+
+  const [leaveBalanceRows, setLeaveBalanceRows] = useState([]);
+  const [leaveBalanceLoading, setLeaveBalanceLoading] = useState(false);
+  const [leaveBalanceErr, setLeaveBalanceErr] = useState("");
+  const [leaveBalanceMsg, setLeaveBalanceMsg] = useState("");
+  const [leaveBalanceApplyBusy, setLeaveBalanceApplyBusy] = useState({});
+  const [leaveBalanceApplyAllBusy, setLeaveBalanceApplyAllBusy] = useState(false);
 
   useEffect(() => {
     if (loading) return;
@@ -200,6 +232,128 @@ export default function AdminPayslipsPage() {
   useEffect(() => {
     loadImports();
   }, [loadImports]);
+
+  const loadLeaveBalanceSuggestions = useCallback(async () => {
+    if (!session) return;
+    setLeaveBalanceErr("");
+    setLeaveBalanceLoading(true);
+
+    try {
+      const token = await authToken();
+      const resp = await fetch("/api/admin/payslips/leave-balances", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      setLeaveBalanceRows(Array.isArray(j?.rows) ? j.rows : []);
+    } catch (e) {
+      setLeaveBalanceRows([]);
+      setLeaveBalanceErr(e?.message || "Impossible de charger les soldes issus des bulletins.");
+    } finally {
+      setLeaveBalanceLoading(false);
+    }
+  }, [session, authToken]);
+
+  useEffect(() => {
+    loadLeaveBalanceSuggestions();
+  }, [loadLeaveBalanceSuggestions]);
+
+  const applyLeaveBalanceFromPayslip = useCallback(
+    async (sellerId) => {
+      const seller_id = String(sellerId || "").trim();
+      if (!seller_id) return;
+
+      setLeaveBalanceErr("");
+      setLeaveBalanceMsg("");
+      setLeaveBalanceApplyBusy((prev) => ({ ...(prev || {}), [seller_id]: true }));
+
+      try {
+        const token = await authToken();
+        const resp = await fetch("/api/admin/payslips/leave-balances", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ seller_id }),
+        });
+
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || j?.ok === false) {
+          throw new Error(j?.error || `Erreur API (${resp.status})`);
+        }
+
+        const applied = Number(j?.applied_count || 0) || 0;
+        setLeaveBalanceMsg(
+          applied > 0
+            ? "✅ Solde de congés mis à jour depuis le dernier bulletin disponible."
+            : "ℹ️ Aucun changement à appliquer."
+        );
+
+        await loadLeaveBalanceSuggestions();
+      } catch (e) {
+        setLeaveBalanceErr(e?.message || "Impossible de mettre à jour ce solde.");
+      } finally {
+        setLeaveBalanceApplyBusy((prev) => ({ ...(prev || {}), [seller_id]: false }));
+      }
+    },
+    [authToken, loadLeaveBalanceSuggestions]
+  );
+
+  const applyAllLeaveBalancesFromPayslips = useCallback(async () => {
+    const candidates = (leaveBalanceRows || []).filter((row) => row?.can_apply === true);
+    if (!candidates.length) {
+      setLeaveBalanceMsg("ℹ️ Aucun solde à appliquer.");
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        `Appliquer les soldes de congés lus sur les derniers bulletins pour ${candidates.length} vendeuse${candidates.length > 1 ? "s" : ""} ?`
+      );
+      if (!ok) return;
+    }
+
+    setLeaveBalanceErr("");
+    setLeaveBalanceMsg("");
+    setLeaveBalanceApplyAllBusy(true);
+
+    try {
+      const token = await authToken();
+      const resp = await fetch("/api/admin/payslips/leave-balances", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ apply_all: true }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      const applied = Number(j?.applied_count || 0) || 0;
+      setLeaveBalanceMsg(
+        applied > 0
+          ? `✅ ${applied} solde${applied > 1 ? "s" : ""} de congés mis à jour depuis les derniers bulletins.`
+          : "ℹ️ Aucun changement à appliquer."
+      );
+
+      await loadLeaveBalanceSuggestions();
+    } catch (e) {
+      setLeaveBalanceErr(e?.message || "Impossible d'appliquer les soldes détectés.");
+    } finally {
+      setLeaveBalanceApplyAllBusy(false);
+    }
+  }, [leaveBalanceRows, authToken, loadLeaveBalanceSuggestions]);
 
   const onSubmit = useCallback(async () => {
     setMsg("");
@@ -330,14 +484,14 @@ export default function AdminPayslipsPage() {
       setFile(null);
       const input = document.getElementById("payslip-file-input");
       if (input) input.value = "";
-      await loadImports();
+      await Promise.all([loadImports(), loadLeaveBalanceSuggestions()]);
     } catch (e) {
       setErr(e?.message || "Import impossible.");
     } finally {
       setBusy(false);
       setAutoProcessStep("");
     }
-  }, [month, file, authToken, loadImports]);
+  }, [month, file, authToken, loadImports, loadLeaveBalanceSuggestions]);
 
   const runAnalysis = useCallback(
     async (batchId) => {
@@ -368,7 +522,7 @@ export default function AdminPayslipsPage() {
           [id]: Array.isArray(j?.items) ? j.items : [],
         }));
 
-        await loadImports();
+        await Promise.all([loadImports(), loadLeaveBalanceSuggestions()]);
       } catch (e) {
         setAnalysisErrByBatch((prev) => ({
           ...(prev || {}),
@@ -378,7 +532,7 @@ export default function AdminPayslipsPage() {
         setAnalysisBusyByBatch((prev) => ({ ...(prev || {}), [id]: false }));
       }
     },
-    [authToken, loadImports]
+    [authToken, loadImports, loadLeaveBalanceSuggestions]
   );
 
   const loadExistingAnalysis = useCallback(
@@ -461,7 +615,7 @@ export default function AdminPayslipsPage() {
           await loadExistingAnalysis(id);
         }
 
-        await loadImports();
+        await Promise.all([loadImports(), loadLeaveBalanceSuggestions()]);
       } catch (e) {
         setSplitErrByBatch((prev) => ({
           ...(prev || {}),
@@ -647,7 +801,7 @@ export default function AdminPayslipsPage() {
     } finally {
       setCorrectionConfirmBusy(false);
     }
-  }, [correctionPreview, authToken, loadImports]);
+  }, [correctionPreview, authToken, loadImports, loadLeaveBalanceSuggestions]);
 
 
   return (
@@ -877,6 +1031,98 @@ export default function AdminPayslipsPage() {
             </div>
           </div>
         ) : null}
+      </div>
+
+      <div className="card">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mb-3">
+          <div>
+            <div className="hdr">Soldes de congés à valider</div>
+            <div className="text-sm text-gray-600">
+              L’application prend le dernier bulletin disponible de chaque vendeuse reconnue,
+              compare le solde lu sur la fiche avec le solde actuellement affiché dans le module Congés,
+              puis te laisse valider l’écriture. Rien n’est remplacé sans ton accord.
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button className="btn" type="button" onClick={loadLeaveBalanceSuggestions} disabled={leaveBalanceLoading || leaveBalanceApplyAllBusy}>
+              {leaveBalanceLoading ? "Chargement..." : "Rafraîchir"}
+            </button>
+            <button
+              className="btn"
+              type="button"
+              onClick={applyAllLeaveBalancesFromPayslips}
+              disabled={leaveBalanceApplyAllBusy || !(leaveBalanceRows || []).some((row) => row?.can_apply === true)}
+              style={{
+                backgroundColor: leaveBalanceApplyAllBusy ? "#9ca3af" : "#16a34a",
+                color: "#fff",
+                borderColor: "transparent",
+              }}
+            >
+              {leaveBalanceApplyAllBusy ? "Application..." : "Tout appliquer"}
+            </button>
+          </div>
+        </div>
+
+        {leaveBalanceErr ? <div className="text-sm text-red-600 mb-2">{leaveBalanceErr}</div> : null}
+        {leaveBalanceMsg ? <div className="text-sm text-green-700 mb-2">{leaveBalanceMsg}</div> : null}
+
+        {leaveBalanceLoading ? (
+          <div className="text-sm text-gray-600">Chargement des soldes détectés…</div>
+        ) : !leaveBalanceRows.length ? (
+          <div className="text-sm text-gray-600">
+            Aucun solde de congés exploitable n’a encore été détecté dans les fiches importées.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {leaveBalanceRows.map((row) => {
+              const sellerId = String(row?.seller_id || "");
+              const busy = !!leaveBalanceApplyBusy?.[sellerId];
+              const statusStyle = leaveBalanceSyncStatusStyle(row?.status);
+              return (
+                <div key={sellerId} className="border rounded-2xl p-3 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                  <div className="text-sm">
+                    <div className="font-medium">{row?.full_name || "Vendeuse"}</div>
+                    <div className="text-gray-600">
+                      Dernier bulletin : {row?.payroll_month_label || row?.payroll_month || "—"} · Solde lu : {fmtLeaveBalanceCompact(row?.payslip_balance)}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      Solde actuellement affiché : {fmtLeaveBalanceCompact(row?.current_balance)}
+                      {row?.current_balance?.as_of ? ` · au ${row.current_balance.as_of}` : ""}
+                    </div>
+                    {row?.status === "current_newer" ? (
+                      <div className="text-xs mt-1" style={{ color: "#6b7280", fontWeight: 700 }}>
+                        Le solde actuellement affiché est plus récent que ce bulletin. Aucune écriture automatique proposée.
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs px-2 py-1 rounded-full" style={statusStyle}>
+                      {leaveBalanceSyncStatusLabel(row?.status)}
+                    </span>
+
+                    {row?.can_apply ? (
+                      <button
+                        className="btn"
+                        type="button"
+                        onClick={() => applyLeaveBalanceFromPayslip(sellerId)}
+                        disabled={busy || leaveBalanceApplyAllBusy}
+                        style={{
+                          backgroundColor: busy ? "#9ca3af" : "#2563eb",
+                          color: "#fff",
+                          borderColor: "transparent",
+                        }}
+                      >
+                        {busy ? "Application..." : "Appliquer"}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="card">
