@@ -1,8 +1,9 @@
-// pages/api/leaves/balance.js
+// pages/api/leaves/balances.js
 import { createClient } from "@supabase/supabase-js";
 import { isAdminEmail } from "@/lib/admin";
 
 function json(res, status, body) {
+  res.setHeader("Cache-Control", "no-store");
   res.status(status).json(body);
 }
 function getBearer(req) {
@@ -12,7 +13,9 @@ function getBearer(req) {
 }
 function anonClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const anon =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   if (!url || !anon) return null;
   return createClient(url, anon, { auth: { persistSession: false } });
 }
@@ -33,6 +36,17 @@ async function isPlanner(admin, userId) {
   return !!data?.user_id;
 }
 
+async function getProfileRole(admin, userId) {
+  const { data, error } = await admin
+    .from("profiles")
+    .select("user_id, role")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error) return "";
+  return String(data?.role || "").trim().toLowerCase();
+}
+
 function safeNum(x) {
   if (x === null || x === undefined || x === "") return 0;
   const s = String(x).replace(",", ".").trim();
@@ -40,10 +54,21 @@ function safeNum(x) {
   return Number.isFinite(n) ? n : 0;
 }
 
+function normalizeBalance(b) {
+  if (!b) return null;
+  return {
+    as_of: b.as_of,
+    cp_acquired_n: Number(b.cp_acquired_n || 0),
+    cp_taken_n: Number(b.cp_taken_n || 0),
+    cp_remaining_n: Number(b.cp_remaining_n || 0),
+    cp_acquired_n1: Number(b.cp_acquired_n1 || 0),
+    cp_taken_n1: Number(b.cp_taken_n1 || 0),
+    cp_remaining_n1: Number(b.cp_remaining_n1 || 0),
+  };
+}
+
 export default async function handler(req, res) {
   try {
-    res.setHeader("Cache-Control", "no-store");
-
     const jwt = getBearer(req);
     if (!jwt) return json(res, 401, { ok: false, error: "Missing Authorization Bearer token" });
 
@@ -56,15 +81,18 @@ export default async function handler(req, res) {
     if (auErr || !au?.user) return json(res, 401, { ok: false, error: auErr?.message || "Unauthorized" });
 
     const user = au.user;
-    const email = (user.email || "").toLowerCase();
+    const email = String(user.email || "").toLowerCase();
+
     const adminByEmail = isAdminEmail(email);
-    const planner = adminByEmail ? true : await isPlanner(sbAdmin, user.id);
-    const isPrivileged = adminByEmail || planner;
+    const profileRole = adminByEmail ? "admin" : await getProfileRole(sbAdmin, user.id);
+    const adminByRole = profileRole === "admin";
+    const planner = adminByEmail || adminByRole ? true : await isPlanner(sbAdmin, user.id);
+    const isPrivileged = adminByEmail || adminByRole || planner;
 
     // ---- GET ----
     if (req.method === "GET") {
       if (isPrivileged) {
-        // Liste vendeuses + balances
+        // Liste vendeuses + soldes
         const { data: sellers, error: sErr } = await sbAdmin
           .from("profiles")
           .select("user_id, full_name, role, active")
@@ -73,42 +101,43 @@ export default async function handler(req, res) {
 
         if (sErr) return json(res, 500, { ok: false, error: sErr.message });
 
-        const sellerIds = (sellers || []).map((x) => x.user_id);
+        const sellerIds = (sellers || []).map((x) => x.user_id).filter(Boolean);
 
-        const { data: balances, error: bErr } = await sbAdmin
-          .from("leave_balances")
-          .select("*")
-          .in("seller_id", sellerIds);
+        let balances = [];
+        if (sellerIds.length > 0) {
+          const { data, error: bErr } = await sbAdmin
+            .from("leave_balances")
+            .select("*")
+            .in("seller_id", sellerIds);
 
-        if (bErr) return json(res, 500, { ok: false, error: bErr.message });
+          if (bErr) return json(res, 500, { ok: false, error: bErr.message });
+          balances = data || [];
+        }
 
         const byId = new Map();
         for (const b of balances || []) byId.set(b.seller_id, b);
 
         const rows = (sellers || []).map((s) => {
           const b = byId.get(s.user_id) || null;
+          const balance = normalizeBalance(b);
           return {
             seller_id: s.user_id,
             full_name: s.full_name || "-",
             active: s.active !== false,
-            balance: b
-              ? {
-                  as_of: b.as_of,
-                  cp_acquired_n: Number(b.cp_acquired_n || 0),
-                  cp_taken_n: Number(b.cp_taken_n || 0),
-                  cp_remaining_n: Number(b.cp_remaining_n || 0),
-                  cp_acquired_n1: Number(b.cp_acquired_n1 || 0),
-                  cp_taken_n1: Number(b.cp_taken_n1 || 0),
-                  cp_remaining_n1: Number(b.cp_remaining_n1 || 0),
-                }
-              : null,
+            balance,
+            ...(balance || {}),
           };
         });
 
-        return json(res, 200, { ok: true, mode: "admin", rows });
+        return json(res, 200, {
+          ok: true,
+          mode: "admin",
+          can_manage: true,
+          rows,
+        });
       }
 
-      // Vendeuse: son solde
+      // Vendeuse : son solde
       const { data: b, error: bErr } = await sbAdmin
         .from("leave_balances")
         .select("*")
@@ -120,18 +149,9 @@ export default async function handler(req, res) {
       return json(res, 200, {
         ok: true,
         mode: "seller",
+        can_manage: false,
         seller_id: user.id,
-        balance: b
-          ? {
-              as_of: b.as_of,
-              cp_acquired_n: Number(b.cp_acquired_n || 0),
-              cp_taken_n: Number(b.cp_taken_n || 0),
-              cp_remaining_n: Number(b.cp_remaining_n || 0),
-              cp_acquired_n1: Number(b.cp_acquired_n1 || 0),
-              cp_taken_n1: Number(b.cp_taken_n1 || 0),
-              cp_remaining_n1: Number(b.cp_remaining_n1 || 0),
-            }
-          : null,
+        balance: normalizeBalance(b),
       });
     }
 

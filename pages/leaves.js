@@ -154,14 +154,21 @@ export default function LeavesPage() {
 
   // Fallback profil direct (pour lire role si besoin)
   const [profileFallback, setProfileFallback] = useState(null);
+  const [profileChecked, setProfileChecked] = useState(false);
   useEffect(() => {
     let alive = true;
     (async () => {
       if (!userId) {
-        if (alive) setProfileFallback(null);
+        if (alive) {
+          setProfileFallback(null);
+          setProfileChecked(true);
+        }
         return;
       }
-      if (hookProfile?.user_id === userId) return;
+      if (hookProfile?.user_id === userId) {
+        if (alive) setProfileChecked(true);
+        return;
+      }
 
       try {
         const { data } = await supabase
@@ -173,6 +180,8 @@ export default function LeavesPage() {
         setProfileFallback(data || null);
       } catch (_) {
         // ignore
+      } finally {
+        if (alive) setProfileChecked(true);
       }
     })();
     return () => {
@@ -514,12 +523,17 @@ export default function LeavesPage() {
   const breakdown = useMemo(() => computeYearMonthBreakdown(approved, nowYear), [approved, nowYear]);
 
   const isAdminLike = canManageBalances || role === "admin";
+  const roleUiReady = !userId || !!hookProfile?.user_id || profileChecked;
 
   const backTarget = useCallback(() => {
     // Admin: on évite /app (ça déconnecte l'admin)
     if (isAdminLike) return r.back();
     return r.push("/app");
   }, [isAdminLike, r]);
+
+  if (!authChecked || !roleUiReady) {
+    return <div className="p-4">Chargement...</div>;
+  }
 
   return (
     <div className="p-4 max-w-4xl mx-auto space-y-6">
