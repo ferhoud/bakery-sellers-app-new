@@ -103,6 +103,13 @@ function likelyPayslip({ subject, attachmentName }) {
   return words.some((word) => blob.includes(word));
 }
 
+// Filtre volontairement strict pour ne garder que les vraies fiches de paie mensuelles
+// envoyées par le cabinet, dont les PDF commencent par "Paie" ou "Paies".
+function isMonthlyPayslipAttachmentName(filename) {
+  const name = String(filename || "").trim();
+  return /^(paie|paies)\b/i.test(name);
+}
+
 function isPdfPart(part) {
   const filename = String(part?.filename || "").toLowerCase();
   const mimeType = String(part?.mimeType || "").toLowerCase();
@@ -197,7 +204,7 @@ export default async function handler(req, res) {
       ? ` after:${sinceDate.replace(/-/g, "/")}`
       : "";
 
-    const q = `from:davy.azoulay@yahoo.fr (subject:Paie OR subject:Paies) has:attachment filename:pdf${gmailAfter}`;
+    const q = `has:attachment filename:pdf${gmailAfter}`;
     let url =
       "https://gmail.googleapis.com/gmail/v1/users/me/messages" +
       `?maxResults=50&q=${encodeURIComponent(q)}`;
@@ -237,6 +244,14 @@ export default async function handler(req, res) {
       const pdfParts = walkParts(message?.payload?.parts || []);
 
       for (const part of pdfParts) {
+        const attachmentName = part.filename || "piece-jointe.pdf";
+
+        // Un mail peut avoir un objet "Paie" tout en contenant d'autres documents
+        // de sortie. On ne conserve ici que les PDF mensuels de paie.
+        if (!isMonthlyPayslipAttachmentName(attachmentName)) {
+          continue;
+        }
+
         candidates.push({
           message_id: message.id,
           subject,
@@ -244,12 +259,12 @@ export default async function handler(req, res) {
           from_email: from.from_email,
           received_at: receivedAt,
           attachment_id: part.body.attachmentId,
-          attachment_name: part.filename || "piece-jointe.pdf",
+          attachment_name: attachmentName,
           content_type: part.mimeType || "application/pdf",
           size: Number(part.body.size || 0) || 0,
           likely_payslip: likelyPayslip({
             subject,
-            attachmentName: part.filename || "",
+            attachmentName,
           }),
         });
       }
