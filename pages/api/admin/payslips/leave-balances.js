@@ -127,7 +127,6 @@ async function buildRows(admin) {
     .from("employee_payslips")
     .select("id, employee_user_id, employee_display_name, payroll_month, extracted_leave_balance, created_at, storage_path")
     .not("employee_user_id", "is", null)
-    .not("storage_path", "is", null)
     .not("extracted_leave_balance", "is", null)
     .order("payroll_month", { ascending: false })
     .order("created_at", { ascending: false });
