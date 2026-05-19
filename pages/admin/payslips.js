@@ -271,7 +271,19 @@ export default function AdminPayslipsPage() {
         {msg ? <div className="mt-3 text-sm text-green-700">{msg}</div> : null}
 
         <div className="mt-4">
-          <button type="button" className="btn" onClick={onSubmit} disabled={busy || !session || !isAdmin}>
+          <button
+            type="button"
+            className="btn"
+            onClick={onSubmit}
+            disabled={busy}
+            style={{
+              backgroundColor: busy ? "#9ca3af" : "#16a34a",
+              color: "#fff",
+              borderColor: "transparent",
+              opacity: busy ? 0.75 : 1,
+              cursor: busy ? "not-allowed" : "pointer",
+            }}
+          >
             {busy ? "Import en cours..." : "Importer le PDF"}
           </button>
         </div>
