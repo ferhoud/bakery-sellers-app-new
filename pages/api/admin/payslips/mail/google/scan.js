@@ -110,6 +110,19 @@ function isMonthlyPayslipAttachmentName(filename) {
   return /^(paie|paies)\b/i.test(name);
 }
 
+// Certains mails mensuels du cabinet ont un objet très clair
+// ("Paie juillet 2025") mais un nom de PDF moins standard.
+// On les autorise à passer au classement au lieu de les jeter trop tôt.
+function subjectLooksLikeMonthlyPayslip(subject, receivedAt) {
+  const text = String(subject || "");
+  const normalized = normalizeLoose(text);
+
+  const mentionsPaie = /\b(paie|paies|paye|payes)\b/.test(normalized);
+  const monthHint = detectSingleMonthHint(text, receivedAt);
+
+  return mentionsPaie && Boolean(monthHint?.iso);
+}
+
 const FR_MONTHS = {
   janvier: 1,
   janv: 1,
@@ -377,10 +390,12 @@ function heuristicClassification({ subject, attachmentName, mailBodyText, receiv
     looksLikeMultiMonthArchive(attachmentText);
   const hasArchiveSignalsBody = looksLikeMultiMonthArchive(bodyText);
 
+  const subjectLooksMonthly = subjectLooksLikeMonthlyPayslip(subjectText, receivedAt);
+
   const strongMonthlyBm =
-    attachmentStartsPaie &&
     fileLooksBm &&
-    Boolean(detectedMonth?.iso);
+    Boolean(detectedMonth?.iso) &&
+    (attachmentStartsPaie || subjectLooksMonthly);
 
   let type = "needs_review";
   let reason = "Le scan n’a pas assez d’indices fiables pour classer ce PDF automatiquement.";
@@ -701,9 +716,12 @@ export default async function handler(req, res) {
       for (const part of pdfParts) {
         const attachmentName = part.filename || "piece-jointe.pdf";
 
-        // On conserve la sécurité précédente : seuls les PDF dont le nom commence
-        // par Paie / Paies passent à l’analyse intelligente.
-        if (!isMonthlyPayslipAttachmentName(attachmentName)) {
+        // Sécurité générale : on garde les PDF nommés Paie / Paies.
+        // Exception utile : si l’objet du mail indique clairement une paie mensuelle
+        // avec un mois détectable ("Paie juillet 2025"), on laisse aussi passer le PDF,
+        // même si son nom est atypique. Cela évite de rater un mois comme juillet.
+        const monthlySubjectHint = subjectLooksLikeMonthlyPayslip(subject, receivedAt);
+        if (!isMonthlyPayslipAttachmentName(attachmentName) && !monthlySubjectHint) {
           continue;
         }
 
