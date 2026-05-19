@@ -147,6 +147,15 @@ function fmtLeaveBalanceCompact(balance) {
   return `N-1 ${fmtNum(b.cp_remaining_n1)} j · N ${fmtNum(b.cp_remaining_n)} j`;
 }
 
+
+function fmtSignedDays(value) {
+  if (value === null || value === undefined || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "—";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${fmtNum(n)} j`;
+}
+
 export default function AdminPayslipsPage() {
   const router = useRouter();
   const { session, profile, loading } = useAuth();
@@ -306,7 +315,7 @@ export default function AdminPayslipsPage() {
   );
 
   const applyAllLeaveBalancesFromPayslips = useCallback(async () => {
-    const candidates = (leaveBalanceRows || []).filter((row) => row?.can_apply === true);
+    const candidates = (leaveBalanceRows || []).filter((row) => row?.can_apply_in_bulk === true);
     if (!candidates.length) {
       setLeaveBalanceMsg("ℹ️ Aucun solde à appliquer.");
       return;
@@ -314,7 +323,7 @@ export default function AdminPayslipsPage() {
 
     if (typeof window !== "undefined") {
       const ok = window.confirm(
-        `Appliquer les soldes de congés lus sur les derniers bulletins pour ${candidates.length} vendeuse${candidates.length > 1 ? "s" : ""} ?`
+        `Appliquer automatiquement les soldes non suspects pour ${candidates.length} vendeuse${candidates.length > 1 ? "s" : ""} ? Les variations importantes restent à valider une par une.`
       );
       if (!ok) return;
     }
@@ -1051,7 +1060,7 @@ export default function AdminPayslipsPage() {
               className="btn"
               type="button"
               onClick={applyAllLeaveBalancesFromPayslips}
-              disabled={leaveBalanceApplyAllBusy || !(leaveBalanceRows || []).some((row) => row?.can_apply === true)}
+              disabled={leaveBalanceApplyAllBusy || !(leaveBalanceRows || []).some((row) => row?.can_apply_in_bulk === true)}
               style={{
                 backgroundColor: leaveBalanceApplyAllBusy ? "#9ca3af" : "#16a34a",
                 color: "#fff",
@@ -1061,6 +1070,10 @@ export default function AdminPayslipsPage() {
               {leaveBalanceApplyAllBusy ? "Application..." : "Tout appliquer"}
             </button>
           </div>
+        </div>
+
+        <div className="text-xs text-gray-500 mb-3">
+          Le bouton « Tout appliquer » ignore automatiquement les variations importantes. Ces lignes restent visibles et doivent être validées individuellement.
         </div>
 
         {leaveBalanceErr ? <div className="text-sm text-red-600 mb-2">{leaveBalanceErr}</div> : null}
@@ -1089,6 +1102,29 @@ export default function AdminPayslipsPage() {
                       Solde actuellement affiché : {fmtLeaveBalanceCompact(row?.current_balance)}
                       {row?.current_balance?.as_of ? ` · au ${row.current_balance.as_of}` : ""}
                     </div>
+                    {row?.current_balance ? (
+                      <div className="text-xs mt-1" style={{ color: "#374151", fontWeight: 700 }}>
+                        Écart total restant : {fmtSignedDays(row?.total_remaining_delta)}
+                        {" · "}N-1 : {fmtSignedDays(row?.remaining_n1_delta)}
+                        {" · "}N : {fmtSignedDays(row?.remaining_n_delta)}
+                      </div>
+                    ) : null}
+                    {row?.suspicious ? (
+                      <div
+                        className="text-xs mt-2"
+                        style={{
+                          color: "#b45309",
+                          fontWeight: 800,
+                          background: "#fffbeb",
+                          border: "1px solid #fcd34d",
+                          borderRadius: 12,
+                          padding: "8px 10px",
+                        }}
+                      >
+                        ⚠️ Variation importante détectée : l’écart total atteint {fmtSignedDays(row?.total_remaining_delta)}.
+                        Cette ligne est volontairement exclue de « Tout appliquer » et doit être vérifiée puis validée seule.
+                      </div>
+                    ) : null}
                     {row?.status === "current_newer" ? (
                       <div className="text-xs mt-1" style={{ color: "#6b7280", fontWeight: 700 }}>
                         Le solde actuellement affiché est plus récent que ce bulletin. Aucune écriture automatique proposée.
@@ -1113,7 +1149,7 @@ export default function AdminPayslipsPage() {
                           borderColor: "transparent",
                         }}
                       >
-                        {busy ? "Application..." : "Appliquer"}
+                        {busy ? "Application..." : row?.suspicious ? "Vérifier puis appliquer" : "Appliquer"}
                       </button>
                     ) : null}
                   </div>

@@ -172,6 +172,40 @@ async function buildRows(admin) {
     if (balancesEqual) status = "up_to_date";
     if (currentNewer) status = "current_newer";
 
+    const currentBalance = current
+      ? {
+          as_of: ymd(current.as_of),
+          cp_acquired_n: safeNumber(current.cp_acquired_n),
+          cp_taken_n: safeNumber(current.cp_taken_n),
+          cp_remaining_n: safeNumber(current.cp_remaining_n),
+          cp_acquired_n1: safeNumber(current.cp_acquired_n1),
+          cp_taken_n1: safeNumber(current.cp_taken_n1),
+          cp_remaining_n1: safeNumber(current.cp_remaining_n1),
+        }
+      : null;
+
+    const payslipTotalRemaining =
+      safeNumber(payslipBalance.cp_remaining_n) + safeNumber(payslipBalance.cp_remaining_n1);
+    const currentTotalRemaining = currentBalance
+      ? safeNumber(currentBalance.cp_remaining_n) + safeNumber(currentBalance.cp_remaining_n1)
+      : null;
+
+    const totalRemainingDelta =
+      currentTotalRemaining === null ? null : Number((payslipTotalRemaining - currentTotalRemaining).toFixed(2));
+
+    const remainingNDelta = currentBalance
+      ? Number((safeNumber(payslipBalance.cp_remaining_n) - safeNumber(currentBalance.cp_remaining_n)).toFixed(2))
+      : null;
+    const remainingN1Delta = currentBalance
+      ? Number((safeNumber(payslipBalance.cp_remaining_n1) - safeNumber(currentBalance.cp_remaining_n1)).toFixed(2))
+      : null;
+
+    const suspiciousThresholdDays = 10;
+    const suspicious =
+      status === "needs_update" &&
+      totalRemainingDelta !== null &&
+      Math.abs(totalRemainingDelta) >= suspiciousThresholdDays;
+
     rows.push({
       seller_id: sellerId,
       full_name: profile?.full_name || payslip?.employee_display_name || "Vendeuse",
@@ -183,19 +217,18 @@ async function buildRows(admin) {
         as_of: suggestedAsOf,
         ...payslipBalance,
       },
-      current_balance: current
-        ? {
-            as_of: ymd(current.as_of),
-            cp_acquired_n: safeNumber(current.cp_acquired_n),
-            cp_taken_n: safeNumber(current.cp_taken_n),
-            cp_remaining_n: safeNumber(current.cp_remaining_n),
-            cp_acquired_n1: safeNumber(current.cp_acquired_n1),
-            cp_taken_n1: safeNumber(current.cp_taken_n1),
-            cp_remaining_n1: safeNumber(current.cp_remaining_n1),
-          }
-        : null,
+      current_balance: currentBalance,
+      total_remaining_payslip: payslipTotalRemaining,
+      total_remaining_current: currentTotalRemaining,
+      total_remaining_delta: totalRemainingDelta,
+      remaining_n_delta: remainingNDelta,
+      remaining_n1_delta: remainingN1Delta,
+      suspicious,
+      suspicious_threshold_days: suspiciousThresholdDays,
       status,
       can_apply: status === "missing_balance" || status === "needs_update",
+      can_apply_in_bulk:
+        (status === "missing_balance" || status === "needs_update") && !suspicious,
       source_created_at: payslip?.created_at || null,
     });
   }
@@ -208,6 +241,7 @@ async function applyRows({ admin, userId, rows, sellerIds = null }) {
   const wanted = sellerIds && sellerIds.length ? new Set(sellerIds.map(String)) : null;
   const candidates = (rows || []).filter((row) => {
     if (!row?.can_apply) return false;
+    if (!wanted && row?.can_apply_in_bulk !== true) return false;
     if (wanted && !wanted.has(String(row.seller_id || ""))) return false;
     return true;
   });
