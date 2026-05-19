@@ -123,6 +123,16 @@ function subjectLooksLikeMonthlyPayslip(subject, receivedAt) {
   return mentionsPaie && Boolean(monthHint?.iso);
 }
 
+function attachmentLooksLikeCollectivePayslipBatch(filename) {
+  const normalized = normalizeLoose(filename);
+
+  return (
+    /\bfiches? de paies?\b/.test(normalized) ||
+    /\bbulletins? de paies?\b/.test(normalized) ||
+    /\bpaies? du mois\b/.test(normalized)
+  );
+}
+
 const FR_MONTHS = {
   janvier: 1,
   janv: 1,
@@ -392,10 +402,14 @@ function heuristicClassification({ subject, attachmentName, mailBodyText, receiv
 
   const subjectLooksMonthly = subjectLooksLikeMonthlyPayslip(subjectText, receivedAt);
 
+  const attachmentLooksBatch = attachmentLooksLikeCollectivePayslipBatch(attachmentText);
+
   const strongMonthlyBm =
-    fileLooksBm &&
     Boolean(detectedMonth?.iso) &&
-    (attachmentStartsPaie || subjectLooksMonthly);
+    (
+      (fileLooksBm && (attachmentStartsPaie || subjectLooksMonthly)) ||
+      (subjectLooksMonthly && attachmentLooksBatch)
+    );
 
   let type = "needs_review";
   let reason = "Le scan n’a pas assez d’indices fiables pour classer ce PDF automatiquement.";
@@ -415,8 +429,10 @@ function heuristicClassification({ subject, attachmentName, mailBodyText, receiv
     confidence = hasCorrectionSignalsStrong ? 94 : 78;
   } else if (strongMonthlyBm) {
     type = "monthly_payroll";
-    reason = "Le PDF ressemble au lot mensuel BM : nom collectif BM + mois détecté.";
-    confidence = 98;
+    reason = attachmentLooksBatch && !fileLooksBm
+      ? "Le mail indique une paie mensuelle et le PDF ressemble à un lot collectif de fiches de paie."
+      : "Le PDF ressemble au lot mensuel BM : nom collectif BM + mois détecté.";
+    confidence = attachmentLooksBatch && !fileLooksBm ? 97 : 98;
   } else if (attachmentStartsPaie && isPluralPaies && fileLooksBm) {
     type = "monthly_payroll";
     reason = "Le PDF ressemble à un lot collectif BM de paies mensuelles.";
