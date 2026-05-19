@@ -134,6 +134,8 @@ export default function AdminPayslipsPage() {
   const [splitErrByBatch, setSplitErrByBatch] = useState({});
   const [splitMsgByBatch, setSplitMsgByBatch] = useState({});
 
+  const [openBusyByPayslip, setOpenBusyByPayslip] = useState({});
+
   useEffect(() => {
     if (loading) return;
     if (!session) {
@@ -391,6 +393,47 @@ export default function AdminPayslipsPage() {
     [authToken, loadExistingAnalysis, loadImports]
   );
 
+  const openPayslipPdf = useCallback(
+    async (payslipId) => {
+      const id = String(payslipId || "");
+      if (!id) return;
+
+      setErr("");
+      setOpenBusyByPayslip((prev) => ({ ...(prev || {}), [id]: true }));
+
+      try {
+        const token = await authToken();
+        const resp = await fetch("/api/payslips/open", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ payslip_id: id }),
+        });
+
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || j?.ok === false) {
+          throw new Error(j?.error || `Erreur API (${resp.status})`);
+        }
+
+        const url = String(j?.url || "").trim();
+        if (!url) throw new Error("Lien PDF introuvable.");
+
+        const popup = window.open(url, "_blank", "noopener,noreferrer");
+        if (!popup) {
+          window.location.href = url;
+        }
+      } catch (e) {
+        setErr(e?.message || "Impossible d'ouvrir le PDF.");
+      } finally {
+        setOpenBusyByPayslip((prev) => ({ ...(prev || {}), [id]: false }));
+      }
+    },
+    [authToken]
+  );
+
+
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-5">
       <Head>
@@ -608,6 +651,21 @@ export default function AdminPayslipsPage() {
                                 <span className="text-xs text-gray-500">
                                   Confiance : {fmtNum(it.match_confidence)}%
                                 </span>
+                                {it.storage_path ? (
+                                  <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={() => openPayslipPdf(it.id)}
+                                    disabled={!!openBusyByPayslip?.[String(it.id || "")]}
+                                    style={{
+                                      backgroundColor: "#0f766e",
+                                      color: "#fff",
+                                      borderColor: "transparent",
+                                    }}
+                                  >
+                                    {openBusyByPayslip?.[String(it.id || "")] ? "Ouverture..." : "Voir PDF"}
+                                  </button>
+                                ) : null}
                               </div>
                             </div>
                           ))}
