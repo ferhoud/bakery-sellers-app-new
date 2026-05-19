@@ -14,6 +14,17 @@ function monthInputValue(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+
+function oneYearAgoDateInput() {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function mailCandidateScoreLabel(flag) {
+  return flag ? "Probable fiche de paie" : "PDF à vérifier";
+}
+
 function payrollMonthIso(monthValue) {
   const m = /^(\d{4})-(\d{2})$/.exec(String(monthValue || "").trim());
   if (!m) return "";
@@ -173,6 +184,16 @@ export default function AdminPayslipsPage() {
   const [imports, setImports] = useState([]);
   const [importsLoading, setImportsLoading] = useState(false);
   const [autoProcessStep, setAutoProcessStep] = useState("");
+
+  const [mailStatus, setMailStatus] = useState(null);
+  const [mailStatusLoading, setMailStatusLoading] = useState(false);
+  const [mailConnectBusy, setMailConnectBusy] = useState(false);
+  const [mailErr, setMailErr] = useState("");
+  const [mailMsg, setMailMsg] = useState("");
+  const [mailScanSince, setMailScanSince] = useState(() => oneYearAgoDateInput());
+  const [mailScanBusy, setMailScanBusy] = useState(false);
+  const [mailScanSummary, setMailScanSummary] = useState(null);
+  const [mailCandidates, setMailCandidates] = useState([]);
 
   const [analysisByBatch, setAnalysisByBatch] = useState({});
   const [analysisBusyByBatch, setAnalysisBusyByBatch] = useState({});
@@ -362,6 +383,115 @@ export default function AdminPayslipsPage() {
       setLeaveBalanceApplyAllBusy(false);
     }
   }, [leaveBalanceRows, authToken, loadLeaveBalanceSuggestions]);
+
+  const loadMailStatus = useCallback(async () => {
+    setMailErr("");
+    setMailStatusLoading(true);
+
+    try {
+      const token = await authToken();
+      const resp = await fetch("/api/admin/payslips/mail/google/status", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      setMailStatus(j?.connection || { connected: false });
+    } catch (e) {
+      setMailStatus(null);
+      setMailErr(e?.message || "Impossible de lire l’état de la connexion Gmail.");
+    } finally {
+      setMailStatusLoading(false);
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    loadMailStatus();
+  }, [loadMailStatus]);
+
+  useEffect(() => {
+    const status = String(router?.query?.mail || "");
+    if (status === "connected") {
+      setMailMsg("✅ Boîte Gmail connectée. Tu peux maintenant scanner les mails du comptable.");
+      loadMailStatus();
+    }
+    if (status === "error") {
+      setMailErr("La connexion Gmail n’a pas pu être finalisée.");
+    }
+  }, [router?.query?.mail, loadMailStatus]);
+
+  const connectGoogleMailbox = useCallback(async () => {
+    setMailErr("");
+    setMailMsg("");
+    setMailConnectBusy(true);
+
+    try {
+      const token = await authToken();
+      const resp = await fetch("/api/admin/payslips/mail/google/start", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      const url = String(j?.url || "").trim();
+      if (!url) throw new Error("URL de connexion Gmail introuvable.");
+      window.location.href = url;
+    } catch (e) {
+      setMailErr(e?.message || "Impossible de démarrer la connexion Gmail.");
+      setMailConnectBusy(false);
+    }
+  }, [authToken]);
+
+  const scanMailboxForPayslipPdfs = useCallback(async () => {
+    setMailErr("");
+    setMailMsg("");
+    setMailScanSummary(null);
+    setMailCandidates([]);
+    setMailScanBusy(true);
+
+    try {
+      const token = await authToken();
+      const resp = await fetch("/api/admin/payslips/mail/google/scan", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          since_date: mailScanSince || "",
+          max_messages: 150,
+        }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      setMailCandidates(Array.isArray(j?.candidates) ? j.candidates : []);
+      setMailScanSummary(j?.summary || null);
+
+      const count = Number(j?.summary?.pdf_candidates || 0) || 0;
+      setMailMsg(
+        count > 0
+          ? `✅ ${count} pièce${count > 1 ? "s" : ""} jointe${count > 1 ? "s" : ""} PDF détectée${count > 1 ? "s" : ""} dans Gmail.`
+          : "ℹ️ Aucun PDF candidat détecté sur la période scannée."
+      );
+    } catch (e) {
+      setMailErr(e?.message || "Impossible de scanner la boîte Gmail.");
+    } finally {
+      setMailScanBusy(false);
+    }
+  }, [authToken, mailScanSince]);
 
   const onSubmit = useCallback(async () => {
     setMsg("");
@@ -835,6 +965,130 @@ export default function AdminPayslipsPage() {
             Congés
           </Link>
         </div>
+      </div>
+
+      <div className="card">
+        <div className="hdr mb-2">Boîte Gmail du comptable</div>
+        <div className="text-sm text-gray-600 mb-4">
+          Connexion Gmail pour retrouver les anciens mails contenant des PDF.
+          Cette première étape détecte les pièces jointes candidates ; l’import automatique depuis ces mails sera branché juste après.
+        </div>
+
+        {mailErr ? <div className="mb-3 text-sm text-red-600">{mailErr}</div> : null}
+        {mailMsg ? <div className="mb-3 text-sm text-green-700">{mailMsg}</div> : null}
+
+        <div className="border rounded-2xl p-3 mb-4" style={{ background: "#f8fafc" }}>
+          {mailStatusLoading ? (
+            <div className="text-sm text-gray-600">Vérification de la connexion Gmail...</div>
+          ) : mailStatus?.connected ? (
+            <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+              <div className="text-sm">
+                <div className="font-medium">✅ Gmail connecté</div>
+                <div className="text-gray-600">
+                  {mailStatus?.email || "Adresse inconnue"}
+                </div>
+                <div className="text-xs text-gray-500">
+                  Connecté le {formatDateTime(mailStatus?.connected_at)}
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="btn"
+                onClick={connectGoogleMailbox}
+                disabled={mailConnectBusy}
+              >
+                {mailConnectBusy ? "Redirection..." : "Reconnecter"}
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="text-sm text-gray-700">
+                Aucune boîte Gmail connectée pour le moment.
+              </div>
+              <button
+                type="button"
+                className="btn"
+                onClick={connectGoogleMailbox}
+                disabled={mailConnectBusy}
+                style={{
+                  backgroundColor: mailConnectBusy ? "#9ca3af" : "#2563eb",
+                  color: "#fff",
+                  borderColor: "transparent",
+                }}
+              >
+                {mailConnectBusy ? "Redirection..." : "Connecter ma boîte Gmail"}
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="grid md:grid-cols-[260px_1fr] gap-3 items-end">
+          <div>
+            <div className="text-sm mb-1">Scanner les mails reçus depuis</div>
+            <input
+              type="date"
+              className="input"
+              value={mailScanSince}
+              onChange={(e) => setMailScanSince(e.target.value)}
+              disabled={mailScanBusy || !mailStatus?.connected}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn"
+              onClick={scanMailboxForPayslipPdfs}
+              disabled={mailScanBusy || !mailStatus?.connected}
+              style={{
+                backgroundColor: mailScanBusy || !mailStatus?.connected ? "#9ca3af" : "#7c3aed",
+                color: "#fff",
+                borderColor: "transparent",
+              }}
+            >
+              {mailScanBusy ? "Scan en cours..." : "Scanner les mails avec PDF"}
+            </button>
+
+            {mailScanSummary ? (
+              <div className="text-xs text-gray-500">
+                {mailScanSummary.messages_scanned || 0} mail{Number(mailScanSummary.messages_scanned || 0) > 1 ? "s" : ""} parcouru{Number(mailScanSummary.messages_scanned || 0) > 1 ? "s" : ""} ·
+                {" "}{mailScanSummary.pdf_candidates || 0} PDF candidat{Number(mailScanSummary.pdf_candidates || 0) > 1 ? "s" : ""}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        {mailCandidates.length > 0 ? (
+          <div className="mt-4 space-y-3">
+            <div className="font-medium text-sm">PDF détectés dans Gmail</div>
+
+            {mailCandidates.map((item) => (
+              <div key={`${item.message_id}:${item.attachment_id}`} className="border rounded-2xl p-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div className="text-sm">
+                  <div className="font-medium">{item.attachment_name || "Pièce jointe PDF"}</div>
+                  <div className="text-gray-600">
+                    {item.subject || "(Sans objet)"} · {item.from_email || item.from_name || "Expéditeur inconnu"}
+                  </div>
+                  <div className="text-xs text-gray-500">
+                    Reçu le {formatDateTime(item.received_at)} · {humanBytes(item.size)}
+                  </div>
+                </div>
+
+                <span
+                  className="text-xs px-2 py-1 rounded-full self-start lg:self-auto"
+                  style={{
+                    backgroundColor: item.likely_payslip ? "#dcfce7" : "#e5e7eb",
+                    color: item.likely_payslip ? "#166534" : "#374151",
+                    fontWeight: 700,
+                  }}
+                >
+                  {mailCandidateScoreLabel(item.likely_payslip)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </div>
 
       <div className="card">
