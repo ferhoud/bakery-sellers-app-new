@@ -234,7 +234,6 @@ export default function AdminPayslipsPage() {
   }, [loadImports]);
 
   const loadLeaveBalanceSuggestions = useCallback(async () => {
-    if (!session) return;
     setLeaveBalanceErr("");
     setLeaveBalanceLoading(true);
 
@@ -258,7 +257,7 @@ export default function AdminPayslipsPage() {
     } finally {
       setLeaveBalanceLoading(false);
     }
-  }, [session, authToken]);
+  }, [authToken]);
 
   useEffect(() => {
     loadLeaveBalanceSuggestions();
