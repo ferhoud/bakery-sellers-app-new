@@ -122,6 +122,38 @@ function sameBalance(a, b) {
   );
 }
 
+function normName(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitNameWords(s) {
+  return normName(s)
+    .split(" ")
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 2);
+}
+
+function employeeNameMatchesProfile(employeeName, fullName) {
+  const employeeNorm = normName(employeeName);
+  const profileNorm = normName(fullName);
+  if (!employeeNorm || !profileNorm) return false;
+  if (employeeNorm.includes(profileNorm)) return true;
+
+  const profileTokens = splitNameWords(fullName);
+  const employeeTokens = new Set(splitNameWords(employeeName));
+  if (!profileTokens.length || !employeeTokens.size) return false;
+
+  const hitCount = profileTokens.filter((token) => employeeTokens.has(token)).length;
+  const ratio = hitCount / profileTokens.length;
+  return ratio >= 0.66 || (profileTokens.length === 1 && hitCount === 1);
+}
+
 async function buildRows(admin) {
   const { data: payslips, error: payslipsErr } = await admin
     .from("employee_payslips")
@@ -133,21 +165,14 @@ async function buildRows(admin) {
 
   if (payslipsErr) throw payslipsErr;
 
-  const latestBySeller = new Map();
-  for (const row of payslips || []) {
-    const sellerId = String(row?.employee_user_id || "");
-    if (!sellerId) continue;
-    if (!latestBySeller.has(sellerId)) {
-      latestBySeller.set(sellerId, row);
-    }
-  }
-
-  const sellerIds = Array.from(latestBySeller.keys());
-  if (!sellerIds.length) return [];
+  const sellerIdsFromPayslips = Array.from(
+    new Set((payslips || []).map((row) => String(row?.employee_user_id || "")).filter(Boolean))
+  );
+  if (!sellerIdsFromPayslips.length) return [];
 
   const [{ data: profiles, error: profilesErr }, { data: balances, error: balancesErr }] = await Promise.all([
-    admin.from("profiles").select("user_id, full_name").in("user_id", sellerIds),
-    admin.from("leave_balances").select("*").in("seller_id", sellerIds),
+    admin.from("profiles").select("user_id, full_name").in("user_id", sellerIdsFromPayslips),
+    admin.from("leave_balances").select("*").in("seller_id", sellerIdsFromPayslips),
   ]);
 
   if (profilesErr) throw profilesErr;
@@ -155,6 +180,19 @@ async function buildRows(admin) {
 
   const profileById = new Map((profiles || []).map((p) => [String(p.user_id), p]));
   const balanceBySeller = new Map((balances || []).map((b) => [String(b.seller_id), b]));
+
+  const latestBySeller = new Map();
+  for (const row of payslips || []) {
+    const sellerId = String(row?.employee_user_id || "");
+    if (!sellerId || latestBySeller.has(sellerId)) continue;
+
+    const profile = profileById.get(sellerId) || null;
+    if (profile?.full_name && !employeeNameMatchesProfile(row?.employee_display_name, profile.full_name)) {
+      continue;
+    }
+
+    latestBySeller.set(sellerId, row);
+  }
 
   const rows = [];
   for (const [sellerId, payslip] of latestBySeller.entries()) {

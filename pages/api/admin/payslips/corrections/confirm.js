@@ -185,27 +185,37 @@ function splitWords(s) {
     .filter((x) => x.length >= 2);
 }
 
-function profileMatchScore(pageText, profile) {
+function profileMatchScore(employeeName, profile) {
   const fullName = String(profile?.full_name || "").trim();
   if (!fullName) return 0;
 
-  const pageNorm = norm(pageText);
-  const nameNorm = norm(fullName);
-  if (!nameNorm) return 0;
+  const employeeNorm = norm(employeeName);
+  const profileNorm = norm(fullName);
+  if (!employeeNorm || !profileNorm) return 0;
 
-  if (pageNorm.includes(nameNorm)) return 100;
+  // Correspondance directe sur la ligne du nom uniquement.
+  if (employeeNorm.includes(profileNorm)) return 100;
 
-  const tokens = splitWords(fullName);
-  if (!tokens.length) return 0;
+  const profileTokens = splitWords(fullName);
+  const employeeTokens = new Set(splitWords(employeeName));
+  if (!profileTokens.length || !employeeTokens.size) return 0;
 
-  const hitCount = tokens.filter((t) => pageNorm.includes(t)).length;
+  // Très important pour les prénoms courts comme "Ana" :
+  // on exige une égalité de token, jamais une simple sous-chaîne dans tout le bulletin.
+  const hitCount = profileTokens.filter((token) => employeeTokens.has(token)).length;
   if (!hitCount) return 0;
 
-  const ratio = hitCount / tokens.length;
+  const ratio = hitCount / profileTokens.length;
   if (ratio >= 1) return 95;
   if (ratio >= 0.66) return 80;
   if (ratio >= 0.5) return 65;
   return 0;
+}
+
+function employeeNameMatchesProfile(employeeName, fullName) {
+  if (!employeeName || !fullName) return false;
+  const score = profileMatchScore(employeeName, { full_name: fullName });
+  return score >= 80;
 }
 
 async function downloadPdf(admin, storagePath) {
@@ -241,7 +251,7 @@ async function analyzeCorrectionPdf(admin, storagePath) {
   const profiles = await loadSellerProfiles(admin);
   let best = null;
   for (const profile of profiles) {
-    const score = profileMatchScore(text, profile);
+    const score = profileMatchScore(employeeDisplayName, profile);
     if (!best || score > best.score) best = { profile, score };
   }
 

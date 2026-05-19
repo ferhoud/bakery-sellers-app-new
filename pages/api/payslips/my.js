@@ -28,6 +28,38 @@ function adminClient() {
   return createClient(url, srv, { auth: { persistSession: false } });
 }
 
+function norm(s) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function splitWords(s) {
+  return norm(s)
+    .split(" ")
+    .map((x) => x.trim())
+    .filter((x) => x.length >= 2);
+}
+
+function employeeNameMatchesProfile(employeeName, fullName) {
+  const employeeNorm = norm(employeeName);
+  const profileNorm = norm(fullName);
+  if (!employeeNorm || !profileNorm) return false;
+  if (employeeNorm.includes(profileNorm)) return true;
+
+  const profileTokens = splitWords(fullName);
+  const employeeTokens = new Set(splitWords(employeeName));
+  if (!profileTokens.length || !employeeTokens.size) return false;
+
+  const hitCount = profileTokens.filter((token) => employeeTokens.has(token)).length;
+  const ratio = hitCount / profileTokens.length;
+  return ratio >= 0.66 || (profileTokens.length === 1 && hitCount === 1);
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method !== "GET") {
@@ -49,6 +81,14 @@ export default async function handler(req, res) {
 
     const user = au.user;
 
+    const { data: profile, error: profileErr } = await admin
+      .from("profiles")
+      .select("user_id, full_name")
+      .eq("user_id", user.id)
+      .maybeSingle();
+
+    if (profileErr) return json(res, 500, { ok: false, error: profileErr.message });
+
     const { data, error } = await admin
       .from("employee_payslips")
       .select("id, payroll_month, employee_display_name, storage_path, extracted_leave_balance, created_at, updated_at")
@@ -59,9 +99,14 @@ export default async function handler(req, res) {
 
     if (error) return json(res, 500, { ok: false, error: error.message });
 
+    const filteredRows = (data || []).filter((row) => {
+      if (!profile?.full_name) return true;
+      return employeeNameMatchesProfile(row?.employee_display_name, profile.full_name);
+    });
+
     const latestByMonth = new Map();
 
-    for (const row of data || []) {
+    for (const row of filteredRows) {
       const monthKey = String(row?.payroll_month || "").slice(0, 7);
       if (!monthKey) continue;
 
