@@ -358,30 +358,47 @@ function heuristicClassification({ subject, attachmentName, mailBodyText, receiv
 
   const attachmentStartsPaie = /^(paie|paies)\b/i.test(String(attachmentName || "").trim());
   const isPluralPaies = /^paies\b/i.test(String(attachmentName || "").trim());
-  const hasExitSignals = hasAny(normalizedAll, exitWords);
-  const hasCorrectionSignals = hasAny(normalizedAll, correctionWords);
-  const hasArchiveSignals =
+  // On distingue volontairement les signaux "forts" visibles dans l'objet ou le nom
+  // du PDF des mots éventuellement présents dans le corps du mail.
+  // Un cabinet peut écrire "à corriger si besoin" dans un mail parfaitement normal :
+  // cela ne doit pas faire sortir un vrai lot mensuel BM de la liste principale.
+  const hasExitSignalsStrong =
+    hasAny(normalizedSubject, exitWords) ||
+    hasAny(normalizedAttachment, exitWords);
+  const hasExitSignalsBody = hasAny(bodyText, exitWords);
+
+  const hasCorrectionSignalsStrong =
+    hasAny(normalizedSubject, correctionWords) ||
+    hasAny(normalizedAttachment, correctionWords);
+  const hasCorrectionSignalsBody = hasAny(bodyText, correctionWords);
+
+  const hasArchiveSignalsStrong =
     looksLikeMultiMonthArchive(subjectText) ||
-    looksLikeMultiMonthArchive(attachmentText) ||
-    looksLikeMultiMonthArchive(bodyText);
+    looksLikeMultiMonthArchive(attachmentText);
+  const hasArchiveSignalsBody = looksLikeMultiMonthArchive(bodyText);
+
+  const strongMonthlyBm =
+    attachmentStartsPaie &&
+    fileLooksBm &&
+    Boolean(detectedMonth?.iso);
 
   let type = "needs_review";
   let reason = "Le scan n’a pas assez d’indices fiables pour classer ce PDF automatiquement.";
   let confidence = 55;
 
-  if (hasArchiveSignals) {
+  if (hasArchiveSignalsStrong || (!strongMonthlyBm && hasArchiveSignalsBody)) {
     type = "archive_multi_month";
     reason = "Le mail ou le nom du PDF évoque un lot couvrant plusieurs mois.";
-    confidence = 96;
-  } else if (hasExitSignals) {
+    confidence = hasArchiveSignalsStrong ? 96 : 82;
+  } else if (hasExitSignalsStrong || (!strongMonthlyBm && hasExitSignalsBody)) {
     type = "exit_documents";
     reason = "Le contenu du mail évoque une sortie de salarié ou des documents de fin de contrat.";
-    confidence = 95;
-  } else if (hasCorrectionSignals) {
+    confidence = hasExitSignalsStrong ? 95 : 80;
+  } else if (hasCorrectionSignalsStrong || (!strongMonthlyBm && hasCorrectionSignalsBody)) {
     type = "correction";
     reason = "Le mail ou le nom du PDF indique une modification, une correction ou un remplacement.";
-    confidence = 94;
-  } else if (attachmentStartsPaie && fileLooksBm && detectedMonth?.iso) {
+    confidence = hasCorrectionSignalsStrong ? 94 : 78;
+  } else if (strongMonthlyBm) {
     type = "monthly_payroll";
     reason = "Le PDF ressemble au lot mensuel BM : nom collectif BM + mois détecté.";
     confidence = 98;
