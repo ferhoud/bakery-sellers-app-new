@@ -109,6 +109,19 @@ function individualPdfLabel(storagePath) {
   return storagePath ? "PDF individuel créé" : "PDF individuel à créer";
 }
 
+
+function leaveBalanceCorrectionSummary(balance) {
+  const b = balance || null;
+  if (!b) return "Compteurs de congés non détectés.";
+  return `Solde N-1 : ${fmtNum(b.cp_remaining_n1)} j · Solde N : ${fmtNum(b.cp_remaining_n)} j`;
+}
+
+function confidenceLabel(score) {
+  const n = Number(score || 0);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  return `${Math.round(n)}%`;
+}
+
 export default function AdminPayslipsPage() {
   const router = useRouter();
   const { session, profile, loading } = useAuth();
@@ -136,6 +149,13 @@ export default function AdminPayslipsPage() {
   const [splitMsgByBatch, setSplitMsgByBatch] = useState({});
 
   const [openBusyByPayslip, setOpenBusyByPayslip] = useState({});
+
+  const [correctionFile, setCorrectionFile] = useState(null);
+  const [correctionBusy, setCorrectionBusy] = useState(false);
+  const [correctionConfirmBusy, setCorrectionConfirmBusy] = useState(false);
+  const [correctionErr, setCorrectionErr] = useState("");
+  const [correctionMsg, setCorrectionMsg] = useState("");
+  const [correctionPreview, setCorrectionPreview] = useState(null);
 
   useEffect(() => {
     if (loading) return;
@@ -495,6 +515,141 @@ export default function AdminPayslipsPage() {
   );
 
 
+  const previewCorrectedPayslip = useCallback(async () => {
+    setCorrectionErr("");
+    setCorrectionMsg("");
+    setCorrectionPreview(null);
+
+    if (!correctionFile) {
+      setCorrectionErr("Choisis le PDF corrigé reçu du comptable.");
+      return;
+    }
+
+    const fileName = String(correctionFile.name || "").toLowerCase();
+    const isPdf = correctionFile.type === "application/pdf" || fileName.endsWith(".pdf");
+    if (!isPdf) {
+      setCorrectionErr("Le fichier corrigé doit être un PDF.");
+      return;
+    }
+
+    setCorrectionBusy(true);
+
+    try {
+      const originalName = safeFileName(correctionFile.name || "fiche-corrigee.pdf");
+      const storagePath = `correction-drafts/${randomPart()}-${originalName}`;
+
+      const { error: uploadErr } = await supabase.storage.from(STORAGE_BUCKET).upload(storagePath, correctionFile, {
+        cacheControl: "3600",
+        contentType: "application/pdf",
+        upsert: false,
+      });
+
+      if (uploadErr) {
+        throw new Error(uploadErr.message || "Upload du PDF corrigé impossible.");
+      }
+
+      const token = await authToken();
+      const resp = await fetch("/api/admin/payslips/corrections/preview", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          storage_path: storagePath,
+          original_filename: correctionFile.name || originalName,
+          original_file_size: Number(correctionFile.size || 0) || null,
+          original_mime_type: correctionFile.type || "application/pdf",
+        }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      setCorrectionPreview(j?.preview || null);
+      setCorrectionMsg("✅ Fiche corrigée analysée. Vérifie puis confirme son remplacement.");
+    } catch (e) {
+      setCorrectionErr(e?.message || "Analyse du PDF corrigé impossible.");
+    } finally {
+      setCorrectionBusy(false);
+    }
+  }, [correctionFile, authToken]);
+
+  const confirmCorrectedPayslip = useCallback(async () => {
+    const preview = correctionPreview || null;
+    if (!preview?.storage_path) {
+      setCorrectionErr("Aucune fiche corrigée prête à valider.");
+      return;
+    }
+
+    if (!preview?.employee_user_id) {
+      setCorrectionErr("La salariée n'a pas été reconnue avec assez de certitude. Confirmation bloquée pour éviter une mauvaise attribution.");
+      return;
+    }
+
+    const existingCount = Number(preview?.existing_count || 0) || 0;
+    const person = preview?.matched_profile_name || preview?.employee_display_name || "ce salarié";
+    const monthLabel = preview?.payroll_month_label || preview?.payroll_month || "ce mois";
+
+    if (typeof window !== "undefined") {
+      const text = existingCount > 0
+        ? `Une fiche existe déjà pour ${person} (${monthLabel}). La version corrigée deviendra celle visible dans son espace. Continuer ?`
+        : `Importer cette fiche corrigée pour ${person} (${monthLabel}) ?`;
+      const ok = window.confirm(text);
+      if (!ok) return;
+    }
+
+    setCorrectionErr("");
+    setCorrectionMsg("");
+    setCorrectionConfirmBusy(true);
+
+    try {
+      const token = await authToken();
+      const resp = await fetch("/api/admin/payslips/corrections/confirm", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          storage_path: preview.storage_path,
+          original_filename: preview.original_filename,
+          original_file_size: preview.original_file_size,
+          original_mime_type: preview.original_mime_type,
+        }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      const importedName = j?.result?.matched_profile_name || person;
+      const importedMonth = j?.result?.payroll_month_label || monthLabel;
+      const replaced = Number(j?.result?.existing_count_before || 0) > 0;
+
+      setCorrectionMsg(
+        replaced
+          ? `✅ Fiche corrigée importée pour ${importedName} (${importedMonth}). Elle devient la version affichée dans son espace salarié.`
+          : `✅ Fiche de paie importée pour ${importedName} (${importedMonth}).`
+      );
+
+      setCorrectionPreview(null);
+      setCorrectionFile(null);
+      const input = document.getElementById("corrected-payslip-file-input");
+      if (input) input.value = "";
+
+      await loadImports();
+    } catch (e) {
+      setCorrectionErr(e?.message || "Validation de la fiche corrigée impossible.");
+    } finally {
+      setCorrectionConfirmBusy(false);
+    }
+  }, [correctionPreview, authToken, loadImports]);
+
+
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-5">
       <Head>
@@ -592,6 +747,136 @@ export default function AdminPayslipsPage() {
             {busy ? "Import en cours..." : "Importer le PDF"}
           </button>
         </div>
+      </div>
+
+      <div className="card">
+        <div className="hdr mb-2">Importer une fiche corrigée</div>
+        <div className="text-sm text-gray-600 mb-4">
+          À utiliser si le comptable renvoie une fiche de paie isolée après correction.
+          L’application détecte automatiquement le salarié et le mois indiqués sur le bulletin,
+          puis te demande confirmation avant de rendre cette version prioritaire.
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-3 items-end">
+          <div className="md:col-span-2">
+            <div className="text-sm mb-1">PDF corrigé isolé</div>
+            <input
+              id="corrected-payslip-file-input"
+              type="file"
+              accept="application/pdf,.pdf"
+              className="input"
+              onChange={(e) => {
+                setCorrectionFile(e.target.files?.[0] || null);
+                setCorrectionErr("");
+                setCorrectionMsg("");
+                setCorrectionPreview(null);
+              }}
+              disabled={correctionBusy || correctionConfirmBusy}
+            />
+          </div>
+        </div>
+
+        {correctionFile ? (
+          <div className="mt-3 text-sm text-gray-700">
+            Fichier sélectionné : <span className="font-medium">{correctionFile.name}</span> · {humanBytes(correctionFile.size)}
+          </div>
+        ) : null}
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn"
+            onClick={previewCorrectedPayslip}
+            disabled={correctionBusy || correctionConfirmBusy}
+            style={{
+              backgroundColor: correctionBusy ? "#9ca3af" : "#7c3aed",
+              color: "#fff",
+              borderColor: "transparent",
+            }}
+          >
+            {correctionBusy ? "Analyse..." : "Analyser la fiche corrigée"}
+          </button>
+        </div>
+
+        {correctionErr ? <div className="mt-3 text-sm text-red-600">{correctionErr}</div> : null}
+        {correctionMsg ? <div className="mt-3 text-sm text-green-700">{correctionMsg}</div> : null}
+
+        {correctionPreview ? (
+          <div
+            className="mt-4 border rounded-2xl p-3"
+            style={{ background: "#faf5ff", borderColor: "#e9d5ff" }}
+          >
+            <div className="font-medium text-sm mb-2">Résultat détecté</div>
+
+            <div className="grid md:grid-cols-2 gap-3 text-sm">
+              <div>
+                <div className="text-xs text-gray-500">Salarié lu sur le bulletin</div>
+                <div className="font-medium">{correctionPreview.employee_display_name || "—"}</div>
+              </div>
+
+              <div>
+                <div className="text-xs text-gray-500">Compte proposé dans l’application</div>
+                <div className="font-medium">{correctionPreview.matched_profile_name || "Aucun compte reconnu"}</div>
+              </div>
+
+              <div>
+                <div className="text-xs text-gray-500">Mois détecté</div>
+                <div className="font-medium">{correctionPreview.payroll_month_label || correctionPreview.payroll_month || "—"}</div>
+              </div>
+
+              <div>
+                <div className="text-xs text-gray-500">Confiance de rapprochement</div>
+                <div className="font-medium">{confidenceLabel(correctionPreview.match_confidence)}</div>
+              </div>
+
+              <div className="md:col-span-2">
+                <div className="text-xs text-gray-500">Congés lus sur le bulletin</div>
+                <div className="font-medium">{leaveBalanceCorrectionSummary(correctionPreview.extracted_leave_balance)}</div>
+              </div>
+            </div>
+
+            <div className="mt-3 text-sm">
+              {Number(correctionPreview.existing_count || 0) > 0 ? (
+                <span style={{ color: "#b45309", fontWeight: 600 }}>
+                  Une fiche existe déjà pour ce salarié et ce mois. Cette correction deviendra la version visible dans son espace, sans supprimer l’archive.
+                </span>
+              ) : (
+                <span style={{ color: "#166534", fontWeight: 600 }}>
+                  Aucune fiche existante détectée pour ce salarié sur ce mois. Elle sera ajoutée.
+                </span>
+              )}
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="btn"
+                onClick={confirmCorrectedPayslip}
+                disabled={correctionConfirmBusy || !correctionPreview.employee_user_id}
+                style={{
+                  backgroundColor: correctionConfirmBusy || !correctionPreview.employee_user_id ? "#9ca3af" : "#16a34a",
+                  color: "#fff",
+                  borderColor: "transparent",
+                }}
+              >
+                {correctionConfirmBusy ? "Validation..." : "Valider l’import corrigé"}
+              </button>
+
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setCorrectionPreview(null);
+                  setCorrectionMsg("");
+                  setCorrectionErr("");
+                }}
+                disabled={correctionConfirmBusy}
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="card">
