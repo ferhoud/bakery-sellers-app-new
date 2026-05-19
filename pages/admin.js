@@ -2163,6 +2163,10 @@ const deleteHandover = useCallback(
                           <a className="btn">🏖️ Congés</a>
                         </Link>
 
+                        <Link href="/admin/payslips" legacyBehavior>
+                          <a className="btn">📄 Fiches de paie</a>
+                        </Link>
+
                         <Link href="/admin/shift-types" legacyBehavior>
                           <a className="btn">🕒 Plages horaires</a>
                         </Link>
