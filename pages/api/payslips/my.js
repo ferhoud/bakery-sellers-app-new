@@ -59,7 +59,33 @@ export default async function handler(req, res) {
 
     if (error) return json(res, 500, { ok: false, error: error.message });
 
-    return json(res, 200, { ok: true, rows: data || [] });
+    const latestByMonth = new Map();
+
+    for (const row of data || []) {
+      const monthKey = String(row?.payroll_month || "").slice(0, 7);
+      if (!monthKey) continue;
+
+      const prev = latestByMonth.get(monthKey);
+      if (!prev) {
+        latestByMonth.set(monthKey, row);
+        continue;
+      }
+
+      const prevAt = new Date(prev?.created_at || 0).getTime();
+      const rowAt = new Date(row?.created_at || 0).getTime();
+      if (rowAt >= prevAt) {
+        latestByMonth.set(monthKey, row);
+      }
+    }
+
+    const rows = Array.from(latestByMonth.values()).sort((a, b) => {
+      const ma = String(a?.payroll_month || "");
+      const mb = String(b?.payroll_month || "");
+      if (ma !== mb) return mb.localeCompare(ma);
+      return String(b?.created_at || "").localeCompare(String(a?.created_at || ""));
+    });
+
+    return json(res, 200, { ok: true, rows });
   } catch (e) {
     return json(res, 500, { ok: false, error: e?.message || "Server error" });
   }

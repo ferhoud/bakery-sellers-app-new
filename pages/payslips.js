@@ -124,6 +124,25 @@ export default function MyPayslipsPage() {
 
   const [rows, setRows] = useState([]);
   const [loadingRows, setLoadingRows] = useState(false);
+
+  const payslipsByYear = useMemo(() => {
+    const map = new Map();
+
+    for (const row of rows || []) {
+      const year = String(row?.payroll_month || "").slice(0, 4) || "Sans année";
+      if (!map.has(year)) map.set(year, []);
+      map.get(year).push(row);
+    }
+
+    return Array.from(map.entries())
+      .map(([year, items]) => ({
+        year,
+        items: (items || []).sort((a, b) =>
+          String(b?.payroll_month || "").localeCompare(String(a?.payroll_month || ""))
+        ),
+      }))
+      .sort((a, b) => String(b.year).localeCompare(String(a.year)));
+  }, [rows]);
   const [err, setErr] = useState("");
   const [openBusy, setOpenBusy] = useState({});
 
@@ -279,40 +298,53 @@ export default function MyPayslipsPage() {
             Aucune fiche de paie disponible pour le moment.
           </div>
         ) : (
-          <div className="space-y-3">
-            {rows.map((row) => {
-              const id = String(row?.id || "");
-              return (
+          <div className="space-y-5">
+            {payslipsByYear.map((group) => (
+              <div key={group.year} className="space-y-3">
                 <div
-                  key={id}
-                  className="border rounded-2xl p-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
+                  className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium"
+                  style={{ backgroundColor: "#e0f2fe", color: "#075985" }}
                 >
-                  <div className="text-sm">
-                    <div className="font-medium capitalize">Bulletin de {fmtMonth(row.payroll_month)}</div>
-                    <div className="text-gray-600">
-                      Ajouté le {fmtDateTime(row.created_at)}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {leaveBalanceLine(row.extracted_leave_balance)}
-                    </div>
-                  </div>
-
-                  <button
-                    className="btn"
-                    type="button"
-                    onClick={() => openPdf(row)}
-                    disabled={!!openBusy?.[id]}
-                    style={{
-                      backgroundColor: "#0f766e",
-                      color: "#fff",
-                      borderColor: "transparent",
-                    }}
-                  >
-                    {openBusy?.[id] ? "Ouverture..." : "Voir la fiche PDF"}
-                  </button>
+                  {group.year}
                 </div>
-              );
-            })}
+
+                <div className="space-y-3">
+                  {group.items.map((row) => {
+                    const id = String(row?.id || "");
+                    return (
+                      <div
+                        key={id}
+                        className="border rounded-2xl p-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
+                      >
+                        <div className="text-sm">
+                          <div className="font-medium capitalize">Bulletin de {fmtMonth(row.payroll_month)}</div>
+                          <div className="text-gray-600">
+                            Ajouté le {fmtDateTime(row.created_at)}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            {leaveBalanceLine(row.extracted_leave_balance)}
+                          </div>
+                        </div>
+
+                        <button
+                          className="btn"
+                          type="button"
+                          onClick={() => openPdf(row)}
+                          disabled={!!openBusy?.[id]}
+                          style={{
+                            backgroundColor: "#0f766e",
+                            color: "#fff",
+                            borderColor: "transparent",
+                          }}
+                        >
+                          {openBusy?.[id] ? "Ouverture..." : "Voir la fiche PDF"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>
