@@ -498,8 +498,18 @@ export default function AdminPayslipsPage() {
   const importMailCandidate = useCallback(
     async (item) => {
       const key = `${item?.message_id || ""}:${item?.attachment_id || ""}`;
-      if (!item?.message_id || !item?.attachment_id) {
-        setMailErr("Piece jointe Gmail incomplete.");
+      const detectedMonth = String(item?.detected_month || "").slice(0, 7);
+      const messageId = String(item?.message_id || "").trim();
+      const attachmentId = String(item?.attachment_id || "").trim();
+      const originalFilename = String(item?.attachment_name || "bulletins.pdf").trim() || "bulletins.pdf";
+
+      if (!messageId || !attachmentId) {
+        setMailErr("PiÃ¨ce jointe Gmail incomplÃ¨te.");
+        return;
+      }
+
+      if (!/^\d{4}-\d{2}$/.test(detectedMonth)) {
+        setMailErr("Mois de paie introuvable pour ce PDF Gmail.");
         return;
       }
 
@@ -511,46 +521,142 @@ export default function AdminPayslipsPage() {
 
       try {
         const token = await authToken();
-        const resp = await fetch("/api/admin/payslips/mail/google/import", {
+        if (!token) {
+          throw new Error("Session admin introuvable. Recharge la page puis rÃ©essaie.");
+        }
+
+        // 1) Le serveur rÃ©cupÃ¨re seulement le PDF dans Gmail.
+        const attachmentResp = await fetch("/api/admin/payslips/mail/google/attachment", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify(item),
+          body: JSON.stringify({
+            message_id: messageId,
+            attachment_id: attachmentId,
+            attachment_name: originalFilename,
+          }),
         });
 
-        const j = await resp.json().catch(() => ({}));
-        if (!resp.ok || j?.ok === false) {
-          throw new Error(j?.error || `Erreur API (${resp.status})`);
+        if (!attachmentResp.ok) {
+          const text = await attachmentResp.text().catch(() => "");
+          let errMsg = `Erreur API Gmail (${attachmentResp.status})`;
+          try {
+            const parsed = JSON.parse(text || "{}");
+            errMsg = parsed?.error || errMsg;
+          } catch (_) {}
+          throw new Error(errMsg);
         }
 
-        const analyzed = Number(j?.analysis_count || 0) || 0;
-        const created = Number(j?.created_count || 0) || 0;
-        const skipped = Number(j?.skipped_count || 0) || 0;
-        const already = j?.already_imported === true;
-
-        const message = already
-          ? "Deja importe auparavant."
-          : `Import Gmail termine : ${analyzed} fiche${analyzed > 1 ? "s" : ""} analysee${analyzed > 1 ? "s" : ""}, ${created} PDF cree${created > 1 ? "s" : ""}${skipped ? `, ${skipped} deja present${skipped > 1 ? "s" : ""}` : ""}.`;
-
-        setMailImportMsgByKey((prev) => ({ ...(prev || {}), [key]: message }));
-        setMailMsg(message);
-
-        if (j?.row?.id) {
-          setImports((prev) => {
-            const current = Array.isArray(prev) ? prev : [];
-            const withoutSame = current.filter((x) => String(x?.id || "") !== String(j.row.id || ""));
-            return [j.row, ...withoutSame];
-          });
+        const blob = await attachmentResp.blob();
+        if (!blob || !Number(blob.size || 0)) {
+          throw new Error("Le PDF rÃ©cupÃ©rÃ© depuis Gmail est vide.");
         }
 
-        if (Array.isArray(j?.items) && j?.batch_id) {
+        // 2) MÃªme logique que l'import manuel : upload Storage depuis la page admin.
+        const safeName = safeFileName(originalFilename);
+        const storagePath = `original-imports/${detectedMonth}/${randomPart()}-${safeName}`;
+
+        const { error: uploadErr } = await supabase.storage.from(STORAGE_BUCKET).upload(storagePath, blob, {
+          cacheControl: "3600",
+          contentType: item?.content_type || blob.type || "application/pdf",
+          upsert: false,
+        });
+
+        if (uploadErr) {
+          throw new Error(uploadErr.message || "Upload Supabase Storage impossible.");
+        }
+
+        // 3) CrÃ©ation du lot d'import.
+        const importResp = await fetch("/api/admin/payslips/imports", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            payroll_month: `${detectedMonth}-01`,
+            original_filename: originalFilename,
+            original_storage_path: storagePath,
+            original_file_size: Number(blob.size || item?.size || 0) || null,
+            original_mime_type: item?.content_type || blob.type || "application/pdf",
+          }),
+        });
+
+        const importJson = await importResp.json().catch(() => ({}));
+        if (!importResp.ok || importJson?.ok === false) {
+          throw new Error(importJson?.error || `Erreur import (${importResp.status})`);
+        }
+
+        const batchId = String(importJson?.row?.id || "").trim();
+        if (!batchId) {
+          throw new Error("Import enregistrÃ©, mais identifiant du lot introuvable.");
+        }
+
+        setImports((prev) => {
+          const current = Array.isArray(prev) ? prev : [];
+          const withoutSame = current.filter((x) => String(x?.id || "") !== batchId);
+          return [importJson.row, ...withoutSame];
+        });
+
+        // 4) Analyse automatique.
+        const analyzeResp = await fetch("/api/admin/payslips/analyze", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ batch_id: batchId }),
+        });
+
+        const analyzeJson = await analyzeResp.json().catch(() => ({}));
+        if (!analyzeResp.ok || analyzeJson?.ok === false) {
+          throw new Error(
+            `PDF importÃ©, mais l'analyse automatique a Ã©chouÃ© : ${analyzeJson?.error || `Erreur API (${analyzeResp.status})`}`
+          );
+        }
+
+        setAnalysisByBatch((prev) => ({
+          ...(prev || {}),
+          [batchId]: Array.isArray(analyzeJson?.items) ? analyzeJson.items : [],
+        }));
+
+        // 5) DÃ©coupage automatique.
+        const splitResp = await fetch("/api/admin/payslips/split", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ batch_id: batchId }),
+        });
+
+        const splitJson = await splitResp.json().catch(() => ({}));
+        if (!splitResp.ok || splitJson?.ok === false) {
+          throw new Error(
+            `PDF analysÃ©, mais la crÃ©ation des fiches individuelles a Ã©chouÃ© : ${splitJson?.error || `Erreur API (${splitResp.status})`}`
+          );
+        }
+
+        if (Array.isArray(splitJson?.items)) {
           setAnalysisByBatch((prev) => ({
             ...(prev || {}),
-            [j.batch_id]: j.items,
+            [batchId]: splitJson.items,
           }));
         }
+
+        const analyzed = Array.isArray(analyzeJson?.items) ? analyzeJson.items.length : 0;
+        const created = Number(splitJson?.created_count || 0) || 0;
+        const skipped = Number(splitJson?.skipped_count || 0) || 0;
+
+        const message =
+          `Import Gmail terminÃ© : ${analyzed} fiche${analyzed > 1 ? "s" : ""} analysÃ©e${analyzed > 1 ? "s" : ""}, ` +
+          `${created} PDF individuel${created > 1 ? "s" : ""} crÃ©Ã©${created > 1 ? "s" : ""}` +
+          `${skipped ? `, ${skipped} dÃ©jÃ  prÃ©sent${skipped > 1 ? "s" : ""}` : ""}.`;
+
+        setMailImportMsgByKey((prev) => ({ ...(prev || {}), [key]: message }));
+        setMailMsg(`âœ… ${message}`);
 
         await Promise.all([loadImports(), loadLeaveBalanceSuggestions()]);
       } catch (e) {
@@ -1678,4 +1784,5 @@ export default function AdminPayslipsPage() {
     </div>
   );
 }
+
 
