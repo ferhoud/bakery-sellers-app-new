@@ -130,6 +130,7 @@ export default function AdminPayrollEmailPage() {
   const [toEmail, setToEmail] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [bodyManuallyEdited, setBodyManuallyEdited] = useState(false);
 
   const [notesByEmployee, setNotesByEmployee] = useState({});
   const [noteBusyByEmployee, setNoteBusyByEmployee] = useState({});
@@ -171,7 +172,7 @@ export default function AdminPayrollEmailPage() {
   }, [session?.access_token]);
 
   const loadPayrollEmail = useCallback(
-    async (targetMonth, { keepEditedBody = false } = {}) => {
+    async (targetMonth, { keepEditedBody = false, forceRegenerateBody = false } = {}) => {
       if (!authChecked) {
         setErr("Vérification de la session en cours. Réessaie dans une seconde.");
         setMsg("");
@@ -234,14 +235,24 @@ export default function AdminPayrollEmailPage() {
         setNotesByEmployee(nextNotes);
 
         const row = draftJson?.row || null;
-        if (!keepEditedBody) {
-          setToEmail(String(row?.to_email || previewJson?.to_email || ""));
-          setSubject(String(row?.subject || previewJson?.subject || ""));
-          setBody(String(row?.body || previewJson?.body || ""));
+
+        // Le mail reste "vivant" : par défaut, son texte repart toujours
+        // de la version automatique la plus récente (absences, congés, notes, salariés).
+        // On ne conserve un texte tapé à la main que pendant l'édition en cours,
+        // sauf si l'utilisateur force explicitement une régénération.
+        const preserveCurrentManualBody = keepEditedBody && bodyManuallyEdited && !forceRegenerateBody;
+
+        if (!preserveCurrentManualBody) {
+          setToEmail(String(previewJson?.to_email || row?.to_email || ""));
+          setSubject(String(previewJson?.subject || row?.subject || ""));
+          setBody(String(previewJson?.body || ""));
+          setBodyManuallyEdited(false);
         }
 
-        if (row?.id) {
-          setMsg("Brouillon déjà sauvegardé pour ce mois. Tu peux le relire ou le régénérer.");
+        if (row?.id && preserveCurrentManualBody) {
+          setMsg("Les données automatiques ont été rafraîchies. Le texte manuel en cours a été conservé.");
+        } else if (row?.id) {
+          setMsg("Brouillon automatiquement remis à jour avec les données les plus récentes du mois.");
         }
       } catch (e) {
         setPreview(null);
@@ -264,7 +275,8 @@ export default function AdminPayrollEmailPage() {
     setToEmail(String(preview?.to_email || ""));
     setSubject(String(preview?.subject || ""));
     setBody(String(preview?.body || ""));
-    setMsg("Texte automatique régénéré depuis les absences, congés et notes actuellement enregistrés.");
+    setBodyManuallyEdited(false);
+    setMsg("Texte automatique régénéré depuis les absences, congés, notes et salariés actuellement enregistrés.");
     setErr("");
   }, [preview]);
 
@@ -300,7 +312,7 @@ export default function AdminPayrollEmailPage() {
         }
 
         setMsg(j?.deleted ? "Note mensuelle supprimée." : "Note mensuelle enregistrée.");
-        await loadPayrollEmail(month);
+        await loadPayrollEmail(month, { forceRegenerateBody: true });
       } catch (e) {
         setErr(e?.message || "Impossible d'enregistrer la note.");
       } finally {
@@ -520,7 +532,7 @@ export default function AdminPayrollEmailPage() {
             <button
               type="button"
               className="btn"
-              onClick={() => loadPayrollEmail(month)}
+              onClick={() => loadPayrollEmail(month, { forceRegenerateBody: true })}
               disabled={loadingPreview || !authChecked}
               style={{
                 backgroundColor: loadingPreview ? "#9ca3af" : "#2563eb",
@@ -655,7 +667,7 @@ export default function AdminPayrollEmailPage() {
         <div>
           <div className="hdr">Brouillon du mail</div>
           <div className="text-sm text-gray-600">
-            Tu peux modifier le texte avant de le sauvegarder ou de créer le brouillon Gmail.
+            Le texte se met à jour automatiquement avec les absences, congés, notes et salariés du mois. Tu peux encore le retoucher à la main juste avant de créer le brouillon Gmail.
           </div>
         </div>
 
@@ -672,11 +684,25 @@ export default function AdminPayrollEmailPage() {
         </div>
 
         <div>
-          <div className="text-sm mb-1">Contenu du mail</div>
+          <div className="text-sm mb-1 flex flex-wrap items-center gap-2">
+            <span>Contenu du mail</span>
+            {bodyManuallyEdited ? (
+              <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#fef3c7", color: "#92400e", fontWeight: 800 }}>
+                Modifié à la main dans cette session
+              </span>
+            ) : (
+              <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: "#dcfce7", color: "#166534", fontWeight: 800 }}>
+                Version automatique à jour
+              </span>
+            )}
+          </div>
           <textarea
             className="input"
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onChange={(e) => {
+              setBody(e.target.value);
+              setBodyManuallyEdited(true);
+            }}
             rows={18}
             style={{ minHeight: 360, whiteSpace: "pre-wrap" }}
           />
