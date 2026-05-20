@@ -1,4 +1,4 @@
-// pages/admin.js
+﻿// pages/admin.js
 /* Admin page – stable (stop profiles recursion + show totals via RPC)
    - Avoid any .from("profiles") calls in the client
    - Compute names with nameFromId (built from sellers list)
@@ -2171,6 +2171,9 @@ const deleteHandover = useCallback(
                           <a className="btn">🕒 Plages horaires</a>
                         </Link>
 
+                        <Link href="/admin/payroll-email" legacyBehavior>
+                          <a className="btn">ðŸ“¨ Mail paie comptable</a>
+                        </Link>
                         <Link href="/admin/retards-relais" legacyBehavior>
                           <a className="btn">⏱️ Retards / relais</a>
                         </Link>
@@ -3421,3 +3424,4 @@ function applyHandovers(dict, handovers) {
     </div>
   );
 }
+
