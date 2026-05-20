@@ -1,4 +1,4 @@
-/* eslint-disable react/no-unescaped-entities */
+﻿/* eslint-disable react/no-unescaped-entities */
 
 import Head from "next/head";
 import Link from "next/link";
@@ -194,6 +194,9 @@ export default function AdminPayslipsPage() {
   const [mailScanBusy, setMailScanBusy] = useState(false);
   const [mailScanSummary, setMailScanSummary] = useState(null);
   const [mailCandidates, setMailCandidates] = useState([]);
+  const [mailImportBusyByKey, setMailImportBusyByKey] = useState({});
+  const [mailImportMsgByKey, setMailImportMsgByKey] = useState({});
+  const [mailImportErrByKey, setMailImportErrByKey] = useState({});
 
   const [analysisByBatch, setAnalysisByBatch] = useState({});
   const [analysisBusyByBatch, setAnalysisBusyByBatch] = useState({});
@@ -492,6 +495,74 @@ export default function AdminPayslipsPage() {
       setMailScanBusy(false);
     }
   }, [authToken, mailScanSince]);
+  const importMailCandidate = useCallback(
+    async (item) => {
+      const key = `${item?.message_id || ""}:${item?.attachment_id || ""}`;
+      if (!item?.message_id || !item?.attachment_id) {
+        setMailErr("Piece jointe Gmail incomplete.");
+        return;
+      }
+
+      setMailErr("");
+      setMailMsg("");
+      setMailImportErrByKey((prev) => ({ ...(prev || {}), [key]: "" }));
+      setMailImportMsgByKey((prev) => ({ ...(prev || {}), [key]: "" }));
+      setMailImportBusyByKey((prev) => ({ ...(prev || {}), [key]: true }));
+
+      try {
+        const token = await authToken();
+        const resp = await fetch("/api/admin/payslips/mail/google/import", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(item),
+        });
+
+        const j = await resp.json().catch(() => ({}));
+        if (!resp.ok || j?.ok === false) {
+          throw new Error(j?.error || `Erreur API (${resp.status})`);
+        }
+
+        const analyzed = Number(j?.analysis_count || 0) || 0;
+        const created = Number(j?.created_count || 0) || 0;
+        const skipped = Number(j?.skipped_count || 0) || 0;
+        const already = j?.already_imported === true;
+
+        const message = already
+          ? "Deja importe auparavant."
+          : `Import Gmail termine : ${analyzed} fiche${analyzed > 1 ? "s" : ""} analysee${analyzed > 1 ? "s" : ""}, ${created} PDF cree${created > 1 ? "s" : ""}${skipped ? `, ${skipped} deja present${skipped > 1 ? "s" : ""}` : ""}.`;
+
+        setMailImportMsgByKey((prev) => ({ ...(prev || {}), [key]: message }));
+        setMailMsg(message);
+
+        if (j?.row?.id) {
+          setImports((prev) => {
+            const current = Array.isArray(prev) ? prev : [];
+            const withoutSame = current.filter((x) => String(x?.id || "") !== String(j.row.id || ""));
+            return [j.row, ...withoutSame];
+          });
+        }
+
+        if (Array.isArray(j?.items) && j?.batch_id) {
+          setAnalysisByBatch((prev) => ({
+            ...(prev || {}),
+            [j.batch_id]: j.items,
+          }));
+        }
+
+        await Promise.all([loadImports(), loadLeaveBalanceSuggestions()]);
+      } catch (e) {
+        const message = e?.message || "Import Gmail impossible.";
+        setMailImportErrByKey((prev) => ({ ...(prev || {}), [key]: message }));
+        setMailErr(message);
+      } finally {
+        setMailImportBusyByKey((prev) => ({ ...(prev || {}), [key]: false }));
+      }
+    },
+    [authToken, loadImports, loadLeaveBalanceSuggestions]
+  );
 
   const onSubmit = useCallback(async () => {
     setMsg("");
@@ -1075,16 +1146,45 @@ export default function AdminPayslipsPage() {
                   </div>
                 </div>
 
-                <span
-                  className="text-xs px-2 py-1 rounded-full self-start lg:self-auto"
-                  style={{
-                    backgroundColor: item.likely_payslip ? "#dcfce7" : "#e5e7eb",
-                    color: item.likely_payslip ? "#166534" : "#374151",
-                    fontWeight: 700,
-                  }}
-                >
-                  {mailCandidateScoreLabel(item.likely_payslip)}
-                </span>
+                <div className="flex flex-col gap-2 self-start lg:self-auto lg:items-end">
+                  <span
+                    className="text-xs px-2 py-1 rounded-full"
+                    style={{
+                      backgroundColor: item.likely_payslip ? "#dcfce7" : "#e5e7eb",
+                      color: item.likely_payslip ? "#166534" : "#374151",
+                      fontWeight: 700,
+                    }}
+                  >
+                    {item.mail_classification_label || mailCandidateScoreLabel(item.likely_payslip)}
+                    {item.detected_month ? ` Â· ${item.detected_month}` : ""}
+                  </span>
+
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => importMailCandidate(item)}
+                    disabled={!!mailImportBusyByKey?.[`${item.message_id}:${item.attachment_id}`]}
+                    style={{
+                      backgroundColor: mailImportBusyByKey?.[`${item.message_id}:${item.attachment_id}`] ? "#9ca3af" : "#16a34a",
+                      color: "#fff",
+                      borderColor: "transparent",
+                    }}
+                  >
+                    {mailImportBusyByKey?.[`${item.message_id}:${item.attachment_id}`] ? "Import..." : "Importer depuis Gmail"}
+                  </button>
+
+                  {mailImportMsgByKey?.[`${item.message_id}:${item.attachment_id}`] ? (
+                    <div className="text-xs text-green-700 max-w-xs text-right">
+                      {mailImportMsgByKey[`${item.message_id}:${item.attachment_id}`]}
+                    </div>
+                  ) : null}
+
+                  {mailImportErrByKey?.[`${item.message_id}:${item.attachment_id}`] ? (
+                    <div className="text-xs text-red-600 max-w-xs text-right">
+                      {mailImportErrByKey[`${item.message_id}:${item.attachment_id}`]}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ))}
           </div>
@@ -1578,3 +1678,4 @@ export default function AdminPayslipsPage() {
     </div>
   );
 }
+
