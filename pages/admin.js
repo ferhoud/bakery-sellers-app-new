@@ -193,73 +193,6 @@ const RejectBtn = ({ onClick, disabled = false, children = "Refuser" }) => (
     {children}
   </button>
 );
-
-const ADMIN_NAV_BUTTON_STYLE = {
-  width: "100%",
-  minHeight: 52,
-  padding: "11px 14px",
-  borderRadius: 18,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "flex-start",
-  gap: 10,
-  position: "relative",
-  overflow: "visible",
-  whiteSpace: "nowrap",
-  fontWeight: 800,
-  letterSpacing: "-0.01em",
-};
-
-const ADMIN_NAV_ICON_STYLE = {
-  width: 28,
-  height: 28,
-  borderRadius: 999,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  flex: "0 0 auto",
-  background: "rgba(255,255,255,0.12)",
-  fontSize: "1rem",
-};
-
-const ADMIN_NAV_BADGE_STYLE = {
-  position: "absolute",
-  top: -6,
-  right: -6,
-  minWidth: 20,
-  height: 20,
-  padding: "0 6px",
-  borderRadius: 999,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  fontSize: 12,
-  fontWeight: 900,
-  background: "#dc2626",
-  color: "#fff",
-  border: "2px solid #fff",
-  boxShadow: "0 2px 6px rgba(0,0,0,0.18)",
-  lineHeight: "20px",
-  zIndex: 20,
-};
-
-function AdminNavLink({ href, icon, label, title, badge = null, badgeTitle = "" }) {
-  return (
-    <Link href={href} legacyBehavior>
-      <a className="btn" title={title || label} style={ADMIN_NAV_BUTTON_STYLE}>
-        <span aria-hidden="true" style={ADMIN_NAV_ICON_STYLE}>
-          {icon}
-        </span>
-        <span>{label}</span>
-        {badge != null ? (
-          <span title={badgeTitle || String(badge)} style={ADMIN_NAV_BADGE_STYLE}>
-            {badge}
-          </span>
-        ) : null}
-      </a>
-    </Link>
-  );
-}
 function shiftHumanLabel(code) {
   return SHIFT_LABELS[code] || code || "-";
 }
@@ -2147,77 +2080,142 @@ const deleteHandover = useCallback(
       </div>
 
       <div className="p-3 max-w-7xl 2xl:max-w-screen-2xl mx-auto space-y-5">
-        <div
-          className="card"
-          style={{
-            padding: "14px",
-            borderRadius: 24,
-            border: "1px solid #e5e7eb",
-            boxShadow: "0 14px 34px rgba(15,23,42,0.06)",
-            background: "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)",
-          }}
-        >
-          <div className="flex items-center justify-between gap-3 flex-wrap" style={{ marginBottom: 12 }}>
-            <div>
-              <div style={{ fontWeight: 900, fontSize: "1rem", color: "#0f172a" }}>Navigation admin</div>
-              <div className="text-sm text-gray-600">
-                Accès rapide aux outils du quotidien, sans les empiler au hasard.
-              </div>
-            </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
+          <Link href="/admin/sellers" legacyBehavior>
+            <a className="btn" style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              👥 Gérer les vendeuses
+            </a>
+          </Link>
 
-            <button
-              type="button"
+          <Link href="/admin/checkins" legacyBehavior>
+            <a
               className="btn"
-              onClick={handleSignOut}
-              disabled={signingOut}
-              style={{
-                minHeight: 46,
-                padding: "10px 16px",
-                borderRadius: 16,
-                backgroundColor: "#dc2626",
-                borderColor: "transparent",
-                color: "#fff",
-                fontWeight: 900,
-                whiteSpace: "nowrap",
-              }}
+              title="Pointages manquants (alerte après 1h)"
+              style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, position: "relative", overflow: "visible" }}
             >
-              {signingOut ? "Déconnexion…" : "Se déconnecter"}
-            </button>
-          </div>
+              ⏱️ Pointage
+              {missingCheckinsCount > 0 ? (
+                <span
+                  title={`${missingCheckinsCount} pointage(s) manquant(s)`}
+                  style={{
+                    position: "absolute",
+                    top: -6,
+                    right: -6,
+                    minWidth: 20,
+                    height: 20,
+                    padding: "0 6px",
+                    borderRadius: 999,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 12,
+                    fontWeight: 900,
+                    background: "#ef4444",
+                    color: "#fff",
+                    border: "2px solid #fff",
+                    boxShadow: "0 2px 6px rgba(0,0,0,0.18)",
+                    lineHeight: "20px",
+                  }}
+                >
+                  {missingCheckinsCount}
+                </span>
+              ) : null}
+            </a>
+          </Link>
 
-          <div
+          <Link href="/admin/supervisors" legacyBehavior>
+            <a className="btn" style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              🖥️ Superviseur
+            </a>
+          </Link>
+
+          <Link href="/admin/monthly-hours" legacyBehavior>
+            <a
+              className="btn"
+              title="Validation des heures mensuelles"
+              style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, position: "relative", overflow: "visible" }}
+            >
+              🧾 Heures mensuelles
+              {mhBadgeCount != null && mhBadgeCount > 0 ? (
+                <span
+                  title={`${mhBadgeCount} à valider/refuser`}
+                  style={{
+                    position: "absolute",
+                    top: -6,
+                    right: -6,
+                    minWidth: 20,
+                    height: 20,
+                    padding: "0 6px",
+                    borderRadius: 999,
+                    background: "#dc2626",
+                    color: "#fff",
+                    fontSize: 12,
+                    fontWeight: 800,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    lineHeight: "20px",
+                    border: "2px solid #fff",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+                    zIndex: 20,
+                  }}
+                >
+                  {mhBadgeCount > 99 ? "99+" : mhBadgeCount}
+                </span>
+              ) : null}
+            </a>
+          </Link>
+
+          <Link href="/admin/leaves" legacyBehavior>
+            <a className="btn" style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              🏖️ Congés
+            </a>
+          </Link>
+
+          <Link href="/admin/payslips" legacyBehavior>
+            <a className="btn" style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              📄 Fiches de paie
+            </a>
+          </Link>
+
+          <Link href="/admin/payroll-email" legacyBehavior>
+            <a className="btn" style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              📨 Mail paie comptable
+            </a>
+          </Link>
+
+          <Link href="/admin/shift-types" legacyBehavior>
+            <a className="btn" style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              🕒 Plages horaires
+            </a>
+          </Link>
+
+          <Link href="/admin/retards-relais" legacyBehavior>
+            <a className="btn" style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              ⏱️ Retards / relais
+            </a>
+          </Link>
+
+          <button
+            type="button"
+            className="btn"
+            onClick={handleSignOut}
+            disabled={signingOut}
             style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(178px, 1fr))",
-              gap: 10,
-              alignItems: "stretch",
+              minHeight: 48,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              backgroundColor: "#dc2626",
+              borderColor: "transparent",
+              color: "#fff",
             }}
           >
-            <AdminNavLink href="/admin/sellers" icon="👥" label="Gérer les vendeuses" />
-            <AdminNavLink
-              href="/admin/checkins"
-              icon="⏱️"
-              label="Pointage"
-              title="Pointages manquants (alerte après 1h)"
-              badge={missingCheckinsCount > 0 ? missingCheckinsCount : null}
-              badgeTitle={`${missingCheckinsCount} pointage(s) manquant(s)`}
-            />
-            <AdminNavLink href="/admin/supervisors" icon="🖥️" label="Superviseur" />
-            <AdminNavLink
-              href="/admin/monthly-hours"
-              icon="🧾"
-              label="Heures mensuelles"
-              title="Validation des heures mensuelles"
-              badge={mhBadgeCount != null && mhBadgeCount > 0 ? (mhBadgeCount > 99 ? "99+" : mhBadgeCount) : null}
-              badgeTitle={`${mhBadgeCount || 0} à valider/refuser`}
-            />
-            <AdminNavLink href="/admin/leaves" icon="🏖️" label="Congés" />
-            <AdminNavLink href="/admin/payslips" icon="📄" label="Fiches de paie" />
-            <AdminNavLink href="/admin/shift-types" icon="🕒" label="Plages horaires" />
-            <AdminNavLink href="/admin/payroll-email" icon="📨" label="Mail paie comptable" />
-            <AdminNavLink href="/admin/retards-relais" icon="⏱️" label="Retards / relais" />
-          </div>
+            {signingOut ? "Déconnexion…" : "Se déconnecter"}
+          </button>
         </div>
+
         {missingCheckinsCount > 0 ? (
           <div
             className="card"
