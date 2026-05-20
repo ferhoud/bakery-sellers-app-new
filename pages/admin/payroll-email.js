@@ -28,6 +28,20 @@ function summaryValue(n) {
   return x.toLocaleString("fr-FR");
 }
 
+
+function formatIsoDateFr(value) {
+  const iso = String(value || "").slice(0, 10);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return "";
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return new Intl.DateTimeFormat("fr-FR", {
+    timeZone: "UTC",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(d);
+}
+
 export default function AdminPayrollEmailPage() {
   const router = useRouter();
   const { session: hookSession, profile: hookProfile } = useAuth();
@@ -126,6 +140,15 @@ export default function AdminPayrollEmailPage() {
 
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
+
+
+  const [newEmployee, setNewEmployee] = useState({
+    full_name: "",
+    base_line: "",
+    employment_start_date: "",
+    employment_end_date: "",
+  });
+  const [employeeCreateBusy, setEmployeeCreateBusy] = useState(false);
 
   useEffect(() => {
     if (!authChecked) return;
@@ -383,6 +406,75 @@ export default function AdminPayrollEmailPage() {
     }
   }, [authToken, body, month, subject, toEmail]);
 
+
+  const createPayrollEmployee = useCallback(async () => {
+    const fullName = String(newEmployee?.full_name || "").trim();
+    const baseLine = String(newEmployee?.base_line || "").trim();
+    const employmentStartDate = String(newEmployee?.employment_start_date || "").trim();
+    const employmentEndDate = String(newEmployee?.employment_end_date || "").trim();
+
+    setErr("");
+    setMsg("");
+
+    if (!fullName) {
+      setErr("Le nom du salarié est obligatoire.");
+      return;
+    }
+    if (!baseLine) {
+      setErr("La mention de contrat est obligatoire, par exemple : smic ou contrat de 20h.");
+      return;
+    }
+    if (!employmentStartDate) {
+      setErr("La date d'entrée est obligatoire pour savoir à partir de quel mois inclure le salarié.");
+      return;
+    }
+    if (employmentEndDate && employmentEndDate < employmentStartDate) {
+      setErr("La date de sortie ne peut pas être avant la date d'entrée.");
+      return;
+    }
+
+    setEmployeeCreateBusy(true);
+    try {
+      const token = await authToken();
+      if (!token) throw new Error("Jeton de session introuvable.");
+
+      const resp = await fetch("/api/admin/payroll-email/employees", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          full_name: fullName,
+          base_line: baseLine,
+          employment_start_date: employmentStartDate,
+          employment_end_date: employmentEndDate || null,
+        }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur ajout salarié (${resp.status})`);
+      }
+
+      setNewEmployee({
+        full_name: "",
+        base_line: "",
+        employment_start_date: "",
+        employment_end_date: "",
+      });
+
+      setMsg(
+        `Salarié ajouté : ${fullName}. Il apparaît automatiquement dans les mails couvrant sa période de contrat.`
+      );
+      await loadPayrollEmail(month);
+    } catch (e) {
+      setErr(e?.message || "Impossible d'ajouter le salarié.");
+    } finally {
+      setEmployeeCreateBusy(false);
+    }
+  }, [authToken, loadPayrollEmail, month, newEmployee]);
+
   const summary = preview?.summary || {};
   const employees = Array.isArray(preview?.employees) ? preview.employees : [];
 
@@ -478,6 +570,85 @@ export default function AdminPayrollEmailPage() {
 
         {err ? <div className="text-sm text-red-600">{err}</div> : null}
         {msg ? <div className="text-sm text-green-700">{msg}</div> : null}
+      </div>
+
+      <div className="card space-y-4">
+        <div>
+          <div className="hdr">Ajouter un salarié au mail de paie</div>
+          <div className="text-sm text-gray-600">
+            Utile pour une nouvelle embauche. La date d'entrée permet à l'application de l'inclure seulement à partir du bon mois.
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-3">
+          <div>
+            <div className="text-sm mb-1">Nom complet</div>
+            <input
+              className="input"
+              value={newEmployee.full_name}
+              onChange={(e) =>
+                setNewEmployee((prev) => ({ ...(prev || {}), full_name: e.target.value }))
+              }
+              placeholder="Ex. Ali Ben Salem"
+            />
+          </div>
+
+          <div>
+            <div className="text-sm mb-1">Mention de contrat</div>
+            <input
+              className="input"
+              value={newEmployee.base_line}
+              onChange={(e) =>
+                setNewEmployee((prev) => ({ ...(prev || {}), base_line: e.target.value }))
+              }
+              placeholder="Ex. contrat de 20h"
+            />
+          </div>
+
+          <div>
+            <div className="text-sm mb-1">Date d'entrée</div>
+            <input
+              type="date"
+              className="input"
+              value={newEmployee.employment_start_date}
+              onChange={(e) =>
+                setNewEmployee((prev) => ({ ...(prev || {}), employment_start_date: e.target.value }))
+              }
+            />
+          </div>
+
+          <div>
+            <div className="text-sm mb-1">Date de sortie, facultative</div>
+            <input
+              type="date"
+              className="input"
+              value={newEmployee.employment_end_date}
+              onChange={(e) =>
+                setNewEmployee((prev) => ({ ...(prev || {}), employment_end_date: e.target.value }))
+              }
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn"
+            onClick={createPayrollEmployee}
+            disabled={employeeCreateBusy}
+            style={{
+              backgroundColor: employeeCreateBusy ? "#9ca3af" : "#7c3aed",
+              color: "#fff",
+              borderColor: "transparent",
+            }}
+          >
+            {employeeCreateBusy ? "Ajout..." : "Ajouter le salarié"}
+          </button>
+
+          <div className="text-xs text-gray-500">
+            S'il commence pendant le mois choisi, le mail ajoute automatiquement une mention du type « début de contrat le 18 mai 2026 ».
+          </div>
+        </div>
       </div>
 
       <div className="card space-y-4">
@@ -580,6 +751,16 @@ export default function AdminPayrollEmailPage() {
                           ? `Relié à l'app vendeuses : ${employee?.seller_resolved_name || "compte vendeur détecté"}`
                           : "Pas relié à l'app vendeuses pour le moment."}
                       </div>
+                      {employee?.employment_start_date || employee?.employment_end_date ? (
+                        <div className="text-xs text-gray-500 mt-1">
+                          {employee?.employment_start_date
+                            ? `Entrée : ${formatIsoDateFr(employee.employment_start_date)}`
+                            : "Entrée : non renseignée"}
+                          {employee?.employment_end_date
+                            ? ` · Sortie : ${formatIsoDateFr(employee.employment_end_date)}`
+                            : ""}
+                        </div>
+                      ) : null}
                       {employee?.automatic_note ? (
                         <div className="text-xs mt-1" style={{ color: "#166534", fontWeight: 700 }}>
                           Automatique : {employee.automatic_note}
