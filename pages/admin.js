@@ -411,6 +411,12 @@ export default function AdminPage() {
   const [mhToReviewTotal, setMhToReviewTotal] = useState(null); // ✅ total à traiter (tous mois)
   const [mhLatestRows, setMhLatestRows] = useState([]);
 
+  /* ======= MAIL PAIE COMPTABLE : rappel fin de mois ======= */
+  const [payrollMailReminderCount, setPayrollMailReminderCount] = useState(0);
+  const [payrollMailReminderPhase, setPayrollMailReminderPhase] = useState("");
+  const [payrollMailReminderMonth, setPayrollMailReminderMonth] = useState("");
+  const lastPayrollMailNotifiedRef = useRef({ key: "", ts: 0 });
+
   const loadMonthlyHoursStats = useCallback(async () => {
     try {
       // 1) Total "admin à traiter" (mois sélectionné) quelle que soit la réponse vendeuse
@@ -1259,16 +1265,129 @@ const deleteHandover = useCallback(
     [loadReplacements]
   );
 
+
+  const loadPayrollMailReminderBadge = useCallback(async () => {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data?.session?.access_token;
+      if (!token) {
+        setPayrollMailReminderCount(0);
+        setPayrollMailReminderPhase("");
+        setPayrollMailReminderMonth("");
+        return;
+      }
+
+      const r = await fetch("/api/admin/payroll-email/reminder-status", {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+        cache: "no-store",
+      });
+
+      if (!r.ok) {
+        setPayrollMailReminderCount(0);
+        setPayrollMailReminderPhase("");
+        setPayrollMailReminderMonth("");
+        return;
+      }
+
+      const j = await r.json().catch(() => ({}));
+      const nextCount = Math.max(0, Number(j?.badge_count || 0) || 0);
+      setPayrollMailReminderCount(nextCount);
+      setPayrollMailReminderPhase(String(j?.phase || ""));
+      setPayrollMailReminderMonth(String(j?.month || ""));
+    } catch {
+      setPayrollMailReminderCount(0);
+      setPayrollMailReminderPhase("");
+      setPayrollMailReminderMonth("");
+    }
+  }, []);
+
   /* 🔔 BADGE + REFRESH AUTO (badge seulement) */
   useEffect(() => {
     const mhApp = mhToReviewTotal ?? mhToReviewCount ?? 0;
-    const count = (pendingAbs?.length || 0) + (pendingLeaves?.length || 0) + (replList?.length || 0) + (mhApp || 0);
+    const count = (pendingAbs?.length || 0) + (pendingLeaves?.length || 0) + (replList?.length || 0) + (mhApp || 0) + (payrollMailReminderCount || 0);
 
     const nav = typeof navigator !== "undefined" ? navigator : null;
     if (!nav) return;
     if (count > 0 && nav.setAppBadge) nav.setAppBadge(count).catch(() => {});
     else if (nav?.clearAppBadge) nav.clearAppBadge().catch(() => {});
-  }, [pendingAbs?.length, pendingLeaves?.length, replList?.length, mhToReviewTotal, mhToReviewCount]);
+  }, [pendingAbs?.length, pendingLeaves?.length, replList?.length, mhToReviewTotal, mhToReviewCount, payrollMailReminderCount]);
+
+
+  // Rappel visuel fin de mois : badge + notification admin quand le mail de paie mérite une action.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!payrollMailReminderCount || !payrollMailReminderPhase) return;
+
+    const phase = String(payrollMailReminderPhase || "");
+    const month = String(payrollMailReminderMonth || "");
+    const key = `${month || "current"}:${phase}`;
+    const now = Date.now();
+    const last = lastPayrollMailNotifiedRef.current || { key: "", ts: 0 };
+    if (last.key === key && now - (last.ts || 0) < 12 * 60 * 60 * 1000) return;
+
+    try {
+      const storageKey = `admin_payroll_mail_notice_${key}`;
+      const lastStored = Number(window.localStorage?.getItem(storageKey) || "0");
+      if (lastStored && now - lastStored < 12 * 60 * 60 * 1000) return;
+      window.localStorage?.setItem(storageKey, String(now));
+    } catch {}
+
+    lastPayrollMailNotifiedRef.current = { key, ts: now };
+
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+        const needsReview = phase === "needs_review";
+        const title = needsReview ? "📨 Mail de paie à vérifier" : "📨 Mail de paie prêt à envoyer";
+        const body = needsReview
+          ? "Le mail mensuel pour le comptable demande une vérification avant envoi."
+          : "Le mail mensuel est vérifié et reste prêt à être envoyé au comptable.";
+
+        if ("serviceWorker" in navigator) {
+          try {
+            let reg = await navigator.serviceWorker.getRegistration();
+            if (!reg) {
+              try {
+                reg = await navigator.serviceWorker.ready;
+              } catch {
+                reg = null;
+              }
+            }
+
+            if (!cancelled && reg && typeof reg.showNotification === "function") {
+              await reg.showNotification(title, {
+                body,
+                tag: `admin-payroll-mail-${phase}`,
+                renotify: true,
+                requireInteraction: true,
+                icon: "/icons/icon-192.png",
+                badge: "/icons/icon-192.png",
+                data: { url: "/admin/payroll-email" },
+              });
+              return;
+            }
+          } catch {}
+        }
+
+        if (!cancelled) {
+          try {
+            new Notification(title, {
+              body,
+              tag: `admin-payroll-mail-${phase}`,
+              requireInteraction: true,
+            });
+          } catch {}
+        }
+      } catch {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [payrollMailReminderCount, payrollMailReminderPhase, payrollMailReminderMonth]);
 
   /* ---- RELOAD ALL (central) ---- */
   const reloadAll = useCallback(async () => {
@@ -1291,6 +1410,7 @@ const deleteHandover = useCallback(
         loadMonthUpcomingAbsences?.(),
         loadMonthAcceptedRepl?.(),
         loadMonthlyHoursStats?.(),
+        loadPayrollMailReminderBadge?.(),
       ]);
       // PAS de setRefreshKey ici → évite les recalculs inutiles
     } finally {
@@ -1311,6 +1431,7 @@ const deleteHandover = useCallback(
     loadMonthUpcomingAbsences,
     loadMonthAcceptedRepl,
     loadMonthlyHoursStats,
+    loadPayrollMailReminderBadge,
   ]);
 
   // Initial load
@@ -2179,8 +2300,57 @@ const deleteHandover = useCallback(
           </Link>
 
           <Link href="/admin/payroll-email" legacyBehavior>
-            <a className="btn" style={{ minHeight: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <a
+              className="btn"
+              title={
+                payrollMailReminderPhase === "needs_review"
+                  ? "Mail de paie à vérifier avant envoi"
+                  : payrollMailReminderPhase === "ready_to_send"
+                    ? "Mail de paie vérifié, prêt à envoyer"
+                    : "Mail de paie comptable"
+              }
+              style={{
+                minHeight: 48,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                position: "relative",
+                overflow: "visible",
+              }}
+            >
               📨 Mail paie comptable
+              {payrollMailReminderCount > 0 ? (
+                <span
+                  title={
+                    payrollMailReminderPhase === "needs_review"
+                      ? "À vérifier"
+                      : "Prêt à envoyer"
+                  }
+                  style={{
+                    position: "absolute",
+                    top: -6,
+                    right: -6,
+                    minWidth: 20,
+                    height: 20,
+                    padding: "0 6px",
+                    borderRadius: 999,
+                    background: payrollMailReminderPhase === "ready_to_send" ? "#2563eb" : "#dc2626",
+                    color: "#fff",
+                    fontSize: 12,
+                    fontWeight: 800,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    lineHeight: "20px",
+                    border: "2px solid #fff",
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.25)",
+                    zIndex: 20,
+                  }}
+                >
+                  {payrollMailReminderPhase === "ready_to_send" ? "✓" : "!"}
+                </span>
+              ) : null}
             </a>
           </Link>
 
