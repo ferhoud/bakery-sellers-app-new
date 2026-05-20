@@ -1,13 +1,17 @@
-{
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "crons": [
-    {
-      "path": "/api/cron/monthly-hours",
-      "schedule": "7 3 * * *"
-    },
-    {
-      "path": "/api/cron/missing-checkin-push",
-      "schedule": "*/5 * * * *"
-    }
-  ]
+﻿{
+    "$schema":  "https://openapi.vercel.sh/vercel.json",
+    "crons":  [
+                  {
+                      "path":  "/api/cron/monthly-hours",
+                      "schedule":  "7 3 * * *"
+                  },
+                  {
+                      "path":  "/api/cron/missing-checkin-push",
+                      "schedule":  "*/5 * * * *"
+                  },
+                  {
+                      "path":  "/api/cron/payroll-email-refresh",
+                      "schedule":  "13 4 * * *"
+                  }
+              ]
 }

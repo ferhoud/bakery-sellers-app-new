@@ -42,6 +42,21 @@ function formatIsoDateFr(value) {
   }).format(d);
 }
 
+
+function formatDateTimeFr(value) {
+  if (!value) return "";
+  try {
+    const d = new Date(String(value));
+    if (Number.isNaN(d.getTime())) return "";
+    return d.toLocaleString("fr-FR", {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
+  } catch {
+    return "";
+  }
+}
+
 export default function AdminPayrollEmailPage() {
   const router = useRouter();
   const { session: hookSession, profile: hookProfile } = useAuth();
@@ -138,6 +153,9 @@ export default function AdminPayrollEmailPage() {
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [gmailDraftBusy, setGmailDraftBusy] = useState(false);
+  const [robotRefreshBusy, setRobotRefreshBusy] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [sendBusy, setSendBusy] = useState(false);
 
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
@@ -419,6 +437,125 @@ export default function AdminPayrollEmailPage() {
   }, [authToken, body, month, subject, toEmail]);
 
 
+  const refreshRobotTracking = useCallback(async () => {
+    setErr("");
+    setMsg("");
+    setRobotRefreshBusy(true);
+
+    try {
+      const token = await authToken();
+      if (!token) throw new Error("Jeton de session introuvable.");
+
+      const resp = await fetch("/api/admin/payroll-email/refresh", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ month }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur actualisation (${resp.status})`);
+      }
+
+      setSavedDraft(j?.row || null);
+      setMsg(
+        j?.changed
+          ? "Suivi automatique mis à jour : des changements ont été détectés et le mail repasse à vérifier."
+          : "Suivi automatique vérifié : aucun changement détecté depuis la dernière version."
+      );
+
+      await loadPayrollEmail(month, { forceRegenerateBody: true });
+    } catch (e) {
+      setErr(e?.message || "Impossible d'actualiser le suivi automatique.");
+    } finally {
+      setRobotRefreshBusy(false);
+    }
+  }, [authToken, loadPayrollEmail, month]);
+
+  const markPayrollEmailReviewed = useCallback(async () => {
+    setErr("");
+    setMsg("");
+    setReviewBusy(true);
+
+    try {
+      const token = await authToken();
+      if (!token) throw new Error("Jeton de session introuvable.");
+
+      const resp = await fetch("/api/admin/payroll-email/review", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          month,
+          to_email: toEmail,
+          subject,
+          body,
+        }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur validation (${resp.status})`);
+      }
+
+      setSavedDraft(j?.row || null);
+      setMsg("Mail marqué comme vérifié. Il reste prêt à être envoyé depuis l’application.");
+    } catch (e) {
+      setErr(e?.message || "Impossible de marquer le mail comme vérifié.");
+    } finally {
+      setReviewBusy(false);
+    }
+  }, [authToken, body, month, subject, toEmail]);
+
+  const sendPayrollEmailNow = useCallback(async () => {
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "Envoyer maintenant ce mail au comptable ? L'application bloquera tout deuxième envoi pour ce mois."
+      );
+      if (!ok) return;
+    }
+
+    setErr("");
+    setMsg("");
+    setSendBusy(true);
+
+    try {
+      const token = await authToken();
+      if (!token) throw new Error("Jeton de session introuvable.");
+
+      const resp = await fetch("/api/admin/payroll-email/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          month,
+          to_email: toEmail,
+          subject,
+          body,
+        }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur envoi (${resp.status})`);
+      }
+
+      setSavedDraft(j?.row || null);
+      setMsg("Mail envoyé au comptable depuis l’application. Aucun doublon ne sera autorisé pour ce mois.");
+    } catch (e) {
+      setErr(e?.message || "Impossible d'envoyer le mail au comptable.");
+    } finally {
+      setSendBusy(false);
+    }
+  }, [authToken, body, month, subject, toEmail]);
+
   const createPayrollEmployee = useCallback(async () => {
     const fullName = String(newEmployee?.full_name || "").trim();
     const baseLine = String(newEmployee?.base_line || "").trim();
@@ -489,6 +626,10 @@ export default function AdminPayrollEmailPage() {
 
   const summary = preview?.summary || {};
   const employees = Array.isArray(preview?.employees) ? preview.employees : [];
+  const robotRow = savedDraft || null;
+  const robotAlreadySent = !!robotRow?.sent_at;
+  const robotNeedsReview = !!robotRow?.needs_review && !robotAlreadySent;
+  const robotReviewed = !!robotRow?.reviewed_at && !robotNeedsReview && !robotAlreadySent;
 
   return (
     <div className="p-4 max-w-6xl mx-auto space-y-5">
@@ -585,6 +726,108 @@ export default function AdminPayrollEmailPage() {
       </div>
 
       <div className="card space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="hdr">Suivi automatique du mail mensuel</div>
+            <div className="text-sm text-gray-600">
+              L’application garde un seul mail de paie par mois, détecte les changements et empêche un deuxième envoi involontaire.
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {robotAlreadySent
+              ? statusPill("Envoyé", "#16a34a")
+              : robotNeedsReview
+                ? statusPill("À vérifier", "#dc2626")
+                : robotReviewed
+                  ? statusPill("Vérifié", "#2563eb")
+                  : statusPill("Suivi prêt", "#6b7280")}
+          </div>
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-3">
+          <div className="border rounded-2xl p-3">
+            <div className="text-xs text-gray-500">Dernière vérification automatique</div>
+            <div className="text-sm font-medium">
+              {formatDateTimeFr(robotRow?.last_auto_refresh_at) || "Pas encore initialisée"}
+            </div>
+          </div>
+
+          <div className="border rounded-2xl p-3">
+            <div className="text-xs text-gray-500">Dernier changement détecté</div>
+            <div className="text-sm font-medium">
+              {formatDateTimeFr(robotRow?.last_auto_change_at) || "Aucun changement enregistré"}
+            </div>
+          </div>
+
+          <div className="border rounded-2xl p-3">
+            <div className="text-xs text-gray-500">Dernière validation manuelle</div>
+            <div className="text-sm font-medium">
+              {formatDateTimeFr(robotRow?.reviewed_at) || "Pas encore validé"}
+            </div>
+          </div>
+        </div>
+
+        {robotAlreadySent ? (
+          <div className="text-sm text-green-700">
+            Envoyé le {formatDateTimeFr(robotRow?.sent_at) || "—"}. Le système bloque tout nouvel envoi pour ce même mois.
+          </div>
+        ) : robotNeedsReview ? (
+          <div className="text-sm text-red-700">
+            Le contenu automatique a changé depuis la dernière version suivie. Vérifie le mail avant l’envoi.
+          </div>
+        ) : (
+          <div className="text-sm text-gray-600">
+            Ce suivi sera rafraîchi automatiquement une fois par jour par le cron. Tu peux aussi forcer une actualisation ici.
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            className="btn"
+            onClick={refreshRobotTracking}
+            disabled={robotRefreshBusy}
+            style={{
+              backgroundColor: robotRefreshBusy ? "#9ca3af" : "#475569",
+              color: "#fff",
+              borderColor: "transparent",
+            }}
+          >
+            {robotRefreshBusy ? "Actualisation..." : "Actualiser le suivi"}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            onClick={markPayrollEmailReviewed}
+            disabled={reviewBusy || !preview || robotAlreadySent}
+            style={{
+              backgroundColor: reviewBusy || robotAlreadySent ? "#9ca3af" : "#2563eb",
+              color: "#fff",
+              borderColor: "transparent",
+            }}
+          >
+            {reviewBusy ? "Validation..." : "Marquer comme vérifié"}
+          </button>
+
+          <button
+            type="button"
+            className="btn"
+            onClick={sendPayrollEmailNow}
+            disabled={sendBusy || !preview || robotAlreadySent}
+            style={{
+              backgroundColor: sendBusy || robotAlreadySent ? "#9ca3af" : "#16a34a",
+              color: "#fff",
+              borderColor: "transparent",
+            }}
+          >
+            {sendBusy ? "Envoi..." : robotAlreadySent ? "Déjà envoyé" : "Envoyer maintenant"}
+          </button>
+        </div>
+      </div>
+
+      <div className="card space-y-4">
         <div>
           <div className="hdr">Ajouter un salarié au mail de paie</div>
           <div className="text-sm text-gray-600">
@@ -667,7 +910,7 @@ export default function AdminPayrollEmailPage() {
         <div>
           <div className="hdr">Brouillon du mail</div>
           <div className="text-sm text-gray-600">
-            Le texte se met à jour automatiquement avec les absences, congés, notes et salariés du mois. Tu peux encore le retoucher à la main juste avant de créer le brouillon Gmail.
+            Le texte se met à jour automatiquement avec les absences, congés, notes et salariés du mois. Tu peux encore le retoucher à la main juste avant de le valider ou de l’envoyer depuis l’application.
           </div>
         </div>
 
