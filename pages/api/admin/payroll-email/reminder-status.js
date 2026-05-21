@@ -113,7 +113,11 @@ export default async function handler(req, res) {
 
     const p = parisParts();
     const parisDay = Number(p.day || 0) || 0;
-    const reminderWindowActive = parisDay >= 27;
+    const forceTest =
+      String(req.query?.force || "") === "1" ||
+      String(req.query?.test || "") === "1" ||
+      String(req.query?.testPayrollReminder || "") === "1";
+    const reminderWindowActive = forceTest || parisDay >= 27;
     const phase = phaseForRow(row, reminderWindowActive);
     const active = phase === "needs_review" || phase === "ready_to_send";
 
@@ -123,6 +127,7 @@ export default async function handler(req, res) {
       payroll_month: month.payroll_month,
       reminder_window_active: reminderWindowActive,
       reminder_window_starts_day: 27,
+      test_mode: forceTest,
       phase,
       active,
       badge_count: active ? 1 : 0,

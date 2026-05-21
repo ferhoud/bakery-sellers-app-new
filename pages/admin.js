@@ -415,6 +415,7 @@ export default function AdminPage() {
   const [payrollMailReminderCount, setPayrollMailReminderCount] = useState(0);
   const [payrollMailReminderPhase, setPayrollMailReminderPhase] = useState("");
   const [payrollMailReminderMonth, setPayrollMailReminderMonth] = useState("");
+  const [payrollMailReminderTestMode, setPayrollMailReminderTestMode] = useState(false);
   const lastPayrollMailNotifiedRef = useRef({ key: "", ts: 0 });
 
   const loadMonthlyHoursStats = useCallback(async () => {
@@ -1274,10 +1275,20 @@ const deleteHandover = useCallback(
         setPayrollMailReminderCount(0);
         setPayrollMailReminderPhase("");
         setPayrollMailReminderMonth("");
+        setPayrollMailReminderTestMode(false);
         return;
       }
 
-      const r = await fetch("/api/admin/payroll-email/reminder-status", {
+      const testMode =
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("testPayrollReminder") === "1";
+      setPayrollMailReminderTestMode(!!testMode);
+
+      const url = testMode
+        ? "/api/admin/payroll-email/reminder-status?force=1"
+        : "/api/admin/payroll-email/reminder-status";
+
+      const r = await fetch(url, {
         method: "GET",
         headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
@@ -1299,6 +1310,7 @@ const deleteHandover = useCallback(
       setPayrollMailReminderCount(0);
       setPayrollMailReminderPhase("");
       setPayrollMailReminderMonth("");
+      setPayrollMailReminderTestMode(false);
     }
   }, []);
 
@@ -1321,7 +1333,7 @@ const deleteHandover = useCallback(
 
     const phase = String(payrollMailReminderPhase || "");
     const month = String(payrollMailReminderMonth || "");
-    const key = `${month || "current"}:${phase}`;
+    const key = `${month || "current"}:${phase}:${payrollMailReminderTestMode ? "test" : "real"}`;
     const now = Date.now();
     const last = lastPayrollMailNotifiedRef.current || { key: "", ts: 0 };
     if (last.key === key && now - (last.ts || 0) < 12 * 60 * 60 * 1000) return;
@@ -1387,7 +1399,7 @@ const deleteHandover = useCallback(
     return () => {
       cancelled = true;
     };
-  }, [payrollMailReminderCount, payrollMailReminderPhase, payrollMailReminderMonth]);
+  }, [payrollMailReminderCount, payrollMailReminderPhase, payrollMailReminderMonth, payrollMailReminderTestMode]);
 
   /* ---- RELOAD ALL (central) ---- */
   const reloadAll = useCallback(async () => {
@@ -2385,6 +2397,34 @@ const deleteHandover = useCallback(
             {signingOut ? "Déconnexion…" : "Se déconnecter"}
           </button>
         </div>
+
+        {payrollMailReminderTestMode ? (
+          <div
+            className="card"
+            style={{
+              borderColor: "#f59e0b",
+              background: "#fffbeb",
+            }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div style={{ fontWeight: 800, color: "#92400e" }}>Mode test rappel paie actif</div>
+                <div className="text-sm" style={{ color: "#92400e" }}>
+                  Le rappel de fin de mois est forcé comme si nous étions le 27. Le vrai fonctionnement restera automatique à partir du 27.
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <Link href="/admin/payroll-email" legacyBehavior>
+                  <a className="btn">Ouvrir le mail paie</a>
+                </Link>
+                <Link href="/admin" legacyBehavior>
+                  <a className="btn">Quitter le test</a>
+                </Link>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {missingCheckinsCount > 0 ? (
           <div
