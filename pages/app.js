@@ -425,8 +425,21 @@ useEffect(() => {
         throw error;
       }
 
-      const minutes = Math.round((data || []).reduce((sum, row) => sum + (Number(row?.minutes || 0) || 0), 0));
-      return { minutes, unsupported: false, error: null };
+      let positiveMinutes = 0;
+      let negativeMinutes = 0;
+      (data || []).forEach((row) => {
+        const m = Math.round(Number(row?.minutes || 0) || 0);
+        if (m >= 0) positiveMinutes += m;
+        else negativeMinutes += Math.abs(m);
+      });
+
+      return {
+        minutes: Math.round(positiveMinutes - negativeMinutes),
+        positiveMinutes: Math.round(positiveMinutes),
+        negativeMinutes: Math.round(negativeMinutes),
+        unsupported: false,
+        error: null,
+      };
     } catch (e) {
       return { minutes: 0, unsupported: false, error: e };
     }
@@ -1680,10 +1693,13 @@ useEffect(() => {
       const extraWork = await loadExtraWorkMinutesRange(myMonthFromPast, myMonthToPast);
       if (extraWork?.error) throw extraWork.error;
 
+      const extraPositive = Number(extraWork?.positiveMinutes ?? extraWork?.minutes ?? 0) || 0;
+      const extraNegative = Number(extraWork?.negativeMinutes || 0) || 0;
+
       setMonthDelta({
-        extraMinutes: Math.round(relayExtra + (Number(extraWork?.minutes || 0) || 0)),
-        delayMinutes: Math.round(relayDelay),
-        netMinutes: Math.round(relayNet + (Number(extraWork?.minutes || 0) || 0)),
+        extraMinutes: Math.round(relayExtra + extraPositive),
+        delayMinutes: Math.round(relayDelay + extraNegative),
+        netMinutes: Math.round(relayNet + extraPositive - extraNegative),
       });
       setMonthDeltaUnsupported(Boolean(relayUnsupported && extraWork?.unsupported));
     } catch (e) {
@@ -1920,7 +1936,7 @@ useEffect(() => {
               </div>
               <div className="text-xs text-gray-500 mt-1">
                 Pointage: retard {pDelay} min{pExtra > 0 ? ` • avance ${pExtra} min` : ""}
-                {!monthDeltaUnsupported ? ` • Relais / travail en plus manuel: retard ${rDelay} min${rExtra > 0 ? ` / extra ${rExtra} min` : ""}` : ""}
+                {!monthDeltaUnsupported ? ` • Corrections admin: retard/départ anticipé ${rDelay} min${rExtra > 0 ? ` / extra ${rExtra} min` : ""}` : ""}
               </div>
             </div>
           );

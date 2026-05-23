@@ -23,14 +23,17 @@ export default async function handler(req, res) {
   if (!isIsoDate(work_date) || !seller_id || !start_time || !end_time) {
     return res.status(400).json({ error: "Données incomplètes" });
   }
-  if (!["manual_extra", "coverage", "relay"].includes(kind)) {
+  if (!["manual_extra", "coverage", "relay", "early_departure"].includes(kind)) {
     return res.status(400).json({ error: "Type invalide" });
   }
 
-  const minutes = minutesBetweenTimes(start_time, end_time);
-  if (!minutes || minutes <= 0) {
+  const rawMinutes = minutesBetweenTimes(start_time, end_time);
+  if (!rawMinutes || rawMinutes <= 0) {
     return res.status(400).json({ error: "Plage horaire invalide" });
   }
+
+  const minutes = kind === "early_departure" ? -Math.abs(rawMinutes) : Math.abs(rawMinutes);
+  const finalReason = reason || (kind === "early_departure" ? "Départ anticipé" : "Travail en plus");
 
   const { data, error } = await service
     .from("extra_work_entries")
@@ -41,7 +44,7 @@ export default async function handler(req, res) {
       end_time,
       minutes,
       kind,
-      reason,
+      reason: finalReason,
       notes: notes || null,
       source: "ADMIN",
       created_by: user.id,

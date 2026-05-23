@@ -265,6 +265,7 @@ export default function WorkHistoryPage() {
   // Détails quotidiens affichés directement dans chaque créneau historique
   // - daily_checkins : avance / retard de pointage
   // - extra_work_entries(kind=coverage) : minutes de couverture attribuées par l'admin
+  // - extra_work_entries(kind=early_departure) : départs anticipés saisis par l'admin
   const [dailyCheckinRows, setDailyCheckinRows] = useState([]);
   const [coverageRows, setCoverageRows] = useState([]);
   const [shiftDetailsLoading, setShiftDetailsLoading] = useState(false);
@@ -388,7 +389,7 @@ export default function WorkHistoryPage() {
       let extraRows = [];
       const { data: coverageData, error: coverageErr } = await supabase
         .from("extra_work_entries")
-        .select("work_date, minutes, kind, reason")
+        .select("work_date, minutes, kind, reason, notes")
         .eq("seller_id", userId)
         .gte("work_date", selectedMonthStartIso)
         .lte("work_date", selectedMonthEndIso)
@@ -404,7 +405,7 @@ export default function WorkHistoryPage() {
         if (missingKind) {
           const { data: fallbackRows, error: fallbackErr } = await supabase
             .from("extra_work_entries")
-            .select("work_date, minutes, reason")
+            .select("work_date, minutes, reason, notes")
             .eq("seller_id", userId)
             .gte("work_date", selectedMonthStartIso)
             .lte("work_date", selectedMonthEndIso)
@@ -496,6 +497,21 @@ export default function WorkHistoryPage() {
     return map;
   }, [coverageRows]);
 
+  const earlyDepartureMinutesByDate = useMemo(() => {
+    const map = {};
+    (coverageRows || []).forEach((row) => {
+      const day = String(row?.work_date || "");
+      if (!day) return;
+      const kind = String(row?.kind || "").trim().toLowerCase();
+      const signed = Math.round(Number(row?.minutes || 0) || 0);
+      if (kind !== "early_departure" && signed >= 0) return;
+      const minutes = Math.abs(signed);
+      if (!minutes) return;
+      map[day] = (map[day] || 0) + minutes;
+    });
+    return map;
+  }, [coverageRows]);
+
   const monthRowsAlreadyPassed = useMemo(
     () => (historyRows || []).filter((row) => String(row?.date || "") <= todayIso),
     [historyRows, todayIso]
@@ -580,10 +596,20 @@ export default function WorkHistoryPage() {
           throw error;
         }
 
-        const minutes = Math.round(
-          (data || []).reduce((sum, row) => sum + (Number(row?.minutes || 0) || 0), 0)
-        );
-        return { minutes, unsupported: false, error: null };
+        let positiveMinutes = 0;
+        let negativeMinutes = 0;
+        (data || []).forEach((row) => {
+          const m = Math.round(Number(row?.minutes || 0) || 0);
+          if (m >= 0) positiveMinutes += m;
+          else negativeMinutes += Math.abs(m);
+        });
+        return {
+          minutes: Math.round(positiveMinutes - negativeMinutes),
+          positiveMinutes: Math.round(positiveMinutes),
+          negativeMinutes: Math.round(negativeMinutes),
+          unsupported: false,
+          error: null,
+        };
       } catch (e) {
         return { minutes: 0, unsupported: false, error: e };
       }
@@ -679,10 +705,13 @@ export default function WorkHistoryPage() {
       const extraWork = await loadExtraWorkMinutesRange(monthStartPrev, monthEndPrev);
       if (extraWork?.error) throw extraWork.error;
 
+      const extraPositive = Number(extraWork?.positiveMinutes ?? extraWork?.minutes ?? 0) || 0;
+      const extraNegative = Number(extraWork?.negativeMinutes || 0) || 0;
+
       setPrevDelta({
-        extraMinutes: Math.round(relayExtra + (Number(extraWork?.minutes || 0) || 0)),
-        delayMinutes: Math.round(relayDelay),
-        netMinutes: Math.round(relayNet + (Number(extraWork?.minutes || 0) || 0)),
+        extraMinutes: Math.round(relayExtra + extraPositive),
+        delayMinutes: Math.round(relayDelay + extraNegative),
+        netMinutes: Math.round(relayNet + extraPositive - extraNegative),
       });
       setPrevDeltaUnsupported(Boolean(relayUnsupported && extraWork?.unsupported));
     } catch (e) {
@@ -1025,6 +1054,7 @@ export default function WorkHistoryPage() {
               const dayRows = [...orderedRows, ...fallbackRows];
               const dayCheckin = checkinInfoByDate?.[iso] || null;
               const dayCoverageMinutes = Number(coverageMinutesByDate?.[iso] || 0) || 0;
+              const dayEarlyDepartureMinutes = Number(earlyDepartureMinutesByDate?.[iso] || 0) || 0;
 
               return (
                 <div
@@ -1055,7 +1085,7 @@ export default function WorkHistoryPage() {
                         >
                           <div>{getShiftLabel(row.date, row.shift_code)}</div>
 
-                          {(dayCheckin?.earlyMinutes > 0 || dayCheckin?.lateMinutes > 0 || dayCoverageMinutes > 0) && (
+                          {(dayCheckin?.earlyMinutes > 0 || dayCheckin?.lateMinutes > 0 || dayCoverageMinutes > 0 || dayEarlyDepartureMinutes > 0) && (
                             <div className="mt-2 space-y-1">
                               {dayCheckin?.earlyMinutes > 0 && (
                                 <div
@@ -1081,6 +1111,15 @@ export default function WorkHistoryPage() {
                                   style={{ backgroundColor: "#dcfce7", color: "#166534" }}
                                 >
                                   +{fmtMinutesHM(dayCoverageMinutes)} couverture
+                                </div>
+                              )}
+
+                              {dayEarlyDepartureMinutes > 0 && (
+                                <div
+                                  className="rounded-lg px-2 py-1 text-[11px] font-semibold"
+                                  style={{ backgroundColor: "#fee2e2", color: "#991b1b" }}
+                                >
+                                  -{fmtMinutesHM(dayEarlyDepartureMinutes)} départ anticipé
                                 </div>
                               )}
                             </div>
