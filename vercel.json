@@ -12,6 +12,10 @@
                   {
                       "path":  "/api/cron/payroll-email-refresh",
                       "schedule":  "13 4 * * *"
+                  },
+                  {
+                      "path":  "/api/cron/payslip-return-scan",
+                      "schedule":  "41 5 * * *"
                   }
               ]
 }
