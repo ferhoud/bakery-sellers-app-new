@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+﻿import { createClient } from "@supabase/supabase-js";
 import { isAdminEmail } from "@/lib/admin";
 
 function json(res, status, body) {
@@ -81,6 +81,28 @@ function bodyObject(req) {
   return req.body || {};
 }
 
+function isGmailReconnectRequiredError(e) {
+  const raw = [
+    e?.message,
+    e?.error,
+    e?.payload?.error,
+    e?.payload?.error_description,
+    e?.payload?.error?.message,
+    e?.payload?.message,
+    typeof e?.payload === "string" ? e.payload : "",
+  ]
+    .map((x) => String(x || ""))
+    .join(" ")
+    .toLowerCase();
+
+  return (
+    raw.includes("token has been expired or revoked") ||
+    raw.includes("expired or revoked") ||
+    raw.includes("invalid_grant") ||
+    raw.includes("revoked") ||
+    raw.includes("invalid credentials")
+  );
+}
 function hasSendScope(scopeValue) {
   const scope = String(scopeValue || "");
   return (
@@ -277,6 +299,16 @@ export default async function handler(req, res) {
       gmail_message_id: String(gmailMessage?.id || "").trim() || null,
     });
   } catch (e) {
+    if (isGmailReconnectRequiredError(e)) {
+      return json(res, 409, {
+        ok: false,
+        code: "GMAIL_RECONNECT_REQUIRED",
+        error:
+          "Connexion Gmail expirÃ©e ou rÃ©voquÃ©e. Reconnecte Gmail depuis la page Fiches de paie, puis rÃ©essaie lâ€™envoi.",
+      });
+    }
+
     return json(res, 500, { ok: false, error: e?.message || "Server error" });
   }
 }
+
