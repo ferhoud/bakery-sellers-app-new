@@ -1,5 +1,11 @@
-﻿import { createClient } from "@supabase/supabase-js";
+import { createClient } from "@supabase/supabase-js";
 import { isAdminEmail } from "@/lib/admin";
+import { refreshPayrollEmailRecord } from "@/lib/server/payrollEmail";
+import {
+  gmailReconnectMessage,
+  isGmailReconnectRequiredError,
+  sendPayrollEmailViaGmail,
+} from "@/lib/server/payrollGmailSend";
 
 function json(res, status, body) {
   res.setHeader("Cache-Control", "no-store");
@@ -60,16 +66,6 @@ async function requireAdmin(req) {
   return { admin, user };
 }
 
-
-import { refreshPayrollEmailRecord } from "@/lib/server/payrollEmail";
-import {
-  GOOGLE_MAIL_PROVIDER,
-  decryptSecret,
-  encryptSecret,
-  expiresAtFromTokenResponse,
-  refreshGoogleTokens,
-} from "@/lib/server/googlePayslipMail";
-
 function bodyObject(req) {
   if (typeof req.body === "string") {
     try {
@@ -79,140 +75,6 @@ function bodyObject(req) {
     }
   }
   return req.body || {};
-}
-
-function isGmailReconnectRequiredError(e) {
-  const raw = [
-    e?.message,
-    e?.error,
-    e?.payload?.error,
-    e?.payload?.error_description,
-    e?.payload?.error?.message,
-    e?.payload?.message,
-    typeof e?.payload === "string" ? e.payload : "",
-  ]
-    .map((x) => String(x || ""))
-    .join(" ")
-    .toLowerCase();
-
-  return (
-    raw.includes("token has been expired or revoked") ||
-    raw.includes("expired or revoked") ||
-    raw.includes("invalid_grant") ||
-    raw.includes("revoked") ||
-    raw.includes("invalid credentials")
-  );
-}
-function hasSendScope(scopeValue) {
-  const scope = String(scopeValue || "");
-  return (
-    scope.includes("https://www.googleapis.com/auth/gmail.compose") ||
-    scope.includes("https://www.googleapis.com/auth/gmail.send") ||
-    scope.includes("https://www.googleapis.com/auth/gmail.modify") ||
-    scope.includes("https://mail.google.com/")
-  );
-}
-
-function encodeMimeHeader(value) {
-  const raw = String(value || "");
-  return `=?UTF-8?B?${Buffer.from(raw, "utf8").toString("base64")}?=`;
-}
-
-function base64UrlEncode(value) {
-  return Buffer.from(String(value || ""), "utf8")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
-
-function buildRawMail({ toEmail, subject, body }) {
-  const headers = [
-    `To: ${toEmail}`,
-    `Subject: ${encodeMimeHeader(subject)}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset="UTF-8"',
-    'Content-Transfer-Encoding: 8bit',
-    "",
-  ];
-  return base64UrlEncode(`${headers.join("\r\n")}${String(body || "").replace(/\n/g, "\r\n")}`);
-}
-
-async function gmailJson(accessToken, url, options = {}) {
-  const resp = await fetch(url, {
-    method: options.method || "GET",
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-
-  const text = await resp.text().catch(() => "");
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch (_) {
-    data = text || null;
-  }
-
-  if (!resp.ok) {
-    const message =
-      data?.error?.message ||
-      data?.message ||
-      (typeof data === "string" ? data : "") ||
-      `Erreur Gmail (${resp.status})`;
-    const err = new Error(message);
-    err.status = resp.status;
-    err.payload = data;
-    throw err;
-  }
-
-  return data;
-}
-
-async function loadConnectionWithAccessToken(admin, userId) {
-  const { data: conn, error } = await admin
-    .from("admin_mail_connections")
-    .select("*")
-    .eq("provider", GOOGLE_MAIL_PROVIDER)
-    .eq("user_id", userId)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!conn) throw new Error("Aucune boîte Gmail connectée.");
-
-  let accessToken = decryptSecret(conn.access_token_encrypted);
-  const refreshToken = decryptSecret(conn.refresh_token_encrypted);
-  let scope = String(conn.scope || "");
-  const expiresAt = conn.access_token_expires_at ? new Date(conn.access_token_expires_at).getTime() : 0;
-
-  if (!accessToken || !refreshToken || expiresAt <= Date.now() + 60_000) {
-    if (!refreshToken) throw new Error("Jeton de rafraîchissement Gmail manquant.");
-
-    const refreshed = await refreshGoogleTokens(refreshToken);
-    accessToken = String(refreshed?.access_token || "");
-    const nextRefresh = String(refreshed?.refresh_token || refreshToken);
-    scope = String(refreshed?.scope || conn.scope || "");
-
-    if (!accessToken) throw new Error("Rafraîchissement Gmail incomplet.");
-
-    const { error: updateErr } = await admin
-      .from("admin_mail_connections")
-      .update({
-        access_token_encrypted: encryptSecret(accessToken),
-        refresh_token_encrypted: encryptSecret(nextRefresh),
-        access_token_expires_at: expiresAtFromTokenResponse(refreshed),
-        scope,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("provider", GOOGLE_MAIL_PROVIDER)
-      .eq("user_id", userId);
-
-    if (updateErr) throw updateErr;
-  }
-
-  return { accessToken, scope };
 }
 
 export default async function handler(req, res) {
@@ -232,6 +94,7 @@ export default async function handler(req, res) {
     if (!row?.id) {
       return json(res, 500, { ok: false, error: "Suivi mensuel introuvable après actualisation." });
     }
+
     if (row?.sent_at) {
       return json(res, 409, {
         ok: false,
@@ -251,25 +114,12 @@ export default async function handler(req, res) {
     if (!subject) return json(res, 400, { ok: false, error: "Objet du mail vide." });
     if (!mailBody) return json(res, 400, { ok: false, error: "Contenu du mail vide." });
 
-    const { accessToken, scope } = await loadConnectionWithAccessToken(auth.admin, auth.user.id);
-    if (!hasSendScope(scope)) {
-      return json(res, 409, {
-        ok: false,
-        code: "GMAIL_SEND_SCOPE_REQUIRED",
-        error:
-          "La boîte Gmail connectée n’a pas encore le droit d’envoyer. Reconnecte Gmail avec le droit de composition/envoi.",
-      });
-    }
-
-    const raw = buildRawMail({ toEmail, subject, body: mailBody });
-    const gmailMessage = await gmailJson(
-      accessToken,
-      "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-      {
-        method: "POST",
-        body: { raw },
-      }
-    );
+    const sent = await sendPayrollEmailViaGmail(auth.admin, {
+      userId: auth.user.id,
+      toEmail,
+      subject,
+      body: mailBody,
+    });
 
     const now = new Date().toISOString();
     const { data: saved, error: saveErr } = await auth.admin
@@ -283,7 +133,7 @@ export default async function handler(req, res) {
         needs_review: false,
         status: "sent",
         sent_at: now,
-        sent_gmail_message_id: String(gmailMessage?.id || "").trim() || null,
+        sent_gmail_message_id: sent.gmail_message_id,
         last_send_error: null,
         updated_at: now,
       })
@@ -296,19 +146,17 @@ export default async function handler(req, res) {
     return json(res, 200, {
       ok: true,
       row: saved,
-      gmail_message_id: String(gmailMessage?.id || "").trim() || null,
+      gmail_message_id: sent.gmail_message_id,
     });
   } catch (e) {
     if (isGmailReconnectRequiredError(e)) {
       return json(res, 409, {
         ok: false,
         code: "GMAIL_RECONNECT_REQUIRED",
-        error:
-          "Connexion Gmail expirÃ©e ou rÃ©voquÃ©e. Reconnecte Gmail depuis la page Fiches de paie, puis rÃ©essaie lâ€™envoi.",
+        error: gmailReconnectMessage("l’envoi"),
       });
     }
 
     return json(res, 500, { ok: false, error: e?.message || "Server error" });
   }
 }
-
