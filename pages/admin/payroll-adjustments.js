@@ -108,7 +108,7 @@ export default function PayrollAdjustmentsPage() {
       const nextDrafts = {};
       nextRows.forEach((row) => {
         nextDrafts[row.seller_id] = {
-          payslip_hours: numInputValue(row.payslip_hours),
+          payslip_hours: row.payslip_hours_entered ? numInputValue(row.payslip_hours) : "",
           hourly_rate: numInputValue(row.hourly_rate),
           paid_leave_days_override:
             row.paid_leave_days_override == null ? "" : numInputValue(row.paid_leave_days_override),
@@ -146,20 +146,39 @@ export default function PayrollAdjustmentsPage() {
 
   const localCalc = (row) => {
     const d = drafts?.[row.seller_id] || {};
-    const payslipHours = parseNum(d.payslip_hours) ?? 0;
+    const payslipHours = parseNum(d.payslip_hours);
+    const hasPayslipHours = payslipHours !== null;
     const hourlyRate = parseNum(d.hourly_rate) ?? 0;
+
     const leaveDays =
       d.paid_leave_days_override === "" || d.paid_leave_days_override == null
         ? Number(row.auto_paid_leave_days || 0)
         : parseNum(d.paid_leave_days_override) ?? 0;
+
     const leaveHoursPerDay = parseNum(d.paid_leave_hours_per_day) ?? 7;
     const paidLeaveHours = Math.round(leaveDays * leaveHoursPerDay * 100) / 100;
     const totalDue = Math.round((Number(row.app_worked_hours || 0) + paidLeaveHours) * 100) / 100;
+
+    if (!hasPayslipHours) {
+      return {
+        hasPayslipHours: false,
+        payslipHours: null,
+        hourlyRate,
+        leaveDays,
+        paidLeaveHours,
+        totalDue,
+        diff: null,
+        complementHours: null,
+        amount: null,
+      };
+    }
+
     const diff = Math.round((totalDue - payslipHours) * 100) / 100;
     const complementHours = Math.max(0, diff);
     const amount = Math.round(complementHours * hourlyRate * 100) / 100;
 
     return {
+      hasPayslipHours: true,
       payslipHours,
       hourlyRate,
       leaveDays,
@@ -177,12 +196,18 @@ export default function PayrollAdjustmentsPage() {
       acc.totalApp += Number(row.app_worked_hours || 0);
       acc.totalLeave += calc.paidLeaveHours;
       acc.totalDue += calc.totalDue;
-      acc.totalPayslip += calc.payslipHours;
-      acc.totalComplementHours += calc.complementHours;
-      acc.totalComplementAmount += calc.amount;
+
+      if (calc.hasPayslipHours) {
+        acc.enteredCount += 1;
+        acc.totalPayslip += calc.payslipHours || 0;
+        acc.totalComplementHours += calc.complementHours || 0;
+        acc.totalComplementAmount += calc.amount || 0;
+      }
+
       return acc;
     },
     {
+      enteredCount: 0,
       totalApp: 0,
       totalLeave: 0,
       totalDue: 0,
@@ -290,25 +315,33 @@ export default function PayrollAdjustmentsPage() {
         {rows.length > 0 ? (
           <div className="grid md:grid-cols-4 gap-2">
             <div className="border rounded-2xl p-3">
-              <div className="text-xs text-gray-500">Heures app</div>
-              <div className="text-lg font-semibold">{fmtHours(computedSummary.totalApp)}</div>
+              <div className="text-xs text-gray-500">Vendeuses</div>
+              <div className="text-lg font-semibold">{rows.length}</div>
             </div>
             <div className="border rounded-2xl p-3">
-              <div className="text-xs text-gray-500">Heures congés</div>
-              <div className="text-lg font-semibold">{fmtHours(computedSummary.totalLeave)}</div>
+              <div className="text-xs text-gray-500">Fiches renseignées</div>
+              <div className="text-lg font-semibold">
+                {computedSummary.enteredCount} / {rows.length}
+              </div>
             </div>
             <div className="border rounded-2xl p-3">
-              <div className="text-xs text-gray-500">À compléter</div>
+              <div className="text-xs text-gray-500">À compléter validé</div>
               <div className="text-lg font-semibold">{fmtHours(computedSummary.totalComplementHours)}</div>
             </div>
             <div className="border rounded-2xl p-3">
-              <div className="text-xs text-gray-500">Total à payer</div>
+              <div className="text-xs text-gray-500">Total à payer estimé</div>
               <div className="text-lg font-semibold">{fmtEuro(computedSummary.totalComplementAmount)}</div>
             </div>
           </div>
         ) : summary ? (
           <div className="text-sm text-gray-600">
             API chargée, mais aucune ligne exploitable affichée. Total API : {summary.sellers_count || 0}
+          </div>
+        ) : null}
+
+        {rows.length > 0 && computedSummary.enteredCount < rows.length ? (
+          <div className="text-sm text-amber-700">
+            Les totaux en haut prennent seulement les vendeuses dont la colonne “H. fiche” est renseignée. Les autres restent à saisir.
           </div>
         ) : null}
 
@@ -396,14 +429,19 @@ export default function PayrollAdjustmentsPage() {
                         className="input"
                         style={{ width: 90 }}
                         value={d.payslip_hours}
+                        placeholder="À saisir"
                         onChange={(e) => updateDraft(row.seller_id, "payslip_hours", e.target.value)}
                       />
                     </td>
 
                     <td className="py-3 px-2">
-                      <span style={{ color: calc.diff >= 0 ? "#16a34a" : "#dc2626", fontWeight: 700 }}>
-                        {fmtHours(calc.diff)}
-                      </span>
+                      {calc.hasPayslipHours ? (
+                        <span style={{ color: calc.diff >= 0 ? "#16a34a" : "#dc2626", fontWeight: 700 }}>
+                          {fmtHours(calc.diff)}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400">À saisir</span>
+                      )}
                     </td>
 
                     <td className="py-3 px-2">
@@ -415,7 +453,9 @@ export default function PayrollAdjustmentsPage() {
                       />
                     </td>
 
-                    <td className="py-3 px-2 font-semibold">{fmtEuro(calc.amount)}</td>
+                    <td className="py-3 px-2 font-semibold">
+                      {calc.hasPayslipHours ? fmtEuro(calc.amount) : <span className="text-gray-400">À saisir</span>}
+                    </td>
 
                     <td className="py-3 px-2">
                       <select
