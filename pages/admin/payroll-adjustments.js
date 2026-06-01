@@ -69,6 +69,8 @@ export default function PayrollAdjustmentsPage() {
   const [err, setErr] = useState("");
   const [msg, setMsg] = useState("");
   const [lastApiStatus, setLastApiStatus] = useState("");
+  const [extractBusy, setExtractBusy] = useState(false);
+  const [extractedBySeller, setExtractedBySeller] = useState({});
 
   const loadPreview = useCallback(async () => {
     setErr("");
@@ -268,6 +270,70 @@ export default function PayrollAdjustmentsPage() {
     [drafts, loadPreview, month]
   );
 
+
+  const readPayslipHours = useCallback(async () => {
+    setErr("");
+    setMsg("");
+    setExtractBusy(true);
+
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        throw new Error("Session admin introuvable. Reconnecte-toi.");
+      }
+
+      const resp = await fetch("/api/admin/payroll-adjustments/read-payslip-hours", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ month }),
+      });
+
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok || j?.ok === false) {
+        throw new Error(j?.error || `Erreur API (${resp.status})`);
+      }
+
+      const suggestions = Array.isArray(j?.rows) ? j.rows : [];
+      const nextExtracted = {};
+      let applied = 0;
+
+      setDrafts((prev) => {
+        const next = { ...(prev || {}) };
+
+        suggestions.forEach((row) => {
+          const sellerId = String(row?.seller_id || "");
+          if (!sellerId) return;
+
+          nextExtracted[sellerId] = row;
+
+          if (row?.hours != null && row?.ok !== false) {
+            next[sellerId] = {
+              ...(next[sellerId] || {}),
+              payslip_hours: numInputValue(row.hours),
+            };
+            applied += 1;
+          }
+        });
+
+        return next;
+      });
+
+      setExtractedBySeller(nextExtracted);
+      setMsg(
+        applied > 0
+          ? `${applied} heure(s) de fiche préremplie(s). Vérifie avant d’enregistrer.`
+          : "Aucune heure de fiche n’a pu être lue automatiquement."
+      );
+    } catch (e) {
+      setErr(e?.message || "Lecture des fiches impossible.");
+    } finally {
+      setExtractBusy(false);
+    }
+  }, [month]);
+
   return (
     <div className="p-4 max-w-7xl mx-auto space-y-5">
       <Head>
@@ -306,6 +372,16 @@ export default function PayrollAdjustmentsPage() {
           <div className="flex flex-wrap gap-2 items-center">
             <button type="button" className="btn" onClick={loadPreview} disabled={loadingRows}>
               {loadingRows ? "Chargement..." : "Rafraîchir"}
+            </button>
+
+            <button
+              type="button"
+              className="btn"
+              onClick={readPayslipHours}
+              disabled={extractBusy || loadingRows || rows.length === 0}
+              style={{ backgroundColor: extractBusy ? "#9ca3af" : "#7c3aed", color: "#fff", borderColor: "transparent" }}
+            >
+              {extractBusy ? "Lecture..." : "Lire les heures des fiches"}
             </button>
 
             <span className="text-xs text-gray-500">{lastApiStatus}</span>
@@ -432,6 +508,13 @@ export default function PayrollAdjustmentsPage() {
                         placeholder="À saisir"
                         onChange={(e) => updateDraft(row.seller_id, "payslip_hours", e.target.value)}
                       />
+                      {extractedBySeller?.[row.seller_id] ? (
+                        <div className="text-xs mt-1" style={{ color: extractedBySeller[row.seller_id]?.hours != null ? "#16a34a" : "#dc2626" }}>
+                          {extractedBySeller[row.seller_id]?.hours != null
+                            ? `PDF : ${numInputValue(extractedBySeller[row.seller_id].hours)} h`
+                            : "PDF : non lu"}
+                        </div>
+                      ) : null}
                     </td>
 
                     <td className="py-3 px-2">
