@@ -117,9 +117,50 @@ function getShiftRowCode(row) {
     row?.code ||
       row?.shift_code ||
       row?.shiftCode ||
+      row?.shift_type_code ||
+      row?.shiftTypeCode ||
       row?.key ||
       row?.id
   );
+}
+
+function getRowId(row) {
+  return row?.id || row?.shift_type_id || row?.shiftTypeId || row?.type_id || row?.typeId || null;
+}
+
+function getVersionShiftTypeId(row) {
+  return row?.shift_type_id || row?.shiftTypeId || row?.type_id || row?.typeId || null;
+}
+
+function buildBaseShiftTypeIndex(rows) {
+  const byId = new Map();
+
+  for (const row of rows || []) {
+    const id = getRowId(row);
+    const code = getShiftRowCode(row);
+    if (!id || !code) continue;
+    byId.set(String(id), {
+      code,
+      label: String(row?.label || row?.name || SHIFT_META_FALLBACK[code]?.label || code).trim(),
+    });
+  }
+
+  return byId;
+}
+
+function attachBaseShiftTypeToVersion(row, baseById) {
+  const existingCode = getShiftRowCode(row);
+  if (existingCode) return row;
+
+  const shiftTypeId = getVersionShiftTypeId(row);
+  const base = shiftTypeId ? baseById.get(String(shiftTypeId)) : null;
+  if (!base?.code) return row;
+
+  return {
+    ...row,
+    code: base.code,
+    label: row?.label || row?.name || base.label,
+  };
 }
 
 function isShiftRowActive(row) {
@@ -195,23 +236,51 @@ async function loadShiftMeta(supabase, date) {
     Object.entries(SHIFT_META_FALLBACK).map(([code, meta]) => [code, { ...meta }])
   );
 
-  const { data, error } = await supabase.from("shift_types").select("*");
+  let source = "fallback";
 
-  if (error || !Array.isArray(data) || !data.length) {
-    return { map, source: "fallback" };
+  // Table de base des codes de créneaux. Elle peut contenir les horaires actuels
+  // dans certaines versions de l'app, donc on la lit d'abord comme socle.
+  const { data: baseRows, error: baseError } = await supabase.from("shift_types").select("*");
+
+  const baseById = buildBaseShiftTypeIndex(Array.isArray(baseRows) ? baseRows : []);
+
+  if (!baseError && Array.isArray(baseRows) && baseRows.length) {
+    const effectiveBaseRows = pickEffectiveShiftRows(baseRows, date);
+    effectiveBaseRows.forEach((meta, code) => {
+      map.set(code, {
+        label: meta.label || map.get(code)?.label || code,
+        start: meta.start || map.get(code)?.start || "",
+        end: meta.end || map.get(code)?.end || "",
+        hours: meta.hours ?? map.get(code)?.hours ?? null,
+      });
+    });
+    source = "shift_types";
   }
 
-  const effectiveRows = pickEffectiveShiftRows(data, date);
-  effectiveRows.forEach((meta, code) => {
-    map.set(code, {
-      label: meta.label || map.get(code)?.label || code,
-      start: meta.start || map.get(code)?.start || "",
-      end: meta.end || map.get(code)?.end || "",
-      hours: meta.hours ?? map.get(code)?.hours ?? null,
-    });
-  });
+  // La page Admin > Plages horaires enregistre les changements datés ici.
+  // Cette table doit gagner sur shift_types, sinon l'app de gestion récupère
+  // d'anciens horaires même si le planning vendeuses a été modifié.
+  const { data: versionRows, error: versionError } = await supabase
+    .from("shift_type_versions")
+    .select("*");
 
-  return { map, source: "shift_types" };
+  if (!versionError && Array.isArray(versionRows) && versionRows.length) {
+    const rowsWithCodes = versionRows.map((row) => attachBaseShiftTypeToVersion(row, baseById));
+    const effectiveVersionRows = pickEffectiveShiftRows(rowsWithCodes, date);
+
+    effectiveVersionRows.forEach((meta, code) => {
+      map.set(code, {
+        label: meta.label || map.get(code)?.label || code,
+        start: meta.start || map.get(code)?.start || "",
+        end: meta.end || map.get(code)?.end || "",
+        hours: meta.hours ?? map.get(code)?.hours ?? null,
+      });
+    });
+
+    if (effectiveVersionRows.size) source = "shift_type_versions";
+  }
+
+  return { map, source };
 }
 
 function shiftMeta(code, shiftMetaMap) {
