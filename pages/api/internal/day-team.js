@@ -64,6 +64,85 @@ function cleanName(value) {
   return String(value).trim() || "Vendeuse";
 }
 
+
+const COLOR_FIELD_CANDIDATES = [
+  "color",
+  "seller_color",
+  "sellerColor",
+  "planning_color",
+  "planningColor",
+  "calendar_color",
+  "calendarColor",
+  "avatar_color",
+  "avatarColor",
+  "badge_color",
+  "badgeColor",
+  "theme_color",
+  "themeColor",
+  "hex_color",
+  "hexColor",
+  "background_color",
+  "backgroundColor",
+];
+
+function normalizeColor(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+
+  if (/^#[0-9a-f]{3}([0-9a-f]{3})?([0-9a-f]{2})?$/i.test(text)) return text;
+  if (/^(rgb|rgba|hsl|hsla)\([0-9.,%\s-]+\)$/i.test(text)) return text;
+
+  return "";
+}
+
+function getColorFromRow(row) {
+  for (const field of COLOR_FIELD_CANDIDATES) {
+    const color = normalizeColor(row?.[field]);
+    if (color) return color;
+  }
+  return "";
+}
+
+function indexPersonRow(map, row) {
+  if (!row) return;
+  const keys = [row.user_id, row.id, row.profile_id, row.seller_id, row.auth_user_id]
+    .filter(Boolean)
+    .map(String);
+  if (!keys.length) return;
+
+  const rowColor = getColorFromRow(row);
+  for (const key of keys) {
+    const current = map[key] || {};
+    map[key] = {
+      ...current,
+      ...row,
+      color: rowColor || getColorFromRow(current) || current.color || "",
+    };
+  }
+}
+
+function getPersonColor(row, profilesById = {}) {
+  const direct = getColorFromRow(row);
+  if (direct) return direct;
+
+  const ids = [
+    getSellerId(row),
+    row?.seller_id,
+    row?.profile_id,
+    row?.user_id,
+    row?.id,
+    row?.volunteer_id,
+  ].filter(Boolean);
+
+  for (const id of ids) {
+    const profileColor = getColorFromRow(profilesById[String(id)]);
+    if (profileColor) return profileColor;
+  }
+
+  return "";
+}
+
 function normalizeShiftCode(value) {
   return String(value || "").trim().toUpperCase();
 }
@@ -314,6 +393,7 @@ function normalizeAssignment(row, profilesById = {}, shiftMetaMap) {
   const code = normalizeShiftCode(row?.shift_code || row?.code || row?.shift || row?.slot || "");
   const meta = shiftMeta(code, shiftMetaMap);
   const sellerId = getSellerId(row);
+  const color = getPersonColor(row, profilesById);
 
   const rowStart = normalizeTime(row?.start_time || row?.start || row?.from_time);
   const rowEnd = normalizeTime(row?.end_time || row?.end || row?.to_time);
@@ -323,6 +403,9 @@ function normalizeAssignment(row, profilesById = {}, shiftMetaMap) {
   return {
     sellerId,
     name: getName(row, profilesById),
+    color,
+    sellerColor: color,
+    avatarColor: color,
     shiftCode: code,
     shiftLabel: meta.label,
     start,
@@ -333,28 +416,30 @@ function normalizeAssignment(row, profilesById = {}, shiftMetaMap) {
 }
 
 async function loadProfiles(supabase, ids) {
-  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  const uniqueIds = [...new Set(ids.filter(Boolean).map(String))];
   if (!uniqueIds.length) return {};
 
+  const people = {};
   const attempts = [
-    { column: "user_id", select: "user_id, full_name, email, role, active" },
-    { column: "id", select: "id, full_name, email, role, active" },
+    { table: "profiles", column: "user_id" },
+    { table: "profiles", column: "id" },
+    { table: "sellers", column: "id" },
+    { table: "sellers", column: "profile_id" },
+    { table: "sellers", column: "user_id" },
   ];
 
   for (const attempt of attempts) {
     const { data, error } = await supabase
-      .from("profiles")
-      .select(attempt.select)
+      .from(attempt.table)
+      .select("*")
       .in(attempt.column, uniqueIds);
 
     if (!error && Array.isArray(data)) {
-      return Object.fromEntries(
-        data.map((profile) => [profile.user_id || profile.id, profile])
-      );
+      data.forEach((row) => indexPersonRow(people, row));
     }
   }
 
-  return {};
+  return people;
 }
 
 async function loadAssignmentsFromView(supabase, date) {
@@ -505,7 +590,9 @@ export default async function handler(req, res) {
       replacement: replacement
         ? {
             sellerId: replacement.volunteer_id,
-            name: cleanName(replacementProfile?.full_name || replacementProfile?.email),
+            name: cleanName(replacementProfile?.full_name || replacementProfile?.name || replacementProfile?.email),
+            color: getPersonColor({ volunteer_id: replacement.volunteer_id }, profilesById),
+            sellerColor: getPersonColor({ volunteer_id: replacement.volunteer_id }, profilesById),
             acceptedShiftCode: replacement.accepted_shift_code || base.shiftCode,
           }
         : null,
@@ -519,9 +606,14 @@ export default async function handler(req, res) {
     const profile = profilesById[replacement.volunteer_id];
     const absentProfile = absence ? profilesById[absence.seller_id] : null;
 
+    const color = getPersonColor({ volunteer_id: replacement.volunteer_id }, profilesById);
+
     return {
       sellerId: replacement.volunteer_id,
-      name: cleanName(profile?.full_name || profile?.email),
+      name: cleanName(profile?.full_name || profile?.name || profile?.email),
+      color,
+      sellerColor: color,
+      avatarColor: color,
       shiftCode: code,
       shiftLabel: meta.label,
       start: meta.start,
@@ -529,7 +621,7 @@ export default async function handler(req, res) {
       hours: meta.hours,
       status: "replacement",
       replacesSellerId: absence?.seller_id || null,
-      replacesName: cleanName(absentProfile?.full_name || absentProfile?.email),
+      replacesName: cleanName(absentProfile?.full_name || absentProfile?.name || absentProfile?.email),
     };
   }).sort(sortTeam);
 
@@ -540,14 +632,19 @@ export default async function handler(req, res) {
     date,
     team,
     replacements: replacementTeam,
-    absences: absences.map((absence) => ({
-      id: absence.id,
-      sellerId: absence.seller_id,
-      name: getName({ seller_id: absence.seller_id }, profilesById),
-      status: absence.status,
-      reason: absence.reason || "",
-      adminForced: Boolean(absence.admin_forced),
-      source: absence.source || "",
-    })),
+    absences: absences.map((absence) => {
+      const color = getPersonColor({ seller_id: absence.seller_id }, profilesById);
+      return {
+        id: absence.id,
+        sellerId: absence.seller_id,
+        name: getName({ seller_id: absence.seller_id }, profilesById),
+        color,
+        sellerColor: color,
+        status: absence.status,
+        reason: absence.reason || "",
+        adminForced: Boolean(absence.admin_forced),
+        source: absence.source || "",
+      };
+    }),
   });
 }
