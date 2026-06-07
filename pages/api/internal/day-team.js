@@ -1,11 +1,35 @@
 import { createClient } from "@supabase/supabase-js";
 
-const SHIFT_META = {
+const SHIFT_META_FALLBACK = {
   MORNING: { label: "Matin", start: "06:30", end: "13:30", hours: 7 },
-  MIDDAY: { label: "Milieu journée", start: "", end: "", hours: 7 },
-  EVENING: { label: "Après-midi", start: "13:30", end: "20:30", hours: 7 },
+  MIDDAY: { label: "Milieu journée", start: "06:30", end: "13:30", hours: 7 },
+  EVENING: { label: "Après-midi", start: "13:30", end: "21:00", hours: 7.5 },
   SUNDAY_EXTRA: { label: "Dimanche renfort", start: "09:00", end: "13:30", hours: 4.5 },
 };
+
+const SHIFT_ORDER = {
+  MORNING: 1,
+  MIDDAY: 2,
+  SUNDAY_EXTRA: 3,
+  EVENING: 4,
+};
+
+const DATE_FIELD_CANDIDATES_FROM = [
+  "effective_from",
+  "valid_from",
+  "start_date",
+  "from_date",
+  "effective_date",
+  "starts_on",
+];
+
+const DATE_FIELD_CANDIDATES_TO = [
+  "effective_to",
+  "valid_to",
+  "end_date",
+  "to_date",
+  "ends_on",
+];
 
 function getSecretFromRequest(req) {
   return (
@@ -20,14 +44,180 @@ function isValidDate(value) {
   return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value);
 }
 
+function normalizeIsoDate(value) {
+  if (!value) return "";
+  const text = String(value).trim();
+  const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : "";
+}
+
+function getFirstDate(row, fields) {
+  for (const field of fields) {
+    const value = normalizeIsoDate(row?.[field]);
+    if (value) return value;
+  }
+  return "";
+}
+
 function cleanName(value) {
   if (!value) return "Vendeuse";
   return String(value).trim() || "Vendeuse";
 }
 
-function shiftMeta(code) {
-  return SHIFT_META[code] || {
-    label: code || "Créneau",
+function normalizeShiftCode(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function normalizeTime(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value).trim();
+  if (!text) return "";
+
+  const hFormat = text.match(/^(\d{1,2})\s*h\s*(\d{0,2})$/i);
+  if (hFormat) {
+    const hour = Math.max(0, Math.min(23, Number(hFormat[1] || 0)));
+    const minute = hFormat[2] ? Math.max(0, Math.min(59, Number(hFormat[2]))) : 0;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  const colonFormat = text.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+  if (colonFormat) {
+    const hour = Math.max(0, Math.min(23, Number(colonFormat[1] || 0)));
+    const minute = Math.max(0, Math.min(59, Number(colonFormat[2] || 0)));
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+
+  return text;
+}
+
+function timeToMinutes(value) {
+  const time = normalizeTime(value);
+  const match = time.match(/^(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function computeHours(start, end) {
+  const startMinutes = timeToMinutes(start);
+  const endMinutes = timeToMinutes(end);
+  if (startMinutes === null || endMinutes === null) return null;
+  let diff = endMinutes - startMinutes;
+  if (diff < 0) diff += 24 * 60;
+  return Math.round((diff / 60) * 100) / 100;
+}
+
+function normalizeHours(value, start, end) {
+  const numeric = Number(String(value ?? "").replace(",", "."));
+  if (Number.isFinite(numeric) && numeric > 0) return numeric;
+  return computeHours(start, end);
+}
+
+function getShiftRowCode(row) {
+  return normalizeShiftCode(
+    row?.code ||
+      row?.shift_code ||
+      row?.shiftCode ||
+      row?.key ||
+      row?.id
+  );
+}
+
+function isShiftRowActive(row) {
+  if (row?.active === false) return false;
+  if (row?.is_active === false) return false;
+  if (row?.enabled === false) return false;
+  if (row?.deleted_at) return false;
+  if (row?.archived_at) return false;
+  return true;
+}
+
+function normalizeShiftMetaRow(row) {
+  const code = getShiftRowCode(row);
+  if (!code) return null;
+
+  const start = normalizeTime(
+    row?.start_time ||
+      row?.start ||
+      row?.from_time ||
+      row?.starts_at ||
+      row?.begin_time
+  );
+  const end = normalizeTime(
+    row?.end_time ||
+      row?.end ||
+      row?.to_time ||
+      row?.ends_at ||
+      row?.finish_time
+  );
+
+  return {
+    code,
+    label: String(row?.label || row?.name || SHIFT_META_FALLBACK[code]?.label || code).trim(),
+    start: start || SHIFT_META_FALLBACK[code]?.start || "",
+    end: end || SHIFT_META_FALLBACK[code]?.end || "",
+    hours: normalizeHours(
+      row?.hours ?? row?.duration_hours ?? row?.paid_hours ?? row?.duration,
+      start || SHIFT_META_FALLBACK[code]?.start,
+      end || SHIFT_META_FALLBACK[code]?.end
+    ) ?? SHIFT_META_FALLBACK[code]?.hours ?? null,
+    fromDate: getFirstDate(row, DATE_FIELD_CANDIDATES_FROM),
+    toDate: getFirstDate(row, DATE_FIELD_CANDIDATES_TO),
+  };
+}
+
+function pickEffectiveShiftRows(rows, date) {
+  const byCode = new Map();
+
+  for (const row of rows || []) {
+    if (!isShiftRowActive(row)) continue;
+
+    const meta = normalizeShiftMetaRow(row);
+    if (!meta?.code) continue;
+    if (meta.fromDate && meta.fromDate > date) continue;
+    if (meta.toDate && meta.toDate < date) continue;
+
+    const current = byCode.get(meta.code);
+    if (!current) {
+      byCode.set(meta.code, meta);
+      continue;
+    }
+
+    const currentFrom = current.fromDate || "0000-00-00";
+    const nextFrom = meta.fromDate || "0000-00-00";
+    if (nextFrom >= currentFrom) byCode.set(meta.code, meta);
+  }
+
+  return byCode;
+}
+
+async function loadShiftMeta(supabase, date) {
+  const map = new Map(
+    Object.entries(SHIFT_META_FALLBACK).map(([code, meta]) => [code, { ...meta }])
+  );
+
+  const { data, error } = await supabase.from("shift_types").select("*");
+
+  if (error || !Array.isArray(data) || !data.length) {
+    return { map, source: "fallback" };
+  }
+
+  const effectiveRows = pickEffectiveShiftRows(data, date);
+  effectiveRows.forEach((meta, code) => {
+    map.set(code, {
+      label: meta.label || map.get(code)?.label || code,
+      start: meta.start || map.get(code)?.start || "",
+      end: meta.end || map.get(code)?.end || "",
+      hours: meta.hours ?? map.get(code)?.hours ?? null,
+    });
+  });
+
+  return { map, source: "shift_types" };
+}
+
+function shiftMeta(code, shiftMetaMap) {
+  const normalizedCode = normalizeShiftCode(code);
+  return shiftMetaMap.get(normalizedCode) || {
+    label: normalizedCode || "Créneau",
     start: "",
     end: "",
     hours: null,
@@ -51,19 +241,24 @@ function getName(row, profilesById = {}) {
   );
 }
 
-function normalizeAssignment(row, profilesById = {}) {
-  const code = row?.shift_code || row?.code || row?.shift || row?.slot || "";
-  const meta = shiftMeta(code);
+function normalizeAssignment(row, profilesById = {}, shiftMetaMap) {
+  const code = normalizeShiftCode(row?.shift_code || row?.code || row?.shift || row?.slot || "");
+  const meta = shiftMeta(code, shiftMetaMap);
   const sellerId = getSellerId(row);
+
+  const rowStart = normalizeTime(row?.start_time || row?.start || row?.from_time);
+  const rowEnd = normalizeTime(row?.end_time || row?.end || row?.to_time);
+  const start = meta.start || rowStart;
+  const end = meta.end || rowEnd;
 
   return {
     sellerId,
     name: getName(row, profilesById),
     shiftCode: code,
     shiftLabel: meta.label,
-    start: row?.start_time || row?.start || meta.start,
-    end: row?.end_time || row?.end || meta.end,
-    hours: row?.hours ?? meta.hours,
+    start,
+    end,
+    hours: meta.hours ?? normalizeHours(row?.hours, start, end),
     status: "planned",
   };
 }
@@ -97,8 +292,7 @@ async function loadAssignmentsFromView(supabase, date) {
   const { data, error } = await supabase
     .from("view_week_assignments")
     .select("*")
-    .eq("date", date)
-    .order("shift_code", { ascending: true });
+    .eq("date", date);
 
   if (error) return { data: [], error };
   return { data: Array.isArray(data) ? data : [], error: null };
@@ -108,8 +302,7 @@ async function loadAssignmentsFallback(supabase, date) {
   const { data, error } = await supabase
     .from("shifts")
     .select("*")
-    .eq("date", date)
-    .order("shift_code", { ascending: true });
+    .eq("date", date);
 
   if (error) return { data: [], error };
   return { data: Array.isArray(data) ? data : [], error: null };
@@ -138,6 +331,15 @@ async function loadReplacementInterest(supabase, absences) {
 
   if (error) return [];
   return Array.isArray(data) ? data : [];
+}
+
+function sortTeam(a, b) {
+  const shiftA = normalizeShiftCode(a?.shiftCode || a?.shift_code);
+  const shiftB = normalizeShiftCode(b?.shiftCode || b?.shift_code);
+  const orderA = SHIFT_ORDER[shiftA] || 99;
+  const orderB = SHIFT_ORDER[shiftB] || 99;
+  if (orderA !== orderB) return orderA - orderB;
+  return String(a?.name || "").localeCompare(String(b?.name || ""), "fr");
 }
 
 export default async function handler(req, res) {
@@ -187,6 +389,8 @@ export default async function handler(req, res) {
     auth: { persistSession: false },
   });
 
+  const { map: shiftMetaMap, source: shiftConfigSource } = await loadShiftMeta(supabase, date);
+
   let source = "view_week_assignments";
   let { data: assignments, error: viewError } = await loadAssignmentsFromView(supabase, date);
 
@@ -216,7 +420,7 @@ export default async function handler(req, res) {
   );
 
   const team = assignments.map((row) => {
-    const base = normalizeAssignment(row, profilesById);
+    const base = normalizeAssignment(row, profilesById, shiftMetaMap);
     const absence = absencesBySeller[base.sellerId];
     const replacement = absence ? replacementsByAbsence[absence.id] : null;
     const replacementProfile = replacement ? profilesById[replacement.volunteer_id] : null;
@@ -237,12 +441,12 @@ export default async function handler(req, res) {
           }
         : null,
     };
-  });
+  }).sort(sortTeam);
 
   const replacementTeam = replacements.map((replacement) => {
     const absence = absences.find((item) => item.id === replacement.absence_id);
-    const code = replacement.accepted_shift_code || "";
-    const meta = shiftMeta(code);
+    const code = normalizeShiftCode(replacement.accepted_shift_code || "");
+    const meta = shiftMeta(code, shiftMetaMap);
     const profile = profilesById[replacement.volunteer_id];
     const absentProfile = absence ? profilesById[absence.seller_id] : null;
 
@@ -258,11 +462,12 @@ export default async function handler(req, res) {
       replacesSellerId: absence?.seller_id || null,
       replacesName: cleanName(absentProfile?.full_name || absentProfile?.email),
     };
-  });
+  }).sort(sortTeam);
 
   return res.status(200).json({
     ok: true,
     source,
+    shiftConfigSource,
     date,
     team,
     replacements: replacementTeam,
