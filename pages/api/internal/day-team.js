@@ -64,6 +64,56 @@ function cleanName(value) {
   return String(value).trim() || "Vendeuse";
 }
 
+const SELLER_COLOR_OVERRIDES = {
+  antonia: "#e57373",
+  olivia: "#64b5f6",
+  colleen: "#81c784",
+  ibtissam: "#ba68c8",
+  charlene: "#f59e0b",
+  ana: "#f97316",
+};
+
+function normalizeNameKey(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function hashStr(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i += 1) {
+    h ^= str.charCodeAt(i);
+    h = (h * 16777619) >>> 0;
+  }
+  return h >>> 0;
+}
+
+function hslToHex(h, s, l) {
+  s /= 100;
+  l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * c).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+
+function autoColorFromName(name) {
+  const key = normalizeNameKey(name);
+  if (!key) return "#9e9e9e";
+  const hue = hashStr(key) % 360;
+  return hslToHex(hue, 65, 50);
+}
+
+function colorForName(name) {
+  const key = normalizeNameKey(name);
+  if (!key || key === "-") return "#9e9e9e";
+  return SELLER_COLOR_OVERRIDES[key] || autoColorFromName(key);
+}
 
 const COLOR_FIELD_CANDIDATES = [
   "color",
@@ -141,6 +191,12 @@ function getPersonColor(row, profilesById = {}) {
   }
 
   return "";
+}
+
+function getPersonColorOrAuto(row, profilesById = {}) {
+  const color = getPersonColor(row, profilesById);
+  if (color) return color;
+  return colorForName(getName(row, profilesById));
 }
 
 function normalizeShiftCode(value) {
@@ -393,7 +449,8 @@ function normalizeAssignment(row, profilesById = {}, shiftMetaMap) {
   const code = normalizeShiftCode(row?.shift_code || row?.code || row?.shift || row?.slot || "");
   const meta = shiftMeta(code, shiftMetaMap);
   const sellerId = getSellerId(row);
-  const color = getPersonColor(row, profilesById);
+  const name = getName(row, profilesById);
+  const color = getPersonColor(row, profilesById) || colorForName(name);
 
   const rowStart = normalizeTime(row?.start_time || row?.start || row?.from_time);
   const rowEnd = normalizeTime(row?.end_time || row?.end || row?.to_time);
@@ -402,7 +459,7 @@ function normalizeAssignment(row, profilesById = {}, shiftMetaMap) {
 
   return {
     sellerId,
-    name: getName(row, profilesById),
+    name,
     color,
     sellerColor: color,
     avatarColor: color,
@@ -591,8 +648,8 @@ export default async function handler(req, res) {
         ? {
             sellerId: replacement.volunteer_id,
             name: cleanName(replacementProfile?.full_name || replacementProfile?.name || replacementProfile?.email),
-            color: getPersonColor({ volunteer_id: replacement.volunteer_id }, profilesById),
-            sellerColor: getPersonColor({ volunteer_id: replacement.volunteer_id }, profilesById),
+            color: getPersonColorOrAuto({ volunteer_id: replacement.volunteer_id }, profilesById),
+            sellerColor: getPersonColorOrAuto({ volunteer_id: replacement.volunteer_id }, profilesById),
             acceptedShiftCode: replacement.accepted_shift_code || base.shiftCode,
           }
         : null,
@@ -606,7 +663,7 @@ export default async function handler(req, res) {
     const profile = profilesById[replacement.volunteer_id];
     const absentProfile = absence ? profilesById[absence.seller_id] : null;
 
-    const color = getPersonColor({ volunteer_id: replacement.volunteer_id }, profilesById);
+    const color = getPersonColorOrAuto({ volunteer_id: replacement.volunteer_id }, profilesById);
 
     return {
       sellerId: replacement.volunteer_id,
@@ -633,7 +690,7 @@ export default async function handler(req, res) {
     team,
     replacements: replacementTeam,
     absences: absences.map((absence) => {
-      const color = getPersonColor({ seller_id: absence.seller_id }, profilesById);
+      const color = getPersonColorOrAuto({ seller_id: absence.seller_id }, profilesById);
       return {
         id: absence.id,
         sellerId: absence.seller_id,
