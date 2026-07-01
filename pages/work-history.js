@@ -555,6 +555,13 @@ export default function WorkHistoryPage() {
     return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
   }, [monthStartPrev]);
 
+  // Fenêtre de validation mensuelle : du 1 au 5 du mois seulement.
+  // Après le 5, la vendeuse ne peut plus valider directement ; elle peut envoyer une correction.
+  const monthlyValidationCloseDay = 5;
+  const monthlyValidationDay = useMemo(() => new Date().getDate(), []);
+  const monthlyValidationOpen = monthlyValidationDay <= monthlyValidationCloseDay;
+  const monthlyValidationWindowLabel = `du 1 au ${monthlyValidationCloseDay}`;
+
   const [prevDelta, setPrevDelta] = useState({ extraMinutes: 0, delayMinutes: 0, netMinutes: 0 });
   const [prevDeltaLoading, setPrevDeltaLoading] = useState(false);
   const [prevDeltaErr, setPrevDeltaErr] = useState("");
@@ -813,6 +820,13 @@ export default function WorkHistoryPage() {
     setMonthlyErr("");
     setMonthlyFlash("");
 
+    if (!monthlyValidationOpen) {
+      setMonthlyErr(
+        `La validation directe est fermée depuis le ${monthlyValidationCloseDay + 1} du mois. Tu peux envoyer une demande de correction à l’admin.`
+      );
+      return;
+    }
+
     const { data, error } = await supabase.rpc("seller_monthly_hours_submit", {
       p_month_start: monthStartPrev,
       p_mode: "accept",
@@ -836,7 +850,15 @@ export default function WorkHistoryPage() {
     } catch (e) {
       setMonthlyErr(error?.message || e?.message || "Échec de validation");
     }
-  }, [userId, monthStartPrev, monthlyUnsupported, directUpdateMonthlyRow, fetchMonthlyRow]);
+  }, [
+    userId,
+    monthStartPrev,
+    monthlyUnsupported,
+    monthlyValidationOpen,
+    monthlyValidationCloseDay,
+    directUpdateMonthlyRow,
+    fetchMonthlyRow,
+  ]);
 
   const sellerCorrectMonthly = useCallback(async () => {
     if (!userId || monthlyUnsupported) return;
@@ -859,7 +881,9 @@ export default function WorkHistoryPage() {
 
     if (!error && data?.seller_status === "disputed") {
       setMonthlyRow(data || null);
-      setMonthlyFlash("✅ Correction envoyée à l’admin.");
+      setMonthlyFlash(
+        monthlyValidationOpen ? "✅ Correction envoyée à l’admin." : "✅ Demande de correction envoyée à l’admin."
+      );
       fetchMonthlyRow().catch(() => {});
       setTimeout(() => setMonthlyFlash(""), 5000);
       return;
@@ -867,13 +891,24 @@ export default function WorkHistoryPage() {
 
     try {
       await directUpdateMonthlyRow({ mode: "correct", corrected: val, comment });
-      setMonthlyFlash("✅ Correction envoyée à l’admin.");
+      setMonthlyFlash(
+        monthlyValidationOpen ? "✅ Correction envoyée à l’admin." : "✅ Demande de correction envoyée à l’admin."
+      );
       fetchMonthlyRow().catch(() => {});
       setTimeout(() => setMonthlyFlash(""), 5000);
     } catch (e) {
       setMonthlyErr(error?.message || e?.message || "Échec d'envoi de correction");
     }
-  }, [userId, monthStartPrev, corrHours, corrNote, monthlyUnsupported, directUpdateMonthlyRow, fetchMonthlyRow]);
+  }, [
+    userId,
+    monthStartPrev,
+    corrHours,
+    corrNote,
+    monthlyUnsupported,
+    monthlyValidationOpen,
+    directUpdateMonthlyRow,
+    fetchMonthlyRow,
+  ]);
 
   useEffect(() => {
     loadPrevMonthDelta();
@@ -1139,7 +1174,27 @@ export default function WorkHistoryPage() {
         <div className="card">
           <div className="hdr mb-2">Validation des heures - {capFirst(monthLabel)}</div>
           <div className="text-xs text-gray-500 mb-3">
-            Ce bloc concerne le dernier mois terminé. Il a été déplacé ici pour alléger la page d’accueil vendeuse.
+            Ce bloc concerne le dernier mois terminé. Validation directe ouverte {monthlyValidationWindowLabel} du mois, puis correction uniquement.
+          </div>
+
+          <div
+            className="text-sm mb-3 border rounded-xl p-2"
+            style={
+              monthlyValidationOpen
+                ? { backgroundColor: "#ecfeff", borderColor: "#67e8f9" }
+                : { backgroundColor: "#fff7ed", borderColor: "#fdba74" }
+            }
+          >
+            {monthlyValidationOpen ? (
+              <>
+                La validation normale de {capFirst(monthLabel)} est ouverte jusqu’au {monthlyValidationCloseDay} inclus.
+              </>
+            ) : (
+              <>
+                La validation normale de {capFirst(monthLabel)} est fermée depuis le {monthlyValidationCloseDay + 1}.
+                Après cette date, il faut envoyer une demande de correction à l’admin.
+              </>
+            )}
           </div>
 
           {monthlyFlash && (
@@ -1283,39 +1338,46 @@ export default function WorkHistoryPage() {
 
               {monthlyRow.seller_status === "pending" && (
                 <div className="mt-3 space-y-3">
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                    <button
-                      className="btn"
-                      onClick={sellerAcceptMonthly}
-                      style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}
-                    >
-                      Valider
-                    </button>
-                    <div className="text-xs text-gray-500">
-                      Si tu as échangé des créneaux sans que le planning ait été mis à jour, tu peux corriger ton total.
+                  {monthlyValidationOpen ? (
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+                      <button
+                        className="btn"
+                        onClick={sellerAcceptMonthly}
+                        style={{ backgroundColor: "#16a34a", color: "#fff", borderColor: "transparent" }}
+                      >
+                        Valider
+                      </button>
+                      <div className="text-xs text-gray-500">
+                        Si tu as échangé des créneaux sans que le planning ait été mis à jour, tu peux corriger ton total.
+                      </div>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="text-xs text-gray-600 border rounded-xl p-2" style={{ backgroundColor: "#f9fafb" }}>
+                      La validation directe est fermée. Si tu as oublié de valider à temps ou si tes heures ne correspondent pas,
+                      envoie une demande de correction à l’admin.
+                    </div>
+                  )}
 
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                     <input
                       className="input"
                       value={corrHours}
                       onChange={(e) => setCorrHours(e.target.value)}
-                      placeholder="Heures corrigées (ex: 151.5)"
+                      placeholder={monthlyValidationOpen ? "Heures corrigées (ex: 151.5)" : `Total demandé (ex: ${Number(monthlyRow.computed_hours || 0).toFixed(2)})`}
                       inputMode="decimal"
                     />
                     <input
                       className="input"
                       value={corrNote}
                       onChange={(e) => setCorrNote(e.target.value)}
-                      placeholder="Commentaire (optionnel)"
+                      placeholder={monthlyValidationOpen ? "Commentaire (optionnel)" : "Motif de la demande (optionnel)"}
                     />
                     <button
                       className="btn"
                       onClick={sellerCorrectMonthly}
                       style={{ backgroundColor: "#111827", color: "#fff", borderColor: "transparent" }}
                     >
-                      Envoyer correction
+                      {monthlyValidationOpen ? "Envoyer correction" : "Demander correction"}
                     </button>
                   </div>
                 </div>
