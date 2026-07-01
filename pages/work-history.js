@@ -1326,16 +1326,11 @@ export default function WorkHistoryPage() {
 
           {!monthlyLoading && monthlyRow && (
             <>
-              <div className="text-sm">
-                Total calculé sur le planning :{" "}
-                <span className="font-semibold">{Number(monthlyRow.computed_hours || 0).toFixed(2)} h</span>
-              </div>
-
               <div className="mt-2">
                 {prevDeltaLoading ? (
-                  <div className="text-xs text-gray-600">Calcul des retards/relais du mois...</div>
+                  <div className="text-xs text-gray-600">Calcul des ajustements du mois...</div>
                 ) : prevDeltaUnsupported ? (
-                  <div className="text-xs text-gray-500">Retards/relais non disponibles pour ce mois.</div>
+                  <div className="text-xs text-gray-500">Ajustements non disponibles pour ce mois.</div>
                 ) : prevDeltaErr ? (
                   <div className="text-xs text-red-600">{prevDeltaErr}</div>
                 ) : (
@@ -1345,47 +1340,50 @@ export default function WorkHistoryPage() {
                     const checkinDelayH = (Number(prevDelta?.checkinDelayMinutes || 0) || 0) / 60;
                     const adminExtraH = (Number(prevDelta?.adminExtraMinutes || 0) || 0) / 60;
                     const adminDelayH = (Number(prevDelta?.adminDelayMinutes || 0) || 0) / 60;
-                    const totalExtraH = (Number(prevDelta?.extraMinutes || 0) || 0) / 60;
-                    const totalDelayH = (Number(prevDelta?.delayMinutes || 0) || 0) / 60;
-                    const netH = computed + (Number(prevDelta?.netMinutes || 0) || 0) / 60;
+                    const netAdjustH = (Number(prevDelta?.netMinutes || 0) || 0) / 60;
+                    const netH = computed + netAdjustH;
+                    const formulaAdjustText =
+                      Math.abs(netAdjustH) < 0.005
+                        ? "0.00 h"
+                        : netAdjustH > 0
+                          ? `+ ${Math.abs(netAdjustH).toFixed(2)} h`
+                          : `- ${Math.abs(netAdjustH).toFixed(2)} h`;
+                    const formulaText = `${computed.toFixed(2)} h ${formulaAdjustText} = ${netH.toFixed(2)} h`;
 
                     return (
-                      <div className="space-y-1">
-                        <div className="text-xs text-gray-700">
-                          Pointage du mois :{" "}
-                          <span className="font-semibold" style={{ color: "#16a34a" }}>
-                            +{checkinExtraH.toFixed(2)} h
-                          </span>{" "}
-                          •{" "}
-                          <span className="font-semibold" style={{ color: "#dc2626" }}>
-                            -{checkinDelayH.toFixed(2)} h
-                          </span>
+                      <div className="space-y-2">
+                        <div
+                          className="border rounded-2xl px-4 py-3"
+                          style={{ backgroundColor: "#f8fafc", borderColor: "#e5e7eb" }}
+                        >
+                          <div className="text-xs text-gray-500">Total planning</div>
+                          <div className="text-3xl font-bold" style={{ lineHeight: 1.1 }}>
+                            {netH.toFixed(2)} h
+                          </div>
                         </div>
+
                         <div className="text-xs text-gray-700">
-                          Relais / départs anticipés admin :{" "}
-                          <span className="font-semibold" style={{ color: "#16a34a" }}>
-                            +{adminExtraH.toFixed(2)} h
-                          </span>{" "}
-                          •{" "}
-                          <span className="font-semibold" style={{ color: "#dc2626" }}>
-                            -{adminDelayH.toFixed(2)} h
-                          </span>
+                          <span className="font-semibold">Calcul :</span> {formulaText}
                         </div>
-                        <div className="text-xs text-gray-700">
-                          Total ajustements :{" "}
+                        <div className="text-xs text-gray-600">
+                          Base planning : <span className="font-semibold">{computed.toFixed(2)} h</span>
+                          {" "}• Pointage :
                           <span className="font-semibold" style={{ color: "#16a34a" }}>
-                            +{totalExtraH.toFixed(2)} h
-                          </span>{" "}
-                          •{" "}
-                          <span className="font-semibold" style={{ color: "#dc2626" }}>
-                            -{totalDelayH.toFixed(2)} h
+                            {` +${checkinExtraH.toFixed(2)} h`}
                           </span>
-                        </div>
-                        <div className="text-sm">
-                          Total net estimé : <span className="font-semibold">{netH.toFixed(2)} h</span>
+                          <span className="font-semibold" style={{ color: "#dc2626" }}>
+                            {` -${checkinDelayH.toFixed(2)} h`}
+                          </span>
+                          {" "}• Relais / départs anticipés admin :
+                          <span className="font-semibold" style={{ color: "#16a34a" }}>
+                            {` +${adminExtraH.toFixed(2)} h`}
+                          </span>
+                          <span className="font-semibold" style={{ color: "#dc2626" }}>
+                            {` -${adminDelayH.toFixed(2)} h`}
+                          </span>
                         </div>
                         <div className="text-xs text-gray-500">
-                          Total net = planning + pointage + relais / départs anticipés / travail en plus.
+                          Le total affiché ci-dessus est le total du mois après prise en compte du pointage et des ajustements admin.
                         </div>
                       </div>
                     );
