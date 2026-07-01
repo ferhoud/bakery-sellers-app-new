@@ -624,6 +624,89 @@ export default function WorkHistoryPage() {
     [userId]
   );
 
+  const loadCheckinMinutesRange = useCallback(
+    async (fromIso, toIso) => {
+      if (!userId) {
+        return { earlyMinutes: 0, lateMinutes: 0, unsupported: false, error: null };
+      }
+
+      const sumRows = (rows) => {
+        let earlyMinutes = 0;
+        let lateMinutes = 0;
+
+        (rows || []).forEach((row) => {
+          const hasConfirmedField =
+            Object.prototype.hasOwnProperty.call(row || {}, "confirmed_at") ||
+            Object.prototype.hasOwnProperty.call(row || {}, "confirmedAt");
+          const confirmedAt = row?.confirmed_at || row?.confirmedAt || null;
+          if (hasConfirmedField && !confirmedAt) return;
+          lateMinutes += Math.max(0, Math.round(Number(row?.late_minutes ?? row?.lateMinutes ?? 0) || 0));
+          earlyMinutes += Math.max(0, Math.round(Number(row?.early_minutes ?? row?.earlyMinutes ?? 0) || 0));
+        });
+
+        return {
+          earlyMinutes: Math.round(earlyMinutes),
+          lateMinutes: Math.round(lateMinutes),
+          unsupported: false,
+          error: null,
+        };
+      };
+
+      try {
+        // Même logique que le détail affiché dans l'historique : on tente l'API serveur d'abord,
+        // puis on garde un fallback Supabase direct si l'API n'est pas disponible.
+        try {
+          const { data: authData } = await supabase.auth.getSession();
+          const token = authData?.session?.access_token || session?.access_token || null;
+
+          if (token) {
+            const resp = await fetch(
+              `/api/checkins/month-details?from=${encodeURIComponent(fromIso)}&to=${encodeURIComponent(toIso)}`,
+              { headers: { Authorization: `Bearer ${token}` } }
+            );
+            const j = await resp.json().catch(() => ({}));
+
+            if (resp.ok && j?.ok !== false) {
+              return sumRows(Array.isArray(j?.items) ? j.items : []);
+            }
+          }
+        } catch (_) {
+          // Fallback ci-dessous.
+        }
+
+        const { data, error } = await supabase
+          .from("daily_checkins")
+          .select("day, late_minutes, early_minutes, confirmed_at")
+          .eq("seller_id", userId)
+          .gte("day", fromIso)
+          .lte("day", toIso)
+          .not("confirmed_at", "is", null)
+          .order("day", { ascending: true });
+
+        if (error) {
+          const msg = String(error?.message || "");
+          const codeE = String(error?.code || "");
+          const forbidden =
+            msg.toLowerCase().includes("permission") ||
+            msg.toLowerCase().includes("rls") ||
+            msg.toLowerCase().includes("not allowed");
+          const missingTbl = codeE === "42P01" || msg.toLowerCase().includes("does not exist");
+          const missingCol = codeE === "42703" || msg.toLowerCase().includes("column");
+
+          if (forbidden || missingTbl || missingCol) {
+            return { earlyMinutes: 0, lateMinutes: 0, unsupported: true, error: null };
+          }
+          throw error;
+        }
+
+        return sumRows(data || []);
+      } catch (e) {
+        return { earlyMinutes: 0, lateMinutes: 0, unsupported: false, error: e };
+      }
+    },
+    [userId, session?.access_token]
+  );
+
   const loadPrevMonthDelta = useCallback(async () => {
     if (!userId || role === "admin") return;
     setPrevDeltaErr("");
@@ -712,21 +795,34 @@ export default function WorkHistoryPage() {
       const extraWork = await loadExtraWorkMinutesRange(monthStartPrev, monthEndPrev);
       if (extraWork?.error) throw extraWork.error;
 
-      const extraPositive = Number(extraWork?.positiveMinutes ?? extraWork?.minutes ?? 0) || 0;
-      const extraNegative = Number(extraWork?.negativeMinutes || 0) || 0;
+      const checkins = await loadCheckinMinutesRange(monthStartPrev, monthEndPrev);
+      if (checkins?.error) throw checkins.error;
+
+      const adminPositive = Math.round(relayExtra + (Number(extraWork?.positiveMinutes ?? extraWork?.minutes ?? 0) || 0));
+      const adminNegative = Math.round(relayDelay + (Number(extraWork?.negativeMinutes || 0) || 0));
+      const adminNet = Math.round(relayNet + (Number(extraWork?.positiveMinutes ?? extraWork?.minutes ?? 0) || 0) - (Number(extraWork?.negativeMinutes || 0) || 0));
+      const checkinPositive = Math.round(Number(checkins?.earlyMinutes || 0) || 0);
+      const checkinNegative = Math.round(Number(checkins?.lateMinutes || 0) || 0);
+      const checkinNet = Math.round(checkinPositive - checkinNegative);
 
       setPrevDelta({
-        extraMinutes: Math.round(relayExtra + extraPositive),
-        delayMinutes: Math.round(relayDelay + extraNegative),
-        netMinutes: Math.round(relayNet + extraPositive - extraNegative),
+        checkinExtraMinutes: checkinPositive,
+        checkinDelayMinutes: checkinNegative,
+        checkinNetMinutes: checkinNet,
+        adminExtraMinutes: adminPositive,
+        adminDelayMinutes: adminNegative,
+        adminNetMinutes: adminNet,
+        extraMinutes: Math.round(adminPositive + checkinPositive),
+        delayMinutes: Math.round(adminNegative + checkinNegative),
+        netMinutes: Math.round(adminNet + checkinNet),
       });
-      setPrevDeltaUnsupported(Boolean(relayUnsupported && extraWork?.unsupported));
+      setPrevDeltaUnsupported(Boolean(relayUnsupported && extraWork?.unsupported && checkins?.unsupported));
     } catch (e) {
       setPrevDeltaErr(e?.message || "Impossible de charger les retards/relais/travail en plus du mois.");
     } finally {
       setPrevDeltaLoading(false);
     }
-  }, [userId, role, monthStartPrev, monthEndPrev, loadExtraWorkMinutesRange]);
+  }, [userId, role, monthStartPrev, monthEndPrev, loadExtraWorkMinutesRange, loadCheckinMinutesRange]);
 
   const ensureMonthlyRow = useCallback(async () => {
     if (!userId || monthlyUnsupported || role === "admin") return;
@@ -1245,27 +1341,51 @@ export default function WorkHistoryPage() {
                 ) : (
                   (() => {
                     const computed = Number(monthlyRow?.computed_hours || 0);
-                    const extraH = (Number(prevDelta?.extraMinutes || 0) || 0) / 60;
-                    const delayH = (Number(prevDelta?.delayMinutes || 0) || 0) / 60;
+                    const checkinExtraH = (Number(prevDelta?.checkinExtraMinutes || 0) || 0) / 60;
+                    const checkinDelayH = (Number(prevDelta?.checkinDelayMinutes || 0) || 0) / 60;
+                    const adminExtraH = (Number(prevDelta?.adminExtraMinutes || 0) || 0) / 60;
+                    const adminDelayH = (Number(prevDelta?.adminDelayMinutes || 0) || 0) / 60;
+                    const totalExtraH = (Number(prevDelta?.extraMinutes || 0) || 0) / 60;
+                    const totalDelayH = (Number(prevDelta?.delayMinutes || 0) || 0) / 60;
                     const netH = computed + (Number(prevDelta?.netMinutes || 0) || 0) / 60;
 
                     return (
                       <div className="space-y-1">
                         <div className="text-xs text-gray-700">
-                          Retards / relais sur le mois :{" "}
+                          Pointage du mois :{" "}
                           <span className="font-semibold" style={{ color: "#16a34a" }}>
-                            +{extraH.toFixed(2)} h
+                            +{checkinExtraH.toFixed(2)} h
                           </span>{" "}
                           •{" "}
                           <span className="font-semibold" style={{ color: "#dc2626" }}>
-                            -{delayH.toFixed(2)} h
+                            -{checkinDelayH.toFixed(2)} h
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-700">
+                          Relais / départs anticipés admin :{" "}
+                          <span className="font-semibold" style={{ color: "#16a34a" }}>
+                            +{adminExtraH.toFixed(2)} h
+                          </span>{" "}
+                          •{" "}
+                          <span className="font-semibold" style={{ color: "#dc2626" }}>
+                            -{adminDelayH.toFixed(2)} h
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-700">
+                          Total ajustements :{" "}
+                          <span className="font-semibold" style={{ color: "#16a34a" }}>
+                            +{totalExtraH.toFixed(2)} h
+                          </span>{" "}
+                          •{" "}
+                          <span className="font-semibold" style={{ color: "#dc2626" }}>
+                            -{totalDelayH.toFixed(2)} h
                           </span>
                         </div>
                         <div className="text-sm">
                           Total net estimé : <span className="font-semibold">{netH.toFixed(2)} h</span>
                         </div>
                         <div className="text-xs text-gray-500">
-                          Total net = planning + retards/relais/travail en plus. C’est ce total qui correspond à l’affichage admin.
+                          Total net = planning + pointage + relais / départs anticipés / travail en plus.
                         </div>
                       </div>
                     );
